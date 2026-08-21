@@ -6,12 +6,21 @@ decisions, and gotchas. Update at milestones or near context limits.
 
 ## Status (as of 2026-08-22)
 
-**Planning converged; coding starts next session at Phase 0.**
-No code has changed yet (docs only: AGENTS.md, MEMORY.md, opencode.json,
-scripts/overnight.sh). Unattended runs: `scripts/overnight.sh` drives
-`opencode run --auto --continue` in rounds; stop with `touch .overnight-stop`;
-progress in `.overnight.log`. First actions: Phase 0 (`git init`, commit tree
-verbatim), then Phase 1 per AGENTS.md.
+**Phase 1 gate GREEN (commit 31f112b).** Native C boot: UEFI shim → EBS →
+kmain → 8-opcode VM runs demo.vbin clean (`KERNEL-OK` + `out 0x28` + `E`).
+Go is fully out of the boot path. Next: Phase 2 (C++ substrate, de-Plan9,
+core/ ↔ arch/x86_64/ split). Unattended runs: `scripts/overnight.sh`
+drives `opencode run --auto --continue`; stop with `touch .overnight-stop`.
+
+Phase-1 fixes worth remembering:
+- loader regression was REAL: AllocatePool called via FW4 (extra
+  BootServices arg landed in Type slot → INVALID_PARAMETER). Now FW3.
+- vasm pass-1 bug: text labels all resolved to offset 0 (p.text fills in
+  pass 2) → every jz jumped to pc=0, guest spun silently forever. Host
+  harness for vm.c (/tmp pattern: stub serial/mm_alloc) is the fast way
+  to debug guest programs — use it before QEMU.
+- CPUID OSXSAVE bit27 reads 0 until CR4.OSXSAVE set; never gate on it.
+- Gate grep must accept zero-padded hex ('out 0x0000000000000028').
 
 ## Project vision (endgame, user's words)
 
