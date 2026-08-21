@@ -1,5 +1,5 @@
-#ifndef CPU_H
-#define CPU_H
+#ifndef ARCH_CPU_H
+#define ARCH_CPU_H
 #include <stdint.h>
 
 struct cpuid { uint32_t a, b, c, d; };
@@ -42,8 +42,10 @@ static inline void wr_xcr0(uint32_t reg, uint64_t val) {
 
 static inline void hlt(void) { __asm__ volatile("hlt"); }
 static inline void cli(void) { __asm__ volatile("cli"); }
-
-void cpu_dump_features(void);
-int cpu_enable_avx2(void);
+static inline uint64_t rdtsc(void) {
+    uint32_t lo, hi;
+    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return lo | ((uint64_t)hi << 32);
+}
 
 #endif

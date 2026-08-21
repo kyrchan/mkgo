@@ -15,6 +15,25 @@ guest ladder C→Rust→Go. Phase-2 notes: C++ has no range designators
 linker silently defaults the entry point; mm_alloc sits AFTER where
 mm_pool was in mm.cc (don't re-truncate it).
 
+**Interface contracts FROZEN: `abi/ABI.md` v1** (ports §1, console §2,
+block window §3, input/focus §4, timer §5, net windows §6, kernel-owned
+service ports §7 — registry/devman/power with capability bits — and the
+two-layer device driver model §8). Kernel AND services code against it
+only; changes = version bump there. Key decisions encoded: fs.wasm Phase 5
+runs on RAM-disk block backend, Phase 8 re-backs same window with virtio-blk
+(no guest change); FS client routing = BOTH kernel-routed preview1 and
+guests/lib direct ports; boot orchestration = kernel spawns only init.wasm,
+which reads /etc/init.conf (Phase 7); admin tools are shell built-ins over
+§7 ports; modules carry abi_ver custom section checked at instantiation.
+Later additions to ABI v1: registry SPAWN op (bit6 CAP_SPAWN) = the ONLY
+program-launch mechanism (no fork/exec); §10 audit trail relays rejected
+ops to console; init.wasm supervises children + respawns per
+/etc/init.conf policy; server inventory table in AGENTS.md.
+Scheduler policy BINDING: round-robin forever (cooperative Phase 3 →
+preemptive Phase 8, quantum via kernel.conf); sole sanctioned future
+refinement = head-of-line bump for sessions with pending port messages;
+priorities/MLFQ/CFS/RT classes explicitly rejected; ≤400 LOC budget.
+
 Phase-1 fixes worth remembering:
 - loader regression was REAL: AllocatePool called via FW4 (extra
   BootServices arg landed in Type slot → INVALID_PARAMETER). Now FW3.
@@ -26,6 +45,14 @@ Phase-1 fixes worth remembering:
 - Gate grep must accept zero-padded hex ('out 0x0000000000000028').
 - make test costs ~150s (kernel halts → QEMU runs to 120s timeout);
   budget timeouts accordingly.
+
+**Roadmap extended (user-approved pace): Phases 7–10 added to AGENTS.md**
+(interactive shell/userland → preemption+persistent storage → Go network
+stack → multiuser hardening/release eng; 9 is stretch). Completion sentinel
+redefined there: ALL PHASES COMPLETE = every gate in AGENTS.md green (0–10,
+6 optional). The running overnight.sh still carries old "Phases 0-5" wording
+in its CONT prompt — harmless, AGENTS.md overrides completeness semantics;
+rewrite script wording at next idle restart.
 
 ## Project vision (endgame, user's words)
 

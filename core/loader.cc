@@ -3,7 +3,7 @@
 
 static EFI_GUID sfs_guid = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
 
-static CHAR16 prog_path[] = {'v','m','\\','p','r','o','g','.','v','b','i','n',0};
+static CHAR16 prog_path[] = {'v','m','\\','a','p','p',0};
 
 int load_program(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st,
                  void **out, uint64_t *out_len) {
@@ -33,7 +33,7 @@ int load_program(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st,
     /* root->Open(root, &file, path, mode=READ(1), attr=0) */
     if (FW4(*(void **)((char *)root + 8), (UINTN)root, (UINTN)&file,
             (UINTN)prog_path, 1) != EFI_SUCCESS || !file) {
-        console_puts("[loader] no vm/prog.vbin on ESP\n");
+        console_puts("[loader] no vm/app on ESP\n");
         return -1;
     }
 

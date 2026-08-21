@@ -65,3 +65,5 @@ void cpu_halt(void) {
     for (;;)
         hlt();
 }
+
+uint64_t cpu_cycles(void) { return rdtsc(); }

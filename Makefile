@@ -24,16 +24,23 @@ CXX     := g++
 CXXFLAGS := -std=c++20 -ffreestanding -fno-exceptions -fno-rtti \
             -fno-threadsafe-statics -fno-stack-protector -fno-stack-clash-protection \
             -mno-red-zone -fno-pic -mcmodel=small -Os -g -Wall -Wextra \
-            -Icore -Iarch/x86_64
+            -Icore -Iarch/x86_64 -Ithird_party/wasm3
 ASFLAGS :=
 LDFLAGS := -nostdlib -no-pie -Wl,--build-id=none -Wl,-e,efi_main -T kernel/link.ld
 
 CORE_OBJS := $(BUILD)/core/main.o $(BUILD)/core/kmain.o $(BUILD)/core/lib.o \
-             $(BUILD)/core/loader.o $(BUILD)/core/mm.o $(BUILD)/core/vm/vm.o
+             $(BUILD)/core/loader.o $(BUILD)/core/mm.o $(BUILD)/core/rt.o \
+             $(BUILD)/core/engine.o $(BUILD)/core/wasi_glue.o \
+             $(BUILD)/core/sched.o $(BUILD)/core/vm/vm.o
 ARCH_OBJS := $(BUILD)/arch/x86_64/uart.o $(BUILD)/arch/x86_64/cpu.o \
              $(BUILD)/arch/x86_64/traps.o $(BUILD)/arch/x86_64/traps_s.o \
-             $(BUILD)/arch/x86_64/paging.o $(BUILD)/arch/x86_64/vector.o
-OBJS := $(CORE_OBJS) $(ARCH_OBJS)
+             $(BUILD)/arch/x86_64/paging.o $(BUILD)/arch/x86_64/vector.o \
+             $(BUILD)/arch/x86_64/timer.o $(BUILD)/arch/x86_64/math.o
+WASM3_SRC := $(wildcard third_party/wasm3/*.c)
+WASM3_OBJS := $(patsubst %.c,$(BUILD)/wasm3/%.o,$(notdir $(WASM3_SRC)))
+OBJS := $(CORE_OBJS) $(ARCH_OBJS) $(WASM3_OBJS)
+
+WAT2WASM := $(HOME)/.local/wabt/bin/wat2wasm
 
 .PHONY: all run test clean image tools
 
@@ -59,8 +66,26 @@ $(BUILD)/arch/x86_64/traps_s.o: arch/x86_64/traps.S | $(BUILD)
 	@mkdir -p $(dir $@)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
+# wasm3 engine (vendored, MIT): plain C, NDEBUG kills asserts
+$(BUILD)/wasm3/%.o: third_party/wasm3/%.c $(wildcard third_party/wasm3/*.h) | $(BUILD)
+	@mkdir -p $(dir $@)
+	$(CC) -std=c11 -O2 -g -DNDEBUG -fno-strict-aliasing \
+	      -Wno-unused-parameter -Ithird_party/wasm3 -c $< -o $@
+
 $(BUILD)/kernel.so: $(OBJS) kernel/link.ld | $(BUILD)
-	$(CXX) $(LDFLAGS) $(OBJS) -o $@
+	$(CXX) $(LDFLAGS) $(OBJS) -lgcc -o $@
+
+# ---- guests (guest ABI: wasm + mini-WASI; never recompiled for kernel) ----
+build/hello1.wasm: guests/hello.wat
+	$(WAT2WASM) $< -o $@
+
+build/hello2.wasm: guests/hello.rs
+	RUSTUP_HOME=$(HOME)/.local/rustup rustc --target wasm32v1-none \
+	    -C panic=abort -C opt-level=s -C link-arg=--export-memory -o $@ $<
+
+build/hello3.wasm: guests/hello.go
+	cd guests && GOOS=wasip1 GOARCH=wasm go build -gcflags=all=-N -ldflags=-w -o ../$@ hello.go
+
 
 $(BUILD)/vasm: $(wildcard tools/vasm/*.go) | $(BUILD)
 	cd tools/vasm && go build -o ../../$@ .
@@ -73,33 +98,73 @@ programs/demo.vbin: programs/demo.vasm $(BUILD)/vasm
 $(BUILD)/BOOTX64.EFI: $(BUILD)/kernel.so scripts/mkpefi.py
 	python3 scripts/mkpefi.py $(BUILD)/kernel.so $@
 
+# one disk image per payload so gates never boot a stale guest
+define MKDISK
+dd if=/dev/zero of=$(1) bs=1M count=0 seek=64 status=none
+$(MFORMAT) -i $(1) ::
+$(MMD) -i $(1) ::/EFI ::/EFI/BOOT ::/vm
+$(MCOPY) -i $(1) $(BUILD)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
+$(MCOPY) -i $(1) $(2) ::/vm/app
+endef
+
 $(BUILD)/disk.img: $(BUILD)/BOOTX64.EFI programs/demo.vbin | $(BUILD)
-	dd if=/dev/zero of=$@ bs=1M count=0 seek=64 status=none
-	$(MFORMAT) -i $@ ::
-	$(MMD) -i $@ ::/EFI ::/EFI/BOOT ::/vm
-	$(MCOPY) -i $@ $(BUILD)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
-	$(MCOPY) -i $@ programs/demo.vbin ::/vm/prog.vbin
+	$(call MKDISK,$@,programs/demo.vbin)
+
+$(BUILD)/disk-g1.img: $(BUILD)/BOOTX64.EFI build/hello1.wasm | $(BUILD)
+	$(call MKDISK,$@,build/hello1.wasm)
+
+$(BUILD)/disk-g2.img: $(BUILD)/BOOTX64.EFI build/hello2.wasm | $(BUILD)
+	$(call MKDISK,$@,build/hello2.wasm)
+
+$(BUILD)/disk-g3.img: $(BUILD)/BOOTX64.EFI build/hello3.wasm | $(BUILD)
+	$(call MKDISK,$@,build/hello3.wasm)
 
 image: $(BUILD)/disk.img
 
 $(BUILD)/VARS.fd:
 	cp $(OVMF_VARS) $@
 
-QEMU_ARGS := -L $(ROOT)/usr/share/qemu -L $(ROOT)/usr/share/seabios -machine q35 \
+QEMU_BASE := -L $(ROOT)/usr/share/qemu -L $(ROOT)/usr/share/seabios -machine q35 \
 	-cpu max -m 512 $(KVM_FLAG) \
 	-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 	-drive if=pflash,format=raw,file=$(BUILD)/VARS.fd \
-	-drive format=raw,file=$(BUILD)/disk.img \
 	-display none -no-reboot -net none
 
 run: image $(BUILD)/VARS.fd
-	env $(QEMU_ENV) $(QEMU) $(QEMU_ARGS) -serial stdio
+	env $(QEMU_ENV) $(QEMU) $(QEMU_BASE) -drive format=raw,file=$(BUILD)/disk.img -serial stdio
+
+define RUN_QEMU
+	@rm -f $(BUILD)/serial.log
+	@timeout 120 env $(QEMU_ENV) $(QEMU) $(QEMU_BASE) -drive format=raw,file=$(1) -serial file:$(BUILD)/serial.log || true
+endef
 
 test: image $(BUILD)/VARS.fd
-	@rm -f $(BUILD)/serial.log
-	@timeout 120 env $(QEMU_ENV) $(QEMU) $(QEMU_ARGS) -serial file:$(BUILD)/serial.log || true
+	$(call RUN_QEMU,$(BUILD)/disk.img)
 	@grep -q 'KERNEL-OK' $(BUILD)/serial.log && grep -qE 'out 0x0*28' $(BUILD)/serial.log \
 		&& echo "TEST PASS" || { echo "TEST FAIL"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -30; exit 1; }
+
+# per-guest wasm gates (Phase 3): each guest prints its marker via fd_write
+.PHONY: test-g1 test-g2 test-g3 test-all
+
+test-g1: $(BUILD)/disk-g1.img $(BUILD)/VARS.fd
+	$(call RUN_QEMU,$(BUILD)/disk-g1.img)
+	@grep -q 'KERNEL-OK' $(BUILD)/serial.log && grep -q 'hello from C' \
+		$(BUILD)/serial.log && echo "TEST PASS (g1)" \
+		|| { echo "TEST FAIL (g1)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -30; exit 1; }
+
+test-g2: $(BUILD)/disk-g2.img $(BUILD)/VARS.fd
+	$(call RUN_QEMU,$(BUILD)/disk-g2.img)
+	@grep -q 'KERNEL-OK' $(BUILD)/serial.log && grep -q 'hello from Rust' \
+		$(BUILD)/serial.log && echo "TEST PASS (g2)" \
+		|| { echo "TEST FAIL (g2)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -30; exit 1; }
+
+test-g3: $(BUILD)/disk-g3.img $(BUILD)/VARS.fd
+	$(call RUN_QEMU,$(BUILD)/disk-g3.img)
+	@grep -q 'KERNEL-OK' $(BUILD)/serial.log && grep -q 'hello from Go' \
+		$(BUILD)/serial.log && echo "TEST PASS (g3)" \
+		|| { echo "TEST FAIL (g3)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -30; exit 1; }
+
+test-all: test test-g1 test-g2 test-g3
 
 clean:
 	rm -rf $(BUILD)
