@@ -6,11 +6,14 @@ decisions, and gotchas. Update at milestones or near context limits.
 
 ## Status (as of 2026-08-22)
 
-**Phase 1 gate GREEN (commit 31f112b).** Native C boot: UEFI shim → EBS →
-kmain → 8-opcode VM runs demo.vbin clean (`KERNEL-OK` + `out 0x28` + `E`).
-Go is fully out of the boot path. Next: Phase 2 (C++ substrate, de-Plan9,
-core/ ↔ arch/x86_64/ split). Unattended runs: `scripts/overnight.sh`
-drives `opencode run --auto --continue`; stop with `touch .overnight-stop`.
+**Phase 2 gate GREEN (commit 1d92083).** core/ (C++20, arch-blind) +
+arch/x86_64/ (uart cpu traps.S paging vector) split done; Plan 9 goshim
+replaced by GNU as; gokernel/ deleted. Gate: TEST PASS from clean.
+Next: Phase 3 — vendor wasm3, mini-WASI profile, session scheduler,
+guest ladder C→Rust→Go. Phase-2 notes: C++ has no range designators
+(vm jump table fills at runtime); efi_main needs extern "C" or the
+linker silently defaults the entry point; mm_alloc sits AFTER where
+mm_pool was in mm.cc (don't re-truncate it).
 
 Phase-1 fixes worth remembering:
 - loader regression was REAL: AllocatePool called via FW4 (extra
@@ -21,6 +24,8 @@ Phase-1 fixes worth remembering:
   to debug guest programs — use it before QEMU.
 - CPUID OSXSAVE bit27 reads 0 until CR4.OSXSAVE set; never gate on it.
 - Gate grep must accept zero-padded hex ('out 0x0000000000000028').
+- make test costs ~150s (kernel halts → QEMU runs to 120s timeout);
+  budget timeouts accordingly.
 
 ## Project vision (endgame, user's words)
 
