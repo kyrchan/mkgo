@@ -1,0 +1,114 @@
+; demo.vasm — exercises all 8 opcodes of the restricted ISA.
+;
+;   A[i] = i (16 qwords), B = 5 (broadcast), C = A - B
+;   zeros = count of C lanes equal to 0  (expect 1: i==5)
+;   sum   = sum of C lanes               (expect 40 = 0x28)
+;   VPCMPEQ branch check on A vs A     (expect 'E')
+;
+; Results go to the console window: +0 = hex u64, +8 = raw char.
+
+.data
+A: .space 128
+B: .space 128
+C: .space 128
+
+.text
+start:
+        lea r1, [A]
+        mov r4, 16          ; counter
+        mov r5, 0           ; value i
+fillA:
+        mov [r1], r5
+        lea r1, [r1+8]
+        lea r5, [r5+1]
+        sub r4, 1
+        jz fillAdone
+        sub r0, r0          ; force ZF -> unconditional loop
+        jz fillA
+fillAdone:
+
+        ; B = broadcast 5
+        lea r2, [B]
+        mov r6, 5
+        vpbroadcast.q v1, r6
+        vmovdqu [r2+0], v1
+        vmovdqu [r2+32], v1
+        vmovdqu [r2+64], v1
+        vmovdqu [r2+96], v1
+
+        ; C = A - B, four 256-bit chunks
+        lea r1, [A]
+        lea r3, [C]
+        vmovdqu v2, [r1+0]
+        vmovdqu v3, [r2+0]
+        vpsub.q v4, v2, v3
+        vmovdqu [r3+0], v4
+        vmovdqu v2, [r1+32]
+        vmovdqu v3, [r2+32]
+        vpsub.q v4, v2, v3
+        vmovdqu [r3+32], v4
+        vmovdqu v2, [r1+64]
+        vmovdqu v3, [r2+64]
+        vpsub.q v4, v2, v3
+        vmovdqu [r3+64], v4
+        vmovdqu v2, [r1+96]
+        vmovdqu v3, [r2+96]
+        vpsub.q v4, v2, v3
+        vmovdqu [r3+96], v4
+
+        ; count zero lanes of C
+        lea r3, [C]
+        mov r7, 0           ; count
+        mov r8, 16          ; lanes left
+zeros:
+        mov r9, [r3]
+        sub r9, 0
+        jz zcount
+        sub r0, r0
+        jz znext
+zcount:
+        lea r7, [r7+1]
+znext:
+        lea r3, [r3+8]
+        sub r8, 1
+        jz zdone
+        sub r0, r0
+        jz zeros
+zdone:
+        lea r10, [r0+0xF000]    ; console window
+        mov [r10], r7           ; -> "out 0x1"
+
+        ; sum of C via negation-add trick (no ADD opcode):
+        ; sum -= (0 - x)  ==  sum += x
+        lea r3, [C]
+        mov r8, 16
+        mov r11, 0          ; sum
+sumloop:
+        mov r9, [r3]
+        mov r12, r0
+        sub r12, r9         ; r12 = -x
+        sub r11, r12        ; sum += x
+        lea r3, [r3+8]
+        sub r8, 1
+        jz sumdone
+        sub r0, r0
+        jz sumloop
+sumdone:
+        mov [r10], r11      ; -> "out 0x28"
+
+        ; vector equality branch: A == A ?
+        lea r1, [A]
+        vmovdqu v5, [r1+0]
+        vmovdqu v6, [r1+0]
+        vpcmpeq.q v7, v5, v6
+        mov r13, 'n'
+        jz eqyes
+        sub r0, r0
+        jz eqprint
+eqyes:
+        mov r13, 'E'
+eqprint:
+        lea r14, [r0+0xF008]
+        mov [r14], r13      ; -> char 'E'
+
+        halt

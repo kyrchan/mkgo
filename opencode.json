@@ -1,0 +1,8 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "opencode/x-preview-f-free",
+  "permission": {
+    "*": "allow",
+    "question": "deny"
+  }
+}
