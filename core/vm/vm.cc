@@ -1,6 +1,6 @@
 /* Scalar core: fetch/decode with a 256-entry jump table, MOV/LEA/SUB/JZ. */
 #include "vm.h"
-#include "../serial.h"
+#include "../plat.h"
 #include "../mm.h"
 
 int vm_create(struct vm *v, const uint8_t *blob, uint64_t blob_len) {
@@ -19,7 +19,7 @@ int vm_create(struct vm *v, const uint8_t *blob, uint64_t blob_len) {
     if (mem_len < VM_MIN_MEM)
         mem_len = VM_MIN_MEM;
     mem_len = (mem_len + 0xFFF) & ~0xFFFULL;
-    uint8_t *mem = mm_alloc(mem_len, 4096);
+    uint8_t *mem = (uint8_t *)mm_alloc(mem_len, 4096);
     if (!mem)
         return -1;
     for (uint64_t i = 0; i < mem_len; i++)
@@ -60,13 +60,13 @@ static int guest_store(struct vm *vm, uint64_t ea, uint8_t wsel, uint64_t val) {
     if (ea + width_bytes(wsel) > vm->mem_len)
         return -1;
     if (ea == VM_CONSOLE_OFF) {
-        serial_puts("[vm] out ");
-        serial_hex64(val);
-        serial_puts("\n");
+        console_puts("[vm] out ");
+        console_hex64(val);
+        console_puts("\n");
         return 1;
     }
     if (ea == VM_CONSOLE_OFF + 8) {
-        serial_putc((char)(val & 0xFF));
+        console_putc((char)(val & 0xFF));
         return 1;
     }
     for (uint64_t i = 0; i < width_bytes(wsel); i++)
@@ -81,14 +81,21 @@ void vec_sub(const void *a, const void *b, int szcls, void *dst);
 int vec_cmpeq_all(const void *a, const void *b, int szcls, void *dst);
 
 int vm_run(struct vm *vm) {
-    static const void *disp[256] = {
-        [0 ... 255] = &&illegal,
-        [OP_MOV] = &&L_mov,           [OP_LEA] = &&L_lea,
-        [OP_SUB] = &&L_sub,           [OP_JZ] = &&L_jz,
-        [OP_VMOVDQU] = &&L_vmovdqu,   [OP_VPBROADCAST] = &&L_vpbcast,
-        [OP_VPSUB] = &&L_vsub,        [OP_VPCMPEQ] = &&L_vcmpeq,
-        [OP_HALT] = &&L_halt,
-    };
+    /* C++ has no range designators; fill once (single-threaded kernel). */
+    static const void *disp[256];
+    if (!disp[OP_MOV]) {
+        for (int i = 0; i < 256; i++)
+            disp[i] = &&illegal;
+        disp[OP_MOV] = &&L_mov;
+        disp[OP_LEA] = &&L_lea;
+        disp[OP_SUB] = &&L_sub;
+        disp[OP_JZ] = &&L_jz;
+        disp[OP_VMOVDQU] = &&L_vmovdqu;
+        disp[OP_VPBROADCAST] = &&L_vpbcast;
+        disp[OP_VPSUB] = &&L_vsub;
+        disp[OP_VPCMPEQ] = &&L_vcmpeq;
+        disp[OP_HALT] = &&L_halt;
+    }
 #define STEP() (vm->pc += sizeof(struct insn))
     const struct insn *code = (const struct insn *)vm->code;
 
@@ -189,20 +196,20 @@ L_vcmpeq: {
 }
 
 L_halt:
-    serial_puts("[vm] halt at pc=");
-    serial_hex64(vm->pc);
-    serial_puts("\n");
+    console_puts("[vm] halt at pc=");
+    console_hex64(vm->pc);
+    console_puts("\n");
     return 0;
 
 fault:
-    serial_puts("[vm] MEMFAULT pc=");
-    serial_hex64(vm->pc);
-    serial_puts("\n");
+    console_puts("[vm] MEMFAULT pc=");
+    console_hex64(vm->pc);
+    console_puts("\n");
     return -1;
 
 illegal:
-    serial_puts("[vm] ILLOP pc=");
-    serial_hex64(vm->pc);
-    serial_puts("\n");
+    console_puts("[vm] ILLOP pc=");
+    console_hex64(vm->pc);
+    console_puts("\n");
     return -2;
 }

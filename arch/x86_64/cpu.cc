@@ -1,33 +1,33 @@
 #include "cpu.h"
-#include "serial.h"
+#include "plat.h"
 
 void cpu_dump_features(void) {
     struct cpuid max = cpuid(0, 0);
-    serial_puts("[cpu] vendor '");
+    console_puts("[cpu] vendor '");
     for (int i = 0; i < 4; i++)
-        serial_putc((char)((max.b >> (8 * i)) & 0xFF));
+        console_putc((char)((max.b >> (8 * i)) & 0xFF));
     for (int i = 0; i < 4; i++)
-        serial_putc((char)((max.d >> (8 * i)) & 0xFF));
+        console_putc((char)((max.d >> (8 * i)) & 0xFF));
     for (int i = 0; i < 4; i++)
-        serial_putc((char)((max.c >> (8 * i)) & 0xFF));
-    serial_puts("'\n");
+        console_putc((char)((max.c >> (8 * i)) & 0xFF));
+    console_puts("'\n");
 
     struct cpuid f1 = cpuid(1, 0);
-    serial_puts("[cpu] xsave=");
-    serial_putc('0' + ((f1.c >> 26) & 1));
-    serial_puts(" osxsave=");
-    serial_putc('0' + ((f1.c >> 27) & 1));
-    serial_puts(" avx=");
-    serial_putc('0' + ((f1.c >> 28) & 1));
+    console_puts("[cpu] xsave=");
+    console_putc('0' + ((f1.c >> 26) & 1));
+    console_puts(" osxsave=");
+    console_putc('0' + ((f1.c >> 27) & 1));
+    console_puts(" avx=");
+    console_putc('0' + ((f1.c >> 28) & 1));
     if (max.a >= 7) {
         struct cpuid f7 = cpuid(7, 0);
-        serial_puts(" avx2=");
-        serial_putc('0' + ((f7.b >> 5) & 1));
+        console_puts(" avx2=");
+        console_putc('0' + ((f7.b >> 5) & 1));
     }
-    serial_puts("\n");
+    console_puts("\n");
 }
 
-int cpu_enable_avx2(void) {
+int cpu_enable_vector(void) {
     struct cpuid f1 = cpuid(1, 0);
     int xsave = (f1.c >> 26) & 1;
     int avx = (f1.c >> 28) & 1;
@@ -58,4 +58,10 @@ int cpu_enable_avx2(void) {
     if ((rd_xcr0(0) & 7) != 7 || !((cpuid(1, 0).c >> 27) & 1))
         return -3;
     return 0;
+}
+
+void cpu_halt(void) {
+    cli();
+    for (;;)
+        hlt();
 }

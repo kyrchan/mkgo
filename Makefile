@@ -1,6 +1,8 @@
-# microkernel: UEFI-booted C substrate hosting the restricted-ISA VM
+# microkernel: UEFI-booted C++ substrate hosting the restricted-ISA VM
 #
-#   C substrate (firmware handshake + kernel proper) -> build/BOOTX64.EFI (PE32+)
+#   core/            arch-blind kernel proper (C++20, freestanding)
+#   arch/x86_64/     machine shims: uart cpu traps paging vector
+#   build/BOOTX64.EFI via scripts/mkpefi.py (ELF -> PE32+)
 #   guest programs -> programs/*.vbin via tools/vasm
 
 BUILD := build
@@ -10,7 +12,6 @@ QEMU    := $(shell command -v qemu-system-x86_64 2>/dev/null || echo $(ROOT)/usr
 MFORMAT := $(shell command -v mformat 2>/dev/null || echo $(ROOT)/usr/bin/mformat)
 MMD     := $(shell command -v mmd 2>/dev/null || echo $(ROOT)/usr/bin/mmd)
 MCOPY   := $(shell command -v mcopy 2>/dev/null || echo $(ROOT)/usr/bin/mcopy)
-OBJCOPY := objcopy
 
 OVMF_CODE := $(firstword $(foreach d,$(ROOT)/usr/share/OVMF /usr/share/OVMF /usr/share/ovmf,$(wildcard $(d)/OVMF_CODE_4M.fd) $(wildcard $(d)/OVMF_CODE.fd)))
 OVMF_VARS := $(firstword $(foreach d,$(ROOT)/usr/share/OVMF /usr/share/OVMF /usr/share/ovmf,$(wildcard $(d)/OVMF_VARS_4M.fd) $(wildcard $(d)/OVMF_VARS.fd)))
@@ -19,13 +20,20 @@ QEMU_ENV := LD_LIBRARY_PATH=$(ROOT)/usr/lib/x86_64-linux-gnu
 KVM_FLAG := $(shell [ -w /dev/kvm ] && echo -enable-kvm || echo -accel tcg)
 
 CC      := gcc
-CFLAGS  := -std=c11 -ffreestanding -fno-stack-protector -fno-stack-clash-protection \
-           -mno-red-zone -fno-pic -mcmodel=small -Os -g -Wall -Wextra -Ikernel
+CXX     := g++
+CXXFLAGS := -std=c++20 -ffreestanding -fno-exceptions -fno-rtti \
+            -fno-threadsafe-statics -fno-stack-protector -fno-stack-clash-protection \
+            -mno-red-zone -fno-pic -mcmodel=small -Os -g -Wall -Wextra \
+            -Icore -Iarch/x86_64
+ASFLAGS :=
 LDFLAGS := -nostdlib -no-pie -Wl,--build-id=none -Wl,-e,efi_main -T kernel/link.ld
 
-SHIM_OBJS := $(BUILD)/main.o $(BUILD)/kmain.o $(BUILD)/serial.o $(BUILD)/cpu.o \
-             $(BUILD)/mm.o $(BUILD)/gdt_idt.o $(BUILD)/lib.o $(BUILD)/loader.o \
-             $(BUILD)/vm/vm.o $(BUILD)/vm/vector.o
+CORE_OBJS := $(BUILD)/core/main.o $(BUILD)/core/kmain.o $(BUILD)/core/lib.o \
+             $(BUILD)/core/loader.o $(BUILD)/core/mm.o $(BUILD)/core/vm/vm.o
+ARCH_OBJS := $(BUILD)/arch/x86_64/uart.o $(BUILD)/arch/x86_64/cpu.o \
+             $(BUILD)/arch/x86_64/traps.o $(BUILD)/arch/x86_64/traps_s.o \
+             $(BUILD)/arch/x86_64/paging.o $(BUILD)/arch/x86_64/vector.o
+OBJS := $(CORE_OBJS) $(ARCH_OBJS)
 
 .PHONY: all run test clean image tools
 
@@ -34,24 +42,25 @@ all: image
 $(BUILD):
 	mkdir -p $@
 
-$(BUILD)/%.o: kernel/%.c $(wildcard kernel/*.h kernel/vm/*.h) | $(BUILD)
+$(BUILD)/core/%.o: core/%.cc $(wildcard core/*.h core/vm/*.h) | $(BUILD)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD)/arch/x86_64/%.o: arch/x86_64/%.cc $(wildcard arch/x86_64/*.h) | $(BUILD)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 # vector ops lower 1:1 onto AVX2; must be compiled with ymm-capable codegen
-$(BUILD)/vm/vector.o: kernel/vm/vector.c $(wildcard kernel/vm/*.h) | $(BUILD)
+$(BUILD)/arch/x86_64/vector.o: arch/x86_64/vector.cc $(wildcard arch/x86_64/*.h) | $(BUILD)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -mavx2 -c $< -o $@
+	$(CXX) $(CXXFLAGS) -mavx2 -c $< -o $@
 
-$(BUILD)/kernel.so: $(SHIM_OBJS) $(BUILD)/goshim.a kernel/link.ld | $(BUILD)
-	$(CC) $(LDFLAGS) $(SHIM_OBJS) $(BUILD)/goshim.a -o $@
+$(BUILD)/arch/x86_64/traps_s.o: arch/x86_64/traps.S | $(BUILD)
+	@mkdir -p $(dir $@)
+	$(CC) $(ASFLAGS) -c $< -o $@
 
-# Plan 9 asm IDT stub bank, assembled by go tool asm via c-archive
-# (replaced by GNU as vectors in Phase 2)
-$(BUILD)/goshim.a: tools/goshim/shim.go tools/goshim/gen_vectors.s | $(BUILD)
-	cd tools/goshim && CGO_ENABLED=1 go build -buildmode=c-archive -o ../../$@ .
-	objcopy --globalize-symbol=isr_stub_table --globalize-symbol=isr_dump_ptr \
-	    $@ $@.tmp && mv $@.tmp $@
+$(BUILD)/kernel.so: $(OBJS) kernel/link.ld | $(BUILD)
+	$(CXX) $(LDFLAGS) $(OBJS) -o $@
 
 $(BUILD)/vasm: $(wildcard tools/vasm/*.go) | $(BUILD)
 	cd tools/vasm && go build -o ../../$@ .
