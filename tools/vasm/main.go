@@ -72,6 +72,7 @@ func assemble(src string) *prog {
 	var pend []pending
 
 	section := "text"
+	ninsn := 0 // instructions queued so far (p.text fills in pass 2)
 	for ln, raw := range strings.Split(src, "\n") {
 		line := strings.TrimSpace(raw)
 		if i := strings.Index(line, ";"); i >= 0 {
@@ -90,7 +91,7 @@ func assemble(src string) *prog {
 			name := line[:col]
 			var off uint64
 			if section == "text" {
-				off = uint64(len(p.text)) * 16
+				off = uint64(ninsn) * 16
 			} else {
 				off = uint64(len(p.data))
 			}
@@ -138,6 +139,7 @@ func assemble(src string) *prog {
 			fail(ln, "missing operands")
 		}
 		pend = append(pend, pending{mn, ops, ln})
+		ninsn++
 	}
 
 	// pass 2: encode with labels resolved

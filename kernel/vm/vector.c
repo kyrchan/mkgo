@@ -68,7 +68,6 @@ void vec_sub(const void *a, const void *b, int szcls, void *dst) {
 }
 
 int vec_cmpeq_all(const void *a, const void *b, int szcls, void *dst) {
-    u64x4 m;
     switch (szcls & 3) {
     case 0:
         __asm__("vpcmpeqb %2, %1, %0"

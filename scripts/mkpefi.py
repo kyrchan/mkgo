@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
-"""Build the final PE32+ EFI application.
+"""Build the final PE32+ EFI application (shim-only mode).
 
-Two-source merge:
-  * shim ELF  (C firmware handshake, linked at IMAGE_BASE)
-  * Go kernel raw binary (objcopy -O binary of kernel.elf) placed at GO_BASE
-
-The combined image is position-fixed (RELOCS_STRIPPED): OVMF must load it at
-the preferred ImageBase, which is free at boot. The shim's placeholder magic
-constants are patched with the Go image's real entry/end addresses.
+Single source: the shim ELF (C firmware handshake + microkernel proper,
+linked at IMAGE_BASE). The image is position-fixed (RELOCS_STRIPPED):
+OVMF must load it at the preferred ImageBase, which is free at boot.
 """
-import os
 import struct
 import sys
 
@@ -17,9 +12,6 @@ IMAGE_BASE = 0x100000
 SECT_ALIGN = 4096
 FILE_ALIGN = 512
 SUBSYSTEM = 10
-
-GO_ENTRY_MAGIC = (0xB10B1A7C0FFEE001).to_bytes(8, "little")
-GO_END_MAGIC = (0xB10B1A7C0FFEE002).to_bytes(8, "little")
 
 R_ABS64_TYPES = {1, 6, 7}
 R_X86_64_RELATIVE = 8
@@ -114,39 +106,7 @@ def elf_parts(path):
     return secs, e_entry, relocs
 
 
-def load_elf_image(path):
-    """Return (base, image) covering all PT_LOAD segments (BSS zeroed)."""
-    d = open(path, "rb").read()
-    (_t, _m, _v, _e, e_phoff, _s, _f, _h, e_phentsize, e_phnum,
-     _ss, _sn, _sx) = struct.unpack_from("<HHIQQQIHHHHHH", d, 16)
-    lo, hi = None, 0
-    segs = []
-    for i in range(e_phnum):
-        o = e_phoff + i * e_phentsize
-        ptype, _flags, poff, pvaddr, _pa, pfilesz, pmemsz, _al = \
-            struct.unpack_from("<IIQQQQQQ", d, o)
-        if ptype != 1:  # PT_LOAD
-            continue
-        segs.append((poff, pvaddr, pfilesz, pmemsz))
-        if lo is None or pvaddr < lo:
-            lo = pvaddr
-        end = pvaddr + pmemsz
-        if end > hi:
-            hi = end
-    img = bytearray(hi - lo)
-    for poff, pvaddr, pfilesz, pmemsz in segs:
-        img[pvaddr - lo:pvaddr - lo + pfilesz] = d[poff:poff + pfilesz]
-    return lo, bytes(img)
-
-
-def main(shim_elf, go_bin, go_base, go_entry, go_end, dst):
-    go_base = int(str(go_base), 0)
-    go_entry = int(str(go_entry), 0)
-    go_end = int(str(go_end), 0)
-    go_lo, go_image = load_elf_image(go_bin)
-    if go_lo != go_base:
-        print(f"mkpefi: note: go image base is {go_lo:#x} (arg said {go_base})")
-
+def main(shim_elf, dst):
     secs, e_entry, relocs = elf_parts(shim_elf)
 
     # apply shim relocations as fixed absolute values (image is position-fixed)
@@ -163,13 +123,6 @@ def main(shim_elf, go_bin, go_base, go_entry, go_end, dst):
         if not done:
             sys.exit(f"reloc target {off:#x} outside shim image")
 
-    # append the Go kernel as one big section
-    go_rva = go_base - IMAGE_BASE
-    if go_rva % SECT_ALIGN:
-        sys.exit("go base not section aligned relative to image base")
-    secs.append({"name": ".gokern", "va": go_base, "rva": go_rva,
-                 "data": go_image, "char": 0x60000020})
-
     hdr_size = align(0x80 + 4 + 20 + 240 + 40 * len(secs), FILE_ALIGN)
     file_off = hdr_size
     for s in secs:
@@ -177,7 +130,7 @@ def main(shim_elf, go_bin, go_base, go_entry, go_end, dst):
         s["vsize"] = len(s["data"])
         s["rawsz"] = len(s["data"])
         s["foff"] = file_off
-        if s["rva"] < hdr_size and s["name"] != ".gokern":
+        if s["rva"] < hdr_size:
             sys.exit(f"section {s['name']} rva {s['rva']:#x} under headers")
         file_off = align(file_off + s["rawsz"], FILE_ALIGN)
     size_of_image = align(max(s["rva"] + max(s["vsize"], 1) for s in secs), SECT_ALIGN)
@@ -191,7 +144,7 @@ def main(shim_elf, go_bin, go_base, go_entry, go_end, dst):
     hdr += b"\0" * (0x80 - len(hdr))
     hdr += b"PE\0\0"
     init = sum(align(s["rawsz"], FILE_ALIGN) for s in secs if s["char"] & 0x40)
-    code = sum(s["vsize"] for s in secs if s["name"] in (".text", ".gokern"))
+    code = sum(s["vsize"] for s in secs if s["name"] == ".text")
     hdr += struct.pack("<HHIIIHH", 0x8664, len(secs), 0, 0, 0, 240,
                        0x2022 | 1)  # RELOCS_STRIPPED: position-fixed image
     opt = bytearray(240)
@@ -218,20 +171,12 @@ def main(shim_elf, go_bin, go_base, go_entry, go_end, dst):
         img += b"\0" * (s["foff"] - len(img))
         img += s["data"]
 
-    # patch Go entry/end markers with real addresses
-    n1 = img.count(GO_ENTRY_MAGIC)
-    n2 = img.count(GO_END_MAGIC)
-    if n1 != 1 or n2 != 1:
-        sys.exit(f"marker count wrong: entry={n1} end={n2}")
-    img = img.replace(GO_ENTRY_MAGIC, struct.pack("<Q", go_entry))
-    img = img.replace(GO_END_MAGIC, struct.pack("<Q", go_end))
-
     open(dst, "wb").write(img)
     print(f"mkpefi: {dst} size={len(img)} entry={e_entry - IMAGE_BASE:#x} "
-          f"go=[{go_base:#x},{go_end:#x}) sections={[s['name'] for s in secs]}")
+          f"sections={[s['name'] for s in secs]}")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 7:
-        sys.exit("usage: mkpefi.py shim.so go.bin go_base go_entry go_end out.efi")
+    if len(sys.argv) != 3:
+        sys.exit("usage: mkpefi.py shim.so out.efi")
     main(*sys.argv[1:])

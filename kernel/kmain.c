@@ -20,7 +20,9 @@ void kmain(const struct boot_info *bi) {
 
     gdt_install();
     idt_install();
-    mm_init(&bi->mmap);
+    const struct boot_mmap bm = {(void *)(uintptr_t)bi->mmap_desc,
+                                 bi->mmap_count, bi->mmap_dsize};
+    mm_init(&bm);
     paging_identity_init();
 
     if (!bi->prog) {
@@ -30,7 +32,7 @@ void kmain(const struct boot_info *bi) {
     }
 
     struct vm vm;
-    if (vm_create(&vm, bi->prog, bi->prog_len) != 0) {
+    if (vm_create(&vm, (const uint8_t *)(uintptr_t)bi->prog, bi->prog_len) != 0) {
         serial_puts("[kmain] invalid program image; halting\n");
         for (;;)
             hlt();

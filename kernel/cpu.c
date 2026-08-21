@@ -30,9 +30,10 @@ void cpu_dump_features(void) {
 int cpu_enable_avx2(void) {
     struct cpuid f1 = cpuid(1, 0);
     int xsave = (f1.c >> 26) & 1;
-    int osxsave = (f1.c >> 27) & 1;
     int avx = (f1.c >> 28) & 1;
-    if (!xsave || !osxsave || !avx)
+    /* NB: OSXSAVE (bit 27) reads 0 until CR4.OSXSAVE is set by us --
+     * it must not gate the decision here. */
+    if (!xsave || !avx)
         return -1;
     if (!(cpuid(7, 0).b & (1 << 5)))
         return -2;
@@ -53,8 +54,8 @@ int cpu_enable_avx2(void) {
     xcr0 |= (1 << 0) | (1 << 1) | (1 << 2);
     wr_xcr0(0, xcr0);
 
-    /* verify it stuck */
-    if ((rd_xcr0(0) & 7) != 7)
+    /* verify it stuck: XCR0 bits and the now-live OSXSAVE cpuid flag */
+    if ((rd_xcr0(0) & 7) != 7 || !((cpuid(1, 0).c >> 27) & 1))
         return -3;
     return 0;
 }

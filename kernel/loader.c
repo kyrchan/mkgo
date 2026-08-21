@@ -53,9 +53,9 @@ int load_program(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st,
         return -1;
 
     void *buf = 0;
-    EFI_STATUS aps = FW4(st->BootServices->AllocatePool,
-                         (UINTN)st->BootServices, 2 /*EfiLoaderData*/, size,
-                         (UINTN)&buf);
+    /* AllocatePool(Type, Size, **Buffer) -- three arguments. */
+    EFI_STATUS aps = FW3(st->BootServices->AllocatePool, 2 /*EfiLoaderData*/,
+                         size, (UINTN)&buf);
     serial_puts("[loader] alloc st=");
     serial_hex64((uint64_t)aps);
     serial_puts(" buf=");

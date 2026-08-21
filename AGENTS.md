@@ -38,6 +38,10 @@ a phase gate fails twice on the same root cause, an action would reach
 outside the repo/`~/.local` scope in a destructive way, or the session
 ends. Never re-litigate settled decisions — if code reality diverges
 from the docs, fix the divergence and note it in MEMORY.md.
+**Never end your turn while productive work remains.** If blocked >10 min
+on one obstacle, switch tracks (services/, guests/, abi/, docs) and return
+later — idling is a defect. When all phase gates are green, print exactly:
+ALL PHASES COMPLETE
 
 ## Hard engineering rules
 
@@ -120,6 +124,20 @@ from the docs, fix the divergence and note it in MEMORY.md.
 - `arch/aarch64/` then `arch/riscv64/` shells; `core/` unchanged.
 - QEMU: `qemu-system-aarch64`/`riscv64` static builds + OVMF-arm64/OpenSBI
   into `~/.local` (no root needed). Same headless test pattern.
+
+### Parallel track — services/ (optional, start early)
+- `services/` Go packages (FS logic, login/auth logic) are ordinary
+  host-testable Go (`go test`, no wasm needed initially) and have **no hard
+  dependency on kernel phases**. Develop them in parallel whenever the main
+  line is blocked on a gate, QEMU iteration, or toolchain download.
+- Prerequisite before wiring: freeze interface sketches — block-device
+  window layout + port message formats — under `abi/`. Both sides code
+  against the frozen ABI only.
+- Wrap to `.wasm` (`GOOS=wasip1`) once Phase 3 gate is green; validate under
+  any stock wasm runtime with stub imports first; drop into the kernel
+  unchanged (guest ABI stability rule).
+- Two-agent split (if used): agent A scoped to core/arch/third_party,
+  agent B to services/guests/abi only; disjoint paths, commits per subtree.
 
 ## Phase-3 toolchain checklist (verify before relying)
 

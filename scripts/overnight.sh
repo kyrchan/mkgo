@@ -13,12 +13,16 @@ set -u
 cd "$(dirname "$0")/.."
 
 LOG=.overnight.log
-MAX_ROUNDS=${1:-24}
+MAX_ROUNDS=${1:-200}
 
 SEED="Read AGENTS.md and MEMORY.md first. You are running unattended. \
 Execute the phase plan continuously and unabated per the Autonomy mandate; \
-make every implementation decision yourself. Start at Phase 0 now."
+make every implementation decision yourself. Never end your turn while \
+productive work remains: if blocked more than ~10 minutes on one obstacle, \
+switch to another track (services/, guests/, docs) and return later. \
+Start at Phase 0 now."
 CONT="Continue the phase plan from where MEMORY.md says it stands, per AGENTS.md. \
+Never stop while work remains; switch tracks when blocked. \
 When Phases 0-5 are all green, print exactly: ALL PHASES COMPLETE"
 
 run_round() { # $1 = prompt
