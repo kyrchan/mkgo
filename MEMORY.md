@@ -6,14 +6,27 @@ decisions, and gotchas. Update at milestones or near context limits.
 
 ## Status (as of 2026-08-22)
 
-**Phase 2 gate GREEN (commit 1d92083).** core/ (C++20, arch-blind) +
-arch/x86_64/ (uart cpu traps.S paging vector) split done; Plan 9 goshim
-replaced by GNU as; gokernel/ deleted. Gate: TEST PASS from clean.
-Next: Phase 3 — vendor wasm3, mini-WASI profile, session scheduler,
-guest ladder C→Rust→Go. Phase-2 notes: C++ has no range designators
-(vm jump table fills at runtime); efi_main needs extern "C" or the
-linker silently defaults the entry point; mm_alloc sits AFTER where
-mm_pool was in mm.cc (don't re-truncate it).
+**Phase 3 gate GREEN (commit 39dc3fb).** wasm3 + frozen WASI profile +
+session scheduler in kernel; hello.wat/hello.rs/hello.go all print via
+fd_write through the kernel (make test-all = TEST PASS + g1/g2/g3).
+Toolchains: wat2wasm@~/.local/wabt, rustc wasm32v1-none target
+(RUSTUP_HOME=~/.local/rustup — wasip1 target's crt1 conflicts with a
+custom _start), stock go 1.24 GOOS=wasip1 (zero patching).
+Next: **Phase 4** — port imports per abi/ABI.md §1 (kern_port_*),
+kernel-owned registry/devman/power listeners per §7, console.wasm +
+login.wasm, gate = ping-pong + kill-console isolation + LIST.
+
+Allocator lessons (rt.cc): free-list next ptr must NOT clobber hdr.size;
+binned blocks rounded to FULL class size so pops never undersize;
+cls_of returns NCLASS sentinel for oversized → exact alloc, leaked on
+free; Go runtime PANICS at init unless fd_prestat_get returns EBADF;
+host shims must use __libc_malloc aliases (std::malloc resolves to your
+own definition). make test ≈150s each — budget bash timeouts.
+
+Phase-2 notes: C++ has no range designators (vm jump table fills at
+runtime); efi_main needs extern "C" or the linker silently defaults the
+entry point; mm_alloc sits AFTER where mm_pool was in mm.cc (don't
+re-truncate it).
 
 **Interface contracts FROZEN: `abi/ABI.md` v1** (ports §1, console §2,
 block window §3, input/focus §4, timer §5, net windows §6, kernel-owned
