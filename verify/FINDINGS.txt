@@ -61,3 +61,9 @@ core/kernsvc.cc registry default path (~line 213) + devman/power cap-denial and 
 ===== FINDING 19 2026-08-22 SVC@88ed8a7 =====
 severity: NOTE
 guests/lib/frame.go:177-187 InboxRequest encodes the reply channel as {u16 len, bytes} variable-length LStr, while ABI v1.1 and all kernel-side parsers use fixed char rname[16]. Must be unified when F2's canonical header is settled; noted so the encoding decision isn't lost inside the offset fix.
+===== FINDING 20 2026-08-22 SVC@88ed8a7 =====
+severity: MINOR
+guests/lib/host.go:294-449 FakeKernel.dispatch · host model has NO OpRegistryLogin and NO OpRegistrySetconf cases — login's identity grant (ABI v1.1 §7 op 5) and init's kernel.conf knob application fall through to default: audited, nil reply, client budget stall. Services depending on those ops cannot be meaningfully integration-tested on the host; worse, line 379's comment enshrines F18's non-conformance ("kernsvc: break → default → audited, NO reply") as test-oracle behavior. When F18 is fixed in kernsvc.cc this mirror must change in the same commit or host tests will validate the wrong semantics. Also add LOGIN ownership modeling here once F13's owner-vs-binder fix defines it.
+===== FINDING 21 2026-08-22 MAIN@0907825+dirty =====
+severity: MINOR
+core/engine.cc check_abiver (WIP) · LEB hardening: section-size LEB loop has no shift-width or byte-count cap — a blob of consecutive 0x80 bytes drives sh past 64 (UB: shift >= width in C++) and can wrap i+sz to bypass the `i+sz > len` truncation check, looping wild. Additionally the 2-byte custom-name LEB branch reads b[i+1] without an i+1<len guard (1-byte overread at buffer end). Input is the ESP-loaded module blob (admin-controlled in v1), so hardening not emergency. Fix: cap LEBs at 5 bytes / sh<64, reject sz whose i+sz would overflow, bounds-check the name-LEB continuation byte.
