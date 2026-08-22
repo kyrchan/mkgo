@@ -3,10 +3,11 @@
 #include "mm.h"
 #include "sched.h"
 #include "ports.h"
+#include "fsroute.h"
+#include "devblk.h"
 #include "wasi_glue.h"
 #include "loader.h"
 #include "efi.h"
-#include "vm/vm.h"
 
 static bool is_wasm(const uint8_t *p, uint64_t len) {
     return len >= 4 && p[0] == 0 && p[1] == 'a' && p[2] == 's' && p[3] == 'm';
@@ -42,31 +43,29 @@ void kmain(const struct boot_info *bi) {
     const uint8_t *prog = (const uint8_t *)(uintptr_t)bi->prog;
     uint64_t prog_len = bi->prog_len;
 
-    /* legacy 8-opcode vbin path (retired at Phase 5) */
     if (!is_wasm(prog, prog_len)) {
-        struct vm vm;
-        if (vm_create(&vm, prog, prog_len) != 0) {
-            console_puts("[kmain] invalid program image; halting\n");
-            cpu_halt();
-        }
-        console_puts("[vm] launching guest\n");
-        int rc = vm_run(&vm);
-        console_puts("[vm] guest exited rc=");
-        console_hex64((uint64_t)(long)rc);
-        console_puts("\n");
-        console_puts("[kmain] KERNEL-OK all subsystems up, guest ran clean\n");
+        console_puts("[kmain] refusing non-wasm payload\n");
         cpu_halt();
     }
 
-    /* ---- wasm session mode ---- */
+    /* ---- session mode ----*/
     console_puts("[kmain] wasm mode; spawning boot services\n");
     sched_init();
     ports_init();
+    fsroute_init();
     wasi_calibrate_clock(timer_calibrate_tsc_khz());
 
     const uint8_t *cimg = (const uint8_t *)(uintptr_t)bi->mod_console;
     const uint8_t *limg = (const uint8_t *)(uintptr_t)bi->mod_login;
+    const uint8_t *fimg = (const uint8_t *)(uintptr_t)bi->mod_fs;
 
+    if (fimg && bi->mod_fs_len) {
+        int sfs = sched_spawn_named("fs", fimg, bi->mod_fs_len, 0, 0);
+        if (sfs > 0 && devblk_attach((uint32_t)sfs) != 0)
+            console_puts("[kmain] WARNING: block window not attached\n");
+    } else {
+        console_puts("[kmain] WARNING: no fs module on ESP\n");
+    }
     if (cimg && bi->mod_console_len)
         sched_spawn_named("console", cimg, bi->mod_console_len, 0, 0);
     else
@@ -76,11 +75,14 @@ void kmain(const struct boot_info *bi) {
     else
         console_puts("[kmain] WARNING: no login module on ESP\n");
 
-    /* payload sessions: argv0 == session name (admin caps until Phase 5) */
-    int sa = sched_spawn_named("ppa", prog, prog_len, 0,
-                               SCHED_CAP_KILL | SCHED_CAP_DEVMAN |
-                                   SCHED_CAP_POWER | SCHED_CAP_SPAWN);
-    int sb = sched_spawn_named("ppb", prog, prog_len, 0, 0);
+    /* payload slots: argv0 == session name */
+    const uint8_t *progB =
+        bi->prog2 ? (const uint8_t *)(uintptr_t)bi->prog2 : prog;
+    uint64_t progB_len = bi->prog2 ? bi->prog2_len : prog_len;
+    int sa = sched_spawn_named(
+        "ppa", prog, prog_len, 0,
+        SCHED_CAP_KILL | SCHED_CAP_DEVMAN | SCHED_CAP_POWER | SCHED_CAP_SPAWN);
+    int sb = sched_spawn_named("ppb", progB, progB_len, 0, 0);
     (void)sa;
     (void)sb;
 

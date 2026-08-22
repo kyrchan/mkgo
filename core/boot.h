@@ -16,6 +16,11 @@ struct boot_info {
     uint64_t mod_console_len;
     uint64_t mod_login;
     uint64_t mod_login_len;
+    uint64_t mod_fs;
+    uint64_t mod_fs_len;
+    /* optional second payload slot (/vm/app2); falls back to prog */
+    uint64_t prog2;
+    uint64_t prog2_len;
 };
 
 void kmain(const struct boot_info *bi);

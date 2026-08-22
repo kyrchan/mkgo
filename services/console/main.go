@@ -32,14 +32,19 @@ func main() {
 		h = port_bind(&cstr("console")[0], 7)
 	}
 	buf := make([]byte, 4096)
-	for {
+	idle := 0
+	for idle < 1500000 {
 		if h >= 0 {
 			n := port_recv(h, &buf[0], uint32(len(buf)))
 			if n > 0 {
 				os.Stdout.Write(buf[:n])
 				os.Stdout.WriteString("\n")
+				idle = 0
+				continue
 			}
 		}
+		idle++
 		sched_yield()
 	}
+	os.Stdout.WriteString("[console] idle exit\n")
 }

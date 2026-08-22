@@ -1,6 +1,7 @@
 #include "sched.h"
 #include "lib.h"
 #include "mm.h"
+#include "devblk.h"
 #include "engine.h"
 #include "wasi_glue.h"
 #include "plat.h"
@@ -42,6 +43,12 @@ static uint64_t *kern_sp;     /* scheduler/boot stack */
 
 sched_wasi_state *sched_wasi_current(void) {
     return cur ? &cur->wctx : 0;
+}
+
+void *sched_runtime_of(uint32_t sid) {
+    if (sid >= MAX_SESSIONS || !sessions[sid].eng_live)
+        return 0;
+    return sessions[sid].eng.rt;
 }
 
 uint32_t sched_current_sid(void) { return cur ? cur->sid : 0; }
@@ -158,6 +165,8 @@ int sched_spawn_named(const char *name, const uint8_t *blob, uint64_t len,
         s->wctx.argv[0] = s->name;
         s->wctx.exited = false;
         s->wctx.exit_code = 0;
+        for (int k = 0; k < SCHED_MAX_FDS; k++)
+            s->wctx.fds[k] = SCHED_FD_EMPTY;
 
         /* make it RUNNABLE: build initial frame entering the trampoline */
         s->sp = ctx_make(s->stack, STACK_BYTES);
@@ -195,6 +204,34 @@ static void audit(const char *op, const char *reason, const char *target) {
     console_puts(" target=");
     console_puts(target);
     console_puts("\n");
+}
+
+int sched_session_by_name(const char *name) {
+    for (int i = 1; i < MAX_SESSIONS; i++) {
+        if ((sessions[i].state == S_RUNNABLE || sessions[i].state == S_RUNNING) &&
+            !strcmp(sessions[i].name, name))
+            return i;
+    }
+    return -1;
+}
+
+void sched_set_identity(uint32_t sid, uint32_t uid, uint64_t capmask) {
+    if (sid < MAX_SESSIONS && sessions[sid].state != S_FREE) {
+        sessions[sid].uid = uid;
+        sessions[sid].capmask = capmask;
+        console_puts("[sched] identity '");
+        console_puts(sessions[sid].name);
+        console_puts("' uid=");
+        console_hex64(uid);
+        console_puts(" caps=");
+        console_hex64(capmask);
+        console_puts("\n");
+    }
+}
+
+extern "C" bool ports_name_owned_by(uint32_t sid, const char *name);
+bool sched_is_login(uint32_t sid) {
+    return ports_name_owned_by(sid, "login");
 }
 
 int sched_kill(uint32_t sid) {
@@ -239,12 +276,23 @@ static bool all_dead(void) {
 
 void sched_run(void) {
     while (!all_dead()) {
+        devblk_poll();
         int picked = -1;
         for (uint32_t k = 0; k < MAX_SESSIONS; k++) {
             uint32_t i = (next_rr + k) % MAX_SESSIONS;
             if (i == 0)
                 continue;
             if (sessions[i].state == S_RUNNABLE) {
+#ifdef HOST_BUILD
+                {
+                    static unsigned long long pc;
+                    if (pc++ < 60) {
+                        console_puts("[pick sid=");
+                        console_hex64(i);
+                        console_puts("]\n");
+                    }
+                }
+#endif
                 picked = (int)i;
                 next_rr = (uint32_t)((i + 1) % MAX_SESSIONS);
                 break;

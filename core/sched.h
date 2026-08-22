@@ -17,12 +17,14 @@
 #define SCHED_CAP_NETADM (1ULL << 5)
 #define SCHED_CAP_SPAWN  (1ULL << 6)
 
-/* per-session WASI state (args, exit) so concurrent sessions don't share */
+/* per-session WASI state (args, exit, routed-fd table) */
+#define SCHED_MAX_FDS 64
+#define SCHED_FD_EMPTY 0xFFFFFFFFu
 struct sched_wasi_state {
     const char *argv[16];
     bool exited;
     int exit_code;
-};
+    uint32_t fds[SCHED_MAX_FDS]; /* fd -> fs file handle (SCHED_FD_EMPTY) */};
 struct sched_wasi_state *sched_wasi_current(void);
 
 void sched_init(void);
@@ -54,5 +56,9 @@ int sched_kill(uint32_t sid);
 int sched_spawn_image(const char *name, uint32_t uid, uint64_t capmask,
                       const char *modname);
 void sched_preload_image(const char *name, const uint8_t *blob, uint64_t len);
+int  sched_session_by_name(const char *name); /* sid | -1 */
+void *sched_runtime_of(uint32_t sid);
+void sched_set_identity(uint32_t sid, uint32_t uid, uint64_t capmask);
+bool sched_is_login(uint32_t sid); /* does sid own the "login" port? */
 
 #endif

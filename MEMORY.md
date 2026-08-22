@@ -54,6 +54,23 @@ preemptive Phase 8, quantum via kernel.conf); sole sanctioned future
 refinement = head-of-line bump for sessions with pending port messages;
 priorities/MLFQ/CFS/RT classes explicitly rejected; ≤400 LOC budget.
 
+**FLEET MODE ACTIVE (Phase 4 green → provider-unlimited week).** Lane
+MAINLINE = main tree/master (kernel phases, watchdog.sh); lane SERVICES =
+../kernel-lane-services @ lane/services (console/login/fs/shell/init +
+guests/lib, host-Go→wasip1); lane TOOLS = ../kernel-lane-tools @ lane/tools
+(tools/img, README). fleet.sh+lanes.conf supervise SERVICE/TOOLS lanes
+(pidfile-based precise kills); cron-guard revives all three layers. Merge
+lane branches to master when a gate consumes them; ABI frozen — proposals
+to services/ABI-NOTES.md only. Multiuser FS v1 = namespace-rooted
+isolation (FAT16 has no owner bits): kernel stamps {sid,uid} on every
+forwarded FS op (clients can't spoof); /home/<u> private, /tmp world-RW,
+/etc writes need CAP_FS_ADMIN; sidecar owners.db deferred post-v1.
+Fleet extended to FIVE lanes: +VERIFY (QA dept, read-only everywhere,
+reports in its own tree: FINDINGS.txt/QUALITY.txt; BLOCKER = ABI violation
+or capability gap) and +DOCS (publications dept, IBM-style plain-text
+docs/*.txt with control blocks/traceability/revision history). Both are
+read-only outside their own worktrees by contract.
+
 Phase-1 fixes worth remembering:
 - loader regression was REAL: AllocatePool called via FW4 (extra
   BootServices arg landed in Type slot → INVALID_PARAMETER). Now FW3.
@@ -148,6 +165,13 @@ GOROOT_BARE make rules, GO_MAGIC markers in main.c, eventually
 - Loader uses raw vtable offsets into EFI protocols (`(char*)sfs+8`,
   `file+56` etc.) — spec-fixed but fragile; keep FW1..FW5 wrappers.
 - Serial log greps: strip ANSI escapes before matching.
+- HOST IS WINDOWS (+WSL2): host sleep/hibernate freezes ALL processes with
+  no log trace; on resume uptime reads low while old PIDs persist
+  (incident 2026-08-22 ~11:53→14:03). Host "sleep after 5 min plugged in"
+  was the culprit — now disabled by user. Watchdog hardened for this:
+  900 s threshold + two-strike debounce (cold starts post-resume look
+  stalled but are fine). Windows Update auto-restart would kill WSL
+  entirely — disable scheduled restarts for true week-long runs.
 - Stale-object danger: after changing kernel sources, rebuild clean; a boot
   log older than its binary is worthless (this bit during the Go era).
 - QEMU TCG supports AVX2 with `-cpu max`; irrelevant post-ISA-retirement.
@@ -167,3 +191,37 @@ chars issue. Do not resurrect; kept here only so future agents don't dig.
    mkpefi shim-only; root-cause loader regression (stale log vs
    LocateProtocol); gate = KERNEL-OK + out 0x28 + 'E'.
 3. Proceed Phase 2 onward only while gates stay green.
+
+**QA INTAKE NOW BINDING**: before any commit, read
+/home/cyr/kernel-lane-verify/verify/FINDINGS.txt — fix BLOCKER/MAJOR items
+against this repo first (or rebut in MEMORY.md). Current open BLOCKERs on
+MAIN dirty tree (as of 18:15): #11 ports.cc ring advance-before-read,
+#1 kernsvc getenv() breaks freestanding build, #2 v1.1 reply framing
+diverges across kernsvc/login/fs — canonical header is {op,seq,uid,rname}
+24-byte form per abi/ABI.md. See FINDINGS.txt for details.
+
+**CROSS-LANE CONTRACT NOTES (binding until ABI v1.1 review)**: lane
+SERVICES pinned concrete instantiations in services/ABI-NOTES.md that
+MAINLINE MUST mirror exactly: (a) §3 block window uses naturally-aligned
+offsets — magic@0x00 blk_size@0x04 num_blocks@0x08 next_req_id@0x10
+pad@0x14 op@0x18 lba@0x20 count@0x28 pad@0x2c off@0x30 done_req_id@0x38
+status@0x3c; guest scratch at off=0x1000; min window 0x2000; fs session
+needs CAP_DEVMAN grant at boot. (b) User-server reply convention until
+reply_to lands in v2: client inbox port named <role>.<nssalt> ≤15 chars,
+request carries {op,seq,inboxLen,inbox,payload}, server caches reply book.
+(c) FS port protocol ops 1-9 + status codes per ABI-NOTES §3 — kernel
+preview1 route must translate onto these same ops. Read the full file
+before touching kernsvc/fs framing.
+
+**ABI v1.1 RATIFIED — master b9263a2 (2026-08-22).** All port datagrams:
+{u16 op,u16 seq,u32 uid,char rname[16]} payload@24; uid kernel-stamped on
+send (spoof-proof); rname = requester reply-inbox, empty = synchronous.
+§3 block offsets pinned (scratch@0x1000, min window 0x2000); managed-
+runtime guests use kern_blk_read/write imports. §7 ops now: LIST CAPS
+KILL SPAWN LOGIN SETCONF (+devman ENUM, power REBOOT/OFF); bit7=CAP_CONF;
+abi_ver custom section (byte 0x01) mandatory per module. §11 = v2 roadmap
+(reply caps kern_port_reply one-shot; LIST/CAPS gating Phase 10; IRQ arms
+post-P9; §9 class layouts). NOTE b9263a2 also carried MAINLINE's staged
+8-opcode retirement deletions (core/vm/, programs/demo.*, tools/vasm
+go.mod+main.go) — intended by Phase 5, just bundled early. All four lane
+worktrees notified via their MEMORY.md to merge master before next commit.

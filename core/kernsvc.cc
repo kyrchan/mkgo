@@ -21,26 +21,37 @@ static void put32(uint8_t *p, uint32_t v) {
 
 namespace {
 /* single kernel thread: file-scope reply route is safe */
-struct reply_route { uint32_t sid; int h; };
-reply_route g_rt;
+char g_rname[17];
 }
 
 static void kernsvc_reply(const uint8_t *data, uint32_t len) {
-    extern void ports_kernel_enqueue(uint32_t sid, int h, const void *data,
-                                     uint32_t len);
-    ports_kernel_enqueue(g_rt.sid, g_rt.h, data, len);
+    extern bool ports_enqueue_by_name(const char *, const void *, uint32_t);
+    if (!g_rname[0])
+        return; /* sync callers read via _fsreq buffer instead */
+    ports_enqueue_by_name(g_rname, data, len);
 }
 
 void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
                       const uint8_t *data, uint32_t len) {
-    g_rt.sid = from_sid;
-    g_rt.h = reply_h;
-    if (len < 4)
+    (void)reply_h;
+    /* framing: {u16 op,u16 seq,u32 uid,char rname[16],payload} */
+    if (len < 24)
         return;
     uint16_t op = get16(data);
     uint16_t seq = get16(data + 2);
-    const uint8_t *payload = data + 4;
-    uint32_t plen = len - 4;
+    for (int i = 0; i < 16; i++) {
+        g_rname[i] = (char)data[8 + i];
+    }
+    g_rname[16] = 0;
+    const uint8_t *payload = data + 24;
+    uint32_t plen = len - 24;
+    console_puts("[ksvc] ep=");
+    console_puts(epname);
+    console_puts(" op=");
+    console_hex64(op);
+    console_puts(" rname=");
+    console_puts(g_rname);
+    console_puts("\n");
 
     static uint8_t rbuf[4096];
     uint32_t rn = 0;
@@ -131,6 +142,47 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
             put16(rbuf, 4);
             put16(rbuf + 2, seq);
             put32(rbuf + 4, (uint32_t)nsid);
+            kernsvc_reply(rbuf, 8);
+            return;
+        }
+        case 5: { /* LOGIN {char name[16], u32 uid, u32 capmask}
+                     callable ONLY by the owner of the "login" port (v1.1) */
+            if (!sched_is_login(from_sid)) {
+                console_puts("[audit] sid=");
+                console_hex64(from_sid);
+                console_puts(" op=LOGIN reason=cap target=registry\n");
+                put16(rbuf, 5);
+                put16(rbuf + 2, seq);
+                put32(rbuf + 4, 0xFFFFFFFFu);
+                kernsvc_reply(rbuf, 8);
+                return;
+            }
+            char tname[17];
+            int q = 0;
+            for (; q < 16 && payload[q]; q++)
+                tname[q] = (char)payload[q];
+            tname[q] = 0;
+            uint32_t nuid = payload[16] | (payload[17] << 8) |
+                            (payload[18] << 16) | ((uint32_t)payload[19] << 24);
+            uint32_t nmask = payload[20] | (payload[21] << 8) |
+                             (payload[22] << 16) | ((uint32_t)payload[23] << 24);
+            int tsid = sched_session_by_name(tname);
+            console_puts("[ksvc] LOGIN target='");
+            console_puts(tname);
+            console_puts("' tsid=");
+            console_hex64((uint64_t)(int64_t)tsid);
+            console_puts("\n");
+            if (tsid < 0) {
+                put16(rbuf, 5);
+                put16(rbuf + 2, seq);
+                put32(rbuf + 4, 0xFFFFFFFFu);
+                kernsvc_reply(rbuf, 8);
+                return;
+            }
+            sched_set_identity((uint32_t)tsid, nuid, nmask);
+            put16(rbuf, 5);
+            put16(rbuf + 2, seq);
+            put32(rbuf + 4, 0);
             kernsvc_reply(rbuf, 8);
             return;
         }
