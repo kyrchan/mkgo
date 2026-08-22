@@ -206,3 +206,12 @@ func (fr *fatReader) readFile(path string) ([]byte, error) {
 	}
 	return data[:e.size], nil
 }
+
+// mustFind is a test helper: path lookup that fails the test when absent.
+func mustFind(t interface{ Fatalf(string, ...any) }, fr *fatReader, path string) rdEntry {
+	e, ok, err := fr.find(path)
+	if err != nil || !ok {
+		t.Fatalf("find %s: ok=%v err=%v", path, ok, err)
+	}
+	return e
+}
