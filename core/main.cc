@@ -38,19 +38,34 @@ extern "C" EFI_STATUS __attribute__((ms_abi)) efi_main(EFI_HANDLE image_handle,
                             'l','o','g','i','n','.','w','a','s','m',0};
     static CHAR16 pfs[] = {'b','o','o','t','\\','m','o','d','u','l','e','s','\\',
                            'f','s','.','w','a','s','m',0};
+    static CHAR16 pini[] = {'b','o','o','t','\\','m','o','d','u','l','e','s','\\',
+                            'i','n','i','t','.','w','a','s','m',0};
+    static CHAR16 psh[] = {'b','o','o','t','\\','m','o','d','u','l','e','s','\\',
+                           's','h','e','l','l','.','w','a','s','m',0};
+    static CHAR16 pconf[] = {'e','t','c','\\','i','n','i','t','.','c','o','n','f',0};
     static CHAR16 papp2[] = {'v','m','\\','a','p','p','2',0};
-    void *cimg = 0, *limg = 0, *fimg = 0, *a2img = 0;
-    uint64_t clen = 0, llen = 0, flen = 0, a2len = 0;
+    void *cimg = 0, *limg = 0, *fimg = 0, *a2img = 0, *iimg = 0, *shimg = 0,
+         *cfimg = 0;
+    uint64_t clen = 0, llen = 0, flen = 0, a2len = 0, ilen = 0, shlen = 0,
+             cflen = 0;
     load_esp_file(image_handle, systab, pcon, &cimg, &clen);
     load_esp_file(image_handle, systab, plog, &limg, &llen);
     load_esp_file(image_handle, systab, pfs, &fimg, &flen);
-    load_esp_file(image_handle, systab, papp2, &a2img, &a2len);
+    load_esp_file(image_handle, systab, pini, &iimg, &ilen);
+    load_esp_file(image_handle, systab, psh, &shimg, &shlen);
+    load_esp_file(image_handle, systab, pconf, &cfimg, &cflen);
     g_bi.mod_console = (uint64_t)(uintptr_t)cimg;
     g_bi.mod_console_len = clen;
     g_bi.mod_login = (uint64_t)(uintptr_t)limg;
     g_bi.mod_login_len = llen;
     g_bi.mod_fs = (uint64_t)(uintptr_t)fimg;
     g_bi.mod_fs_len = flen;
+    g_bi.mod_init = (uint64_t)(uintptr_t)iimg;
+    g_bi.mod_init_len = ilen;
+    g_bi.mod_shell = (uint64_t)(uintptr_t)shimg;
+    g_bi.mod_shell_len = shlen;
+    g_bi.conf = (uint64_t)(uintptr_t)cfimg;
+    g_bi.conf_len = cflen;
     g_bi.prog2 = (uint64_t)(uintptr_t)a2img;
     g_bi.prog2_len = a2len;
 

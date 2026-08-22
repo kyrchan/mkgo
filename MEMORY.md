@@ -241,3 +241,10 @@ post-P9; §9 class layouts). NOTE b9263a2 also carried MAINLINE's staged
 8-opcode retirement deletions (core/vm/, programs/demo.*, tools/vasm
 go.mod+main.go) — intended by Phase 5, just bundled early. All four lane
 worktrees notified via their MEMORY.md to merge master before next commit.
+
+**PHASE 5 GATE GREEN (da43b41 + 6a22fec) — Phases 0-5 ALL GREEN.**
+NEXT = Phase 7 (interactive userland). COORDINATION NOTE: shell/init/
+console/login .wasm binaries are LANE SERVICES deliverables — merge
+lane/services into master BEFORE starting Phase 7 (15 commits ahead,
+v1.1-conformed per VERIFY ec69edd). After merge, run make test-g* style
+integration with real service modules instead of stubs.

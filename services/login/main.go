@@ -6,6 +6,8 @@ package main
 
 import (
 	"os"
+
+	lib "kernel.services/lib"
 )
 
 //go:wasmimport wasi_snapshot_preview1 sched_yield
@@ -22,6 +24,10 @@ func port_send(h int32, buf *byte, len uint32) int32
 
 //go:wasmimport kernel kern_port_recv
 func port_recv(h int32, buf *byte, cap uint32) int32
+
+//go:wasmimport kernel kern_focus_set
+func kern_focus_set(h int32) int32
+
 
 type user struct {
 	name string
@@ -62,6 +68,10 @@ func handleAuth(req []byte) []byte {
 				os.Stdout.WriteString(itoa(int(u.uid)))
 				os.Stdout.WriteString("\n")
 				verdict = []byte{0, 0}
+				// hand keyboard focus to the shell
+				if sh := port_bind(&cstr("shell")[0], 5); sh >= 0 {
+					kern_focus_set(sh)
+				}
 			} else {
 				verdict = []byte{0xFE, 0xFF} // registry refused
 			}
@@ -169,22 +179,87 @@ func itoa(v int) string {
 
 func main() {
 	os.Stdout.WriteString("[login] ready\n")
-	h := port_create(&cstr("login")[0], 5)
+	port_create(&cstr("login")[0], 5)
+
+	// input-driven authentication: type user + password at the console
+	users := map[string]string{
+		"admin": "admin",
+		"u1":    "u1",
+		"u2":    "u2",
+	}
+	uids := map[string]uint32{"admin": 0, "u1": 1, "u2": 2}
+	capsm := map[string]uint32{"admin": 0x7F}
+
+	state := 0 // 0=user, 1=password
+	user, pw := "", ""
+	port_create(&cstr("login")[0], 5)
+	h := port_bind(&cstr("login")[0], 5)
 	buf := make([]byte, 512)
 	idle := 0
-	for idle < 1500000 {
-		if h >= 0 {
-			n := port_recv(h, &buf[0], uint32(len(buf)))
-			if n > 0 {
-				idle = 0
-				if resp := handleAuth(buf[:n]); len(resp) > 0 {
-					port_send(h, &resp[0], uint32(len(resp)))
-				}
+	lib.ConsoleOut("\nlogin: ")
+	line := make([]byte, 0, 64)
+	for i := 0; i < 1200000; i++ {
+		/* legacy port-based creds (testers) alongside typed input */
+		if n := port_recv(h, &buf[0], uint32(len(buf))); n > 0 {
+			idle = 0
+			if resp := handleAuth(buf[:n]); len(resp) > 0 {
+				port_send(h, &resp[0], uint32(len(resp)))
+			}
+			continue
+		}
+		recs := lib.RecvInput(16)
+		if len(recs) == 0 {
+			idle++
+			lib.SchedYield()
+			continue
+		}
+		for _, r := range recs {
+			if r.Kind != 1 {
 				continue
 			}
+			switch r.CP {
+			case '\n':
+				lib.ConsoleOut("\n")
+				if state == 0 {
+					user = string(line)
+					state = 1
+					pw = ""
+					lib.ConsoleOut("password: ")
+					line = line[:0]
+				} else {
+					pw = string(line)
+					if pwt, ok := users[user]; ok && pwt == pw {
+						os.Stdout.WriteString("[login] '" + user +
+							"' authenticated\n")
+						doLogin("shell", uids[user], capsm[user])
+						if sh := port_bind(&cstr("shell")[0], 5); sh >= 0 {
+							kern_focus_set(sh)
+						}
+						os.Stdout.WriteString("[login] session for " +
+							user + "\n")
+						return
+					}
+					os.Stdout.WriteString("[login] denied user=" +
+						user + " pwlen=" + itoa(len(pw)) + "\n")
+					state = 0
+					user = ""
+					lib.ConsoleOut("login: ")
+				}
+				line = line[:0]
+			case 8, 127:
+				if len(line) > 0 {
+					line = line[:len(line)-1]
+				}
+			default:
+				if r.CP >= 32 && r.CP < 127 && len(line) < 60 {
+					line = append(line, byte(r.CP))
+					if state == 0 {
+						lib.ConsoleOut(string(byte(r.CP)))
+					}
+				}
+			}
 		}
-		idle++
-		sched_yield()
 	}
-	os.Stdout.WriteString("[login] idle exit\n")
+	os.Stdout.WriteString("[login] done\n")
 }
+

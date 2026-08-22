@@ -35,21 +35,16 @@ void kmain(const struct boot_info *bi) {
     mm_init(&bm);
     paging_identity_init();
 
-    if (!bi->prog) {
-        console_puts("[kmain] no guest program; halting\n");
-        cpu_halt();
-    }
-
     const uint8_t *prog = (const uint8_t *)(uintptr_t)bi->prog;
     uint64_t prog_len = bi->prog_len;
 
-    if (!is_wasm(prog, prog_len)) {
+    if (prog && !is_wasm(prog, prog_len)) {
         console_puts("[kmain] refusing non-wasm payload\n");
         cpu_halt();
     }
 
-    /* ---- session mode ----*/
-    console_puts("[kmain] wasm mode; spawning boot services\n");
+    /* ---- session mode (init-driven; payload slots optional) ----*/
+    console_puts("[kmain] session mode\n");
     sched_init();
     ports_init();
     fsroute_init();
@@ -59,32 +54,82 @@ void kmain(const struct boot_info *bi) {
     const uint8_t *limg = (const uint8_t *)(uintptr_t)bi->mod_login;
     const uint8_t *fimg = (const uint8_t *)(uintptr_t)bi->mod_fs;
 
-    if (fimg && bi->mod_fs_len) {
-        int sfs = sched_spawn_named("fs", fimg, bi->mod_fs_len, 0, 0);
-        if (sfs > 0 && devblk_attach((uint32_t)sfs) != 0)
-            console_puts("[kmain] WARNING: block window not attached\n");
-    } else {
-        console_puts("[kmain] WARNING: no fs module on ESP\n");
-    }
-    if (cimg && bi->mod_console_len)
-        sched_spawn_named("console", cimg, bi->mod_console_len, 0, 0);
-    else
-        console_puts("[kmain] WARNING: no console module on ESP\n");
-    if (limg && bi->mod_login_len)
-        sched_spawn_named("login", limg, bi->mod_login_len, 0, 0);
-    else
-        console_puts("[kmain] WARNING: no login module on ESP\n");
+    (void)cimg;
+    (void)limg;
+    (void)fimg;
 
-    /* payload slots: argv0 == session name */
-    const uint8_t *progB =
-        bi->prog2 ? (const uint8_t *)(uintptr_t)bi->prog2 : prog;
-    uint64_t progB_len = bi->prog2 ? bi->prog2_len : prog_len;
-    int sa = sched_spawn_named(
-        "ppa", prog, prog_len, 0,
-        SCHED_CAP_KILL | SCHED_CAP_DEVMAN | SCHED_CAP_POWER | SCHED_CAP_SPAWN);
-    int sb = sched_spawn_named("ppb", progB, progB_len, 0, 0);
-    (void)sa;
-    (void)sb;
+    /* kernel spawns EXACTLY ONE session: init.wasm (admin caps).
+     * init.conf rides along as argv[1] (ESP preload). */
+    const char *iargv[3] = {"init", 0, 0};
+    static char confz[4096];
+    if (bi->conf && bi->conf_len) {
+        uint64_t n = bi->conf_len < sizeof(confz) - 1 ? bi->conf_len
+                                                      : sizeof(confz) - 1;
+        const uint8_t *cp = (const uint8_t *)(uintptr_t)bi->conf;
+        for (uint64_t i = 0; i < n; i++)
+            confz[i] = (char)cp[i];
+        confz[n] = 0;
+        iargv[1] = confz;
+    } else {
+        console_puts("[kmain] WARNING: no init.conf on ESP\n");
+    }
+
+    devblk_init();
+    devblk_attach();
+
+    /* preload service modules so registry SPAWN can resolve them */
+    {
+        const uint8_t *c_ = (const uint8_t *)(uintptr_t)bi->mod_console;
+        const uint8_t *l_ = (const uint8_t *)(uintptr_t)bi->mod_login;
+        const uint8_t *f_ = (const uint8_t *)(uintptr_t)bi->mod_fs;
+        const uint8_t *s_ = (const uint8_t *)(uintptr_t)bi->mod_shell;
+        if (c_) sched_preload_image("console", c_, bi->mod_console_len);
+        if (l_) sched_preload_image("login", l_, bi->mod_login_len);
+        if (f_) sched_preload_image("fs", f_, bi->mod_fs_len);
+        if (s_) sched_preload_image("shell", s_, bi->mod_shell_len);
+    }
+
+    const uint8_t *iimg = (const uint8_t *)(uintptr_t)bi->mod_init;
+    if (iimg && bi->mod_init_len) {
+        /* init-driven mode: kernel spawns ONLY init */
+        sched_spawn_named_argv(
+            "init", iimg, bi->mod_init_len, 0,
+            SCHED_CAP_KILL | SCHED_CAP_DEVMAN | SCHED_CAP_POWER |
+                SCHED_CAP_SPAWN | SCHED_CAP_FOCUS | SCHED_CAP_FSADM |
+                SCHED_CAP_CONF,
+            iargv, iargv[1] ? 2 : 1);
+    } else {
+        /* legacy gate mode: dual payload slots with admin caps */
+        console_puts("[kmain] legacy payload-slot mode\n");
+        if (!prog) {
+            console_puts("[kmain] no init and no payloads; halting\n");
+            cpu_halt();
+        }
+        const uint64_t ADMIN = SCHED_CAP_KILL | SCHED_CAP_DEVMAN |
+                               SCHED_CAP_POWER | SCHED_CAP_SPAWN;
+        /* boot services from ESP when present (Phase-4 style) */
+        const uint8_t *c_ = (const uint8_t *)(uintptr_t)bi->mod_console;
+        const uint8_t *l_ = (const uint8_t *)(uintptr_t)bi->mod_login;
+        const uint8_t *f_ = (const uint8_t *)(uintptr_t)bi->mod_fs;
+        if (c_) sched_spawn_named("console", c_, bi->mod_console_len, 0, 0);
+        if (l_) sched_spawn_named("login", l_, bi->mod_login_len, 0, 0);
+        int sfs = -1;
+        if (f_) {
+            sfs = sched_spawn_named("fs", f_, bi->mod_fs_len, 0, 0);
+            if (sfs > 0)
+                devblk_attach();
+        }
+
+        /* two payload slots; app2 defaults to another copy of app */
+        const uint8_t *progB = bi->prog2
+                                   ? (const uint8_t *)(uintptr_t)bi->prog2
+                                   : prog;
+        uint64_t progB_len = bi->prog2 ? bi->prog2_len : prog_len;
+        int sa = sched_spawn_named("ppa", prog, prog_len, 0, ADMIN);
+        int sb = sched_spawn_named("ppb", progB, progB_len, 0, 0);
+        (void)sa;
+        (void)sb;
+    }
 
     sched_run();
     console_puts("[kmain] KERNEL-OK all subsystems up, guest ran clean\n");

@@ -2,6 +2,7 @@
 #include "lib.h"
 #include "mm.h"
 #include "devblk.h"
+#include "input.h"
 #include "engine.h"
 #include "wasi_glue.h"
 #include "plat.h"
@@ -133,6 +134,13 @@ extern "C" void sched_session_main(void) {
 
 int sched_spawn_named(const char *name, const uint8_t *blob, uint64_t len,
                       uint32_t uid, uint64_t capmask) {
+    const char *defargv[2] = {name, 0};
+    return sched_spawn_named_argv(name, blob, len, uid, capmask, defargv, 1);
+}
+
+int sched_spawn_named_argv(const char *name, const uint8_t *blob,
+                           uint64_t len, uint32_t uid, uint64_t capmask,
+                           const char *const *argv, int argc) {
     for (int i = 1; i < MAX_SESSIONS; i++) {
         if (sessions[i].state != S_FREE)
             continue;
@@ -159,10 +167,17 @@ int sched_spawn_named(const char *name, const uint8_t *blob, uint64_t len,
             s->eng_live = false;
             return -1;
         }
-        /* per-session WASI state: argv0 = session name */
+        /* per-session WASI state: argv from caller */
         for (int k = 0; k < 16; k++)
             s->wctx.argv[k] = 0;
-        s->wctx.argv[0] = s->name;
+        int na = 0;
+        if (argv) {
+            for (; na < argc && na < 14; na++)
+                s->wctx.argv[na] = argv[na];
+        } else {
+            s->wctx.argv[0] = s->name;
+            na = 1;
+        }
         s->wctx.exited = false;
         s->wctx.exit_code = 0;
         for (int k = 0; k < SCHED_MAX_FDS; k++)
@@ -275,7 +290,10 @@ static bool all_dead(void) {
 }
 
 void sched_run(void) {
+    extern void devblk_poll(void);
+    extern void input_poll(void);
     while (!all_dead()) {
+        input_poll();
         devblk_poll();
         int picked = -1;
         for (uint32_t k = 0; k < MAX_SESSIONS; k++) {

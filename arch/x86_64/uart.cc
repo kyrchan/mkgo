@@ -33,3 +33,11 @@ void console_hex64(uint64_t v) {
     for (int i = 60; i >= 0; i -= 4)
         console_putc(hexd[(v >> i) & 0xF]);
 }
+
+int console_rx_ready(void) {
+    return (inb(COM1 + 5) & 0x01) ? 1 : 0;
+}
+
+int console_rx_byte(void) {
+    return inb(COM1);
+}

@@ -1,0 +1,20 @@
+You are LANE=TOOLS (extended mandate). Charter deliverables are COMPLETE.
+New mission, same scope rules: tools/ and README.md ONLY.
+
+Extended deliverables, in order:
+1. tools/img: VMDK flat-descriptor writer (raw img -> descriptor+extent
+   files, VMware-bootable) and VDI header writer (VirtualBox), each with
+   `go test` golden-file coverage. Phase 12 depends on these.
+2. tools/hvtest: headless test scaffolding — scripts that boot the SAME
+   disk.img under qemu-system-x86_64 (existing), VBoxManage headless
+   (serial pipe to unix socket), and vmrun (serial to file), then assert
+   identical gate strings; document prerequisites honestly where a tool
+   is not installed.
+3. README.md refresh: add fleet/lanes overview, ABI v1.1 pointer, and a
+   "writing a Go service module" walkthrough using services/fs as the
+   worked example (read-only reference).
+
+Never stop while productive work remains; switch deliverables when
+blocked >10 min. When all extended deliverables are built, tested,
+committed and nothing remains in scope, final line exactly:
+ALL PHASES COMPLETE

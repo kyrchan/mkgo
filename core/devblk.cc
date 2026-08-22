@@ -42,9 +42,9 @@ void devblk_init(void) {
     dev.pending_sid = -1;
 }
 
-int devblk_attach(uint32_t sid) {
+int devblk_attach(void) {
     if (dev.used)
-        return -1;
+        return 0; /* idempotent */
     if (!dev.disk) {
         dev.nblocks = 16 * 1024 * 1024ULL / BLK_SECT; /* 16 MiB RAM disk */
         dev.disk = (uint8_t *)mm_alloc(dev.nblocks * BLK_SECT, 4096);
@@ -56,10 +56,7 @@ int devblk_attach(uint32_t sid) {
             dev.disk[i] = 0;
     }
     dev.used = true;
-    dev.sid = sid;
-    console_puts("[devblk] ramdisk ready sid=");
-    console_hex64(sid);
-    console_puts(" blocks=");
+    console_puts("[devblk] ramdisk ready blocks=");
     console_hex64(dev.nblocks);
     console_puts("\n");
     return 0;

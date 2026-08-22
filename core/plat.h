@@ -14,6 +14,8 @@ void console_init(void);
 void console_putc(char c);
 void console_puts(const char *s);
 void console_hex64(uint64_t v);
+int  console_rx_ready(void); /* 1 = byte pending on serial */
+int  console_rx_byte(void); /* blocking only if rx_ready said so */
 
 /* cpu */
 void cpu_dump_features(void);

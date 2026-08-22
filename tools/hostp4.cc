@@ -54,8 +54,15 @@ static uint8_t *slurp(const char *path, uint64_t *len) {
     return b;
 }
 
+static int p7mode = 0;
+
 int main(int argc, char **argv) {
-    if (argc != 6) {
+    if (argc >= 2 && !strcmp(argv[1], "-p7")) {
+        p7mode = 1;
+        argv++;
+        argc--;
+    }
+    if (argc != 6 && !(p7mode && argc == 3)) {
         fprintf(stderr, "usage: hostp5 console.wasm login.wasm fs.wasm app.wasm app2.wasm\n");
         return 2;
     }
@@ -78,14 +85,29 @@ int main(int argc, char **argv) {
     uint8_t *a = slurp(argv[4], &al);
     uint8_t *b = slurp(argv[5], &bl);
 
-    int sfs = sched_spawn_named("fs", f, fl, 0, 0);
-    if (sfs > 0)
-        devblk_attach((unsigned)sfs);
-    sched_spawn_named("console", c, cl, 0, 0);
-    sched_spawn_named("login", l, ll, 0, 0);
-    sched_spawn_named("ppa", a, al, 0,
-                      0x1 | 0x2 | 0x4 | 0x40 /*KILL|DEVMAN|POWER|SPAWN*/);
-    sched_spawn_named("ppb", b, bl, 0, 0);
+    if (!p7mode) {
+        int sfs = sched_spawn_named("fs", f, fl, 0, 0);
+        if (sfs > 0)
+            devblk_attach();
+        sched_spawn_named("console", c, cl, 0, 0);
+        sched_spawn_named("login", l, ll, 0, 0);
+        sched_spawn_named("ppa", a, al, 0, 0x5F);
+        sched_spawn_named("ppb", b, bl, 0, 0);
+    } else {
+        devblk_attach();
+        /* argv: console login fs init shell */
+        sched_preload_image("console", c, cl);
+        sched_preload_image("login", l, ll);
+        sched_preload_image("fs", f, fl);
+        sched_preload_image("shell", b, bl); /* b=shell blob */
+        static char confz[4096];
+        snprintf(confz, sizeof(confz),
+                 "console console.wasm 0\nfs fs.wasm 0\n"
+                 "login login.wasm 8\nshell shell.wasm 8\n");
+        const char *iargv[3] = {"init", confz, 0};
+        sched_spawn_named_argv("init", a, al, 0,
+                               0x1 | 0x40 | 0x80 | 0x8, iargv, 2);
+    }
     sched_run();
     fprintf(stderr, "[host] scheduler drained\n");
     return 0;

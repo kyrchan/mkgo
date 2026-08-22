@@ -33,7 +33,7 @@ func main() {
 	}
 	buf := make([]byte, 4096)
 	idle := 0
-	for idle < 1500000 {
+	for idle < 12000000 {
 		if h >= 0 {
 			n := port_recv(h, &buf[0], uint32(len(buf)))
 			if n > 0 {

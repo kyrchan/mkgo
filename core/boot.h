@@ -18,6 +18,13 @@ struct boot_info {
     uint64_t mod_login_len;
     uint64_t mod_fs;
     uint64_t mod_fs_len;
+    uint64_t mod_init;
+    uint64_t mod_init_len;
+    uint64_t mod_shell;
+    uint64_t mod_shell_len;
+    /* \etc\init.conf preloaded (NUL-terminated via conf_z in main.cc) */
+    uint64_t conf;
+    uint64_t conf_len;
     /* optional second payload slot (/vm/app2); falls back to prog */
     uint64_t prog2;
     uint64_t prog2_len;

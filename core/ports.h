@@ -21,6 +21,7 @@ int  port_send(uint32_t sid, int h, const void *data, uint32_t len); /* 0|-1|-2 
 int  port_recv(uint32_t sid, int h, void *out, uint32_t cap);        /* >0|0|-1 */
 void ports_kernel_enqueue(uint32_t sid, int h, const void *data, uint32_t len);
 bool ports_enqueue_by_name(const char *name, const void *data, uint32_t len);
+int  ports_owner_of_handle(uint32_t sid, int h);
 
 #ifdef __cplusplus
 }

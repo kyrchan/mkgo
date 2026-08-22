@@ -328,9 +328,6 @@ static int fs_roundtrip(uint32_t reqlen) {
 #endif
         return -1;
     }
-#ifdef HOST_BUILD
-    fprintf(stderr, "[rt] step=enqueue\n");
-#endif
     if (!ports_enqueue_by_name("fs", fsreq, reqlen)) {
 #ifdef HOST_BUILD
         fprintf(stderr, "[rt] enqueue FAIL\n");
@@ -535,6 +532,25 @@ m3ApiRawFunction(kern_blk_write) {
                           cnt < 0 ? 0 : (uint32_t)cnt));
 }
 
+/* input/focus (abi/ABI.md §4) */
+extern "C" int input_recv(uint32_t sid, void *out, uint32_t cap);
+extern "C" int input_focus_set(uint32_t caller_sid, int handle);
+
+static int irc;
+m3ApiRawFunction(kern_input_recv) {
+    m3ApiReturnType(int32_t)
+    m3ApiGetArgMem(void *, buf)
+    m3ApiGetArg(int32_t, cap)
+    m3ApiReturn(input_recv(sched_current_sid(), buf,
+                           cap < 0 ? 0 : (uint32_t)cap));
+}
+
+m3ApiRawFunction(kern_focus_set) {
+    m3ApiReturnType(int32_t)
+    m3ApiGetArg(int32_t, h)
+    m3ApiReturn(input_focus_set(sched_current_sid(), h));
+}
+
 struct link_entry2 {
     const char *name;
     M3RawCall fn;
@@ -546,6 +562,8 @@ static const link_entry2 kernlinks[] = {
     {"kern_port_recv", kern_port_recv},
     {"kern_blk_read", kern_blk_read},
     {"kern_blk_write", kern_blk_write},
+    {"kern_input_recv", kern_input_recv},
+    {"kern_focus_set", kern_focus_set},
 };
 #define NKERN (sizeof(kernlinks) / sizeof(kernlinks[0]))
 
@@ -555,6 +573,25 @@ static const link_entry2 kernlinks[] = {
  * None of them implement behavior beyond that. */
 
 #define WASI_EBADF 8
+
+/* poll_oneoff: return 0 events immediately (no timers in v1). This keeps
+ * Go runtimes alive through fatal paths that usleep via poll. */
+m3ApiRawFunction(wasi_poll_oneoff) {
+    m3ApiReturnType(int32_t)
+    m3ApiGetArg(int32_t, subcount)
+    m3ApiGetArgMem(uint32_t *, events)
+    (void)subcount;
+    /* approximate a sleep: surrender several quanta so time passes and
+     * other sessions run; v1 has no real timers */
+    {
+        extern void sched_yield_current(void);
+        for (int i = 0; i < 48; i++)
+            sched_yield_current();
+    }
+    if (events && mem_ok(runtime, events, 4))
+        *events = 0;
+    m3ApiReturn(WASI_ESUCCESS);
+}
 
 static const void *stub_ret_i32(IM3Runtime, IM3ImportContext, uint64_t *_sp,
                                 void *) {
@@ -592,7 +629,7 @@ static const struct link_entry stubs[] = {
     {"fd_fdstat_get", stub_ebadf},
     {"fd_fdstat_set_flags", stub_ok},
     {"fd_close", stub_ok},
-    {"poll_oneoff", stub_ret_i32},        /* ENOSYS: no timers/events yet */
+    {"poll_oneoff", wasi_poll_oneoff},    /* immediate: 0 events */
 };
 #define NSTUBS (sizeof(stubs) / sizeof(stubs[0]))
 

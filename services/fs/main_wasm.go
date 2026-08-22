@@ -83,6 +83,25 @@ func fsReq(l int32, cap_ int32) int32 {
 	return int32(len(resp))
 }
 
+// seedEtc provisions /etc/motd on freshly formatted disks.
+func seedEtc() {
+	mkdirPath("/etc")
+	resp := dispatch(opOpen, 0, "/etc/motd",
+		[]byte{0, 0, 0, 0, 1, 0, 0, 0})
+	if g16(resp, 0) != 0 {
+		os.Stdout.WriteString("[fs] motd seed open failed\n")
+		return
+	}
+	fh := uint32(g32(resp, 2))
+	text := []byte("Welcome to the capability microkernel.\n")
+	wp := make([]byte, 8+len(text))
+	le32(wp, 0, int(fh))
+	le32(wp, 4, len(text))
+	copy(wp[8:], text)
+	dispatch(opWrite, 0, "", wp)
+	dispatch(opClose, 0, "", []byte{byte(fh), 0, 0, 0})
+}
+
 func sessionName() string {
 	var argc int32
 	var bl int32
@@ -118,11 +137,12 @@ func main() {
 	if string(sect[54:58]) != "FAT16   " {
 		fmtDisk()
 		os.Stdout.WriteString("[fs] ramdisk formatted\n")
+		seedEtc()
 	}
 	os.Stdout.WriteString("[fs] ready\n")
 	buf := make([]byte, 8192)
 	idle := 0
-	for idle < 1500000 {
+	for idle < 700000 {
 		n := port_recv(h, &buf[0], uint32(len(buf)))
 		if n > 0 {
 			resp, rname := handleReq(append([]byte{}, buf[:n]...))

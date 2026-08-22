@@ -33,6 +33,7 @@ CORE_OBJS := $(BUILD)/core/main.o $(BUILD)/core/kmain.o $(BUILD)/core/lib.o \
              $(BUILD)/core/engine.o $(BUILD)/core/wasi_glue.o \
              $(BUILD)/core/sched.o $(BUILD)/core/ports.o $(BUILD)/core/kernsvc.o \
              $(BUILD)/core/ctx.o $(BUILD)/core/devblk.o $(BUILD)/core/fstransport.o \
+             $(BUILD)/core/input.o \
              $(BUILD)/core/fsroute.o
 ARCH_OBJS := $(BUILD)/arch/x86_64/uart.o $(BUILD)/arch/x86_64/cpu.o \
              $(BUILD)/arch/x86_64/traps.o $(BUILD)/arch/x86_64/traps_s.o \
@@ -117,6 +118,19 @@ services/login/login.wasm: services/login/login.wasm.raw
 services/fs/fs.wasm: services/fs/fs.wasm.raw
 	python3 scripts/add_abiver.py $< $@ 1
 
+services/init/init.wasm.raw: $(wildcard services/init/*.go) services/go.mod services/lib/kern.go
+	cd services/init && GOOS=wasip1 GOARCH=wasm go build -o init.wasm.raw .
+	python3 scripts/add_abiver.py $< $@ 1 || true
+
+services/init/init.wasm: services/init/init.wasm.raw
+	python3 scripts/add_abiver.py $< $@ 1
+
+services/shell/shell.wasm.raw: $(wildcard services/shell/*.go) services/go.mod services/lib/kern.go
+	cd services/shell && GOOS=wasip1 GOARCH=wasm go build -o shell.wasm.raw .
+
+services/shell/shell.wasm: services/shell/shell.wasm.raw
+	python3 scripts/add_abiver.py $< $@ 1
+
 build/test_p5a.raw: guests/test_p5a.go
 	cd guests && GOOS=wasip1 GOARCH=wasm go build -o ../$@ test_p5a.go
 build/test_p5a.wasm: build/test_p5a.raw
@@ -188,6 +202,22 @@ $(BUILD)/disk-p5b.img: $(BUILD)/BOOTX64.EFI build/test_p5b.wasm \
 	$(MCOPY) -i $@ build/test_p5b.wasm ::/vm/app
 	$(MCOPY) -i $@ build/test_p5a.wasm ::/vm/app2
 
+# Phase 7 disk: full service set + init.conf, no payload slots
+$(BUILD)/disk-p7.img: $(BUILD)/BOOTX64.EFI services/fs/fs.wasm \
+                      services/console/console.wasm services/login/login.wasm \
+                      services/init/init.wasm services/shell/shell.wasm | $(BUILD)
+	dd if=/dev/zero of=$@ bs=1M count=0 seek=64 status=none
+	$(MFORMAT) -i $@ ::
+	$(MMD) -i $@ ::/EFI ::/EFI/BOOT ::/vm ::/boot ::/boot/modules ::/etc
+	$(MCOPY) -i $@ $(BUILD)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
+	$(MCOPY) -i $@ services/fs/fs.wasm ::/boot/modules/fs.wasm
+	$(MCOPY) -i $@ services/console/console.wasm ::/boot/modules/console.wasm
+	$(MCOPY) -i $@ services/login/login.wasm ::/boot/modules/login.wasm
+	$(MCOPY) -i $@ services/init/init.wasm ::/boot/modules/init.wasm
+	$(MCOPY) -i $@ services/shell/shell.wasm ::/boot/modules/shell.wasm
+	printf 'console console.wasm 0\nfs fs.wasm 0\nlogin login.wasm 8\nshell shell.wasm 8\n' > $(BUILD)/init.conf.tmp
+	$(MCOPY) -i $@ $(BUILD)/init.conf.tmp ::/etc/init.conf
+
 $(BUILD)/VARS.fd:
 	cp $(OVMF_VARS) $@
 
@@ -254,6 +284,20 @@ test-p5b: $(BUILD)/disk-p5b.img $(BUILD)/VARS.fd
 	@grep -q 'KERNEL-OK' $(BUILD)/serial.log && grep -q '\[p5b\] all ok' \
 		$(BUILD)/serial.log && echo "TEST PASS (p5b)" \
 		|| { echo "TEST FAIL (p5b)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -40; exit 1; }
+
+
+# Phase 7 gate: scripted serial input drives login -> shell -> cat /etc/motd
+.PHONY: test-p7
+test-p7: $(BUILD)/disk-p7.img $(BUILD)/VARS.fd
+	bash scripts/run_p7.sh $(BUILD)/serial.log "$(QEMU)" "$(QEMU_ENV)" -- \
+		-drive format=raw,file=$(BUILD)/disk-p7.img $(QEMU_BASE)
+	@grep -q 'focus -> login' $(BUILD)/serial.log \
+		&& grep -q 'Welcome to the capability microkernel' $(BUILD)/serial.log \
+		&& echo "TEST PASS (p7)" \
+		|| { echo "TEST FAIL (p7)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -40; exit 1; }
+
+test-all: test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7
+
 
 clean:
 	rm -rf $(BUILD)

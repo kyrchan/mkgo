@@ -1,4 +1,5 @@
 package main
+import "strings"
 
 // FS logic core — block IO injected via blkRead/blkWrite so tests run on
 // the host. Wire framing: {u16 op,u16 seq,u32 uid,char rname[16],
@@ -451,11 +452,24 @@ func rootFor(uid uint32) string {
 }
 
 func rooted(uid uint32, p string) string {
-	r := rootFor(uid)
 	for len(p) > 0 && p[0] == '/' {
 		p = p[1:]
 	}
+	// /etc is world-readable (ABI v1: readable by all, admin-write only)
+	if p == "etc" || strings.HasPrefix(p, "etc/") {
+		return "/" + p
+	}
+	r := rootFor(uid)
 	return r + p
+}
+
+// writeDenied reports whether uid may not modify system paths.
+func writeDenied(uid uint32, path string) bool {
+	if uid == 0 {
+		return false
+	}
+	lp := lower(path)
+	return lp == "etc" || strings.HasPrefix(lp, "etc/")
 }
 
 func errnoReply(e int, extra ...byte) []byte {
@@ -513,6 +527,13 @@ func handleReq(req []byte) ([]byte, string) {
 }
 
 func dispatch(op int, uid int, path string, payload []byte) []byte {
+	if writeDenied(uint32(uid), path) &&
+		(op == opOpen || op == opWrite || op == opMkdir || op == opDel) {
+		// reads of /etc are allowed; creates/writes/deletes are not
+		if op != opOpen || (len(payload) >= 8 && g32(payload, 4) != 0) {
+			return errnoReply(63)
+		}
+	}
 	if op == opOpen || op == opWrite || op == opMkdir {
 		ensureUserRoot(uint32(uid))
 	}

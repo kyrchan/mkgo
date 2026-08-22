@@ -16,6 +16,7 @@
 #define SCHED_CAP_FSADM  (1ULL << 4)
 #define SCHED_CAP_NETADM (1ULL << 5)
 #define SCHED_CAP_SPAWN  (1ULL << 6)
+#define SCHED_CAP_CONF   (1ULL << 7)
 
 /* per-session WASI state (args, exit, routed-fd table) */
 #define SCHED_MAX_FDS 64
@@ -33,6 +34,9 @@ void sched_init(void);
  * argv0 = session name; argv may be null. Returns sid or -1. */
 int sched_spawn_named(const char *name, const uint8_t *blob, uint64_t len,
                       uint32_t uid, uint64_t capmask);
+int sched_spawn_named_argv(const char *name, const uint8_t *blob,
+                           uint64_t len, uint32_t uid, uint64_t capmask,
+                           const char *const *argv, int argc);
 
 /* Enter the round-robin loop; returns when every session is dead. */
 void sched_run(void);

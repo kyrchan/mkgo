@@ -24,8 +24,8 @@ SENTINEL="ALL PHASES COMPLETE"
 SEED=$(cat "${LANE_SEED_FILE:?}") || exit 1
 CONT=$(cat "${LANE_CONT_FILE:?}") || exit 1
 
-sentinel_in_chunk() { # $1 = chunk file
-    python3 - "$1" <<'PYEOF'
+sentinel_in_chunk() { # $1 = chunk file ; true iff a text event's LAST
+    python3 - "$1" <<'PYEOF'      # non-empty line is exactly the sentinel
 import json, sys
 try:
     for line in open(sys.argv[1], encoding='utf-8', errors='ignore'):
@@ -36,7 +36,10 @@ try:
         if e.get('type') != 'text':
             continue
         t = e.get('part', {}).get('text')
-        if isinstance(t, str) and t.strip() == 'ALL PHASES COMPLETE':
+        if not isinstance(t, str):
+            continue
+        lines = [l.strip() for l in t.strip().splitlines() if l.strip()]
+        if lines and lines[-1] == 'ALL PHASES COMPLETE':
             sys.exit(0)
 except Exception:
     pass

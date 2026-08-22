@@ -23,7 +23,7 @@ extern "C" {
 #endif
 
 void devblk_init(void);
-int  devblk_attach(uint32_t sid); /* give sid a block window; 0 ok */
+int  devblk_attach(void); /* allocate backend; 0 ok */
 void devblk_poll(void);           /* service pending requests (kernel ctx) */
 int  devblk_rw(uint32_t sid, int write, uint64_t lba, void *buf,
                uint32_t count_sectors); /* managed-runtime transport */
