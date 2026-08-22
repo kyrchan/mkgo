@@ -14,7 +14,8 @@ Open MINOR/NOTE watchlist: F5 PTRACE scaffolding · F6 LIST/CAPS ungated ·
 F7 addabiver tests · F8 Yield budget math · F9 stub markers · F14 fan-in
 reply misrouting · F19 rname LStr-vs-fixed16 encoding · F20 host model
 couples to F18 and lacks LOGIN/SETCONF · F21 check_abiver LEB hardening · F25
-fat16 gap-fill stale bytes · F26 SVC fs server lacks uid rooting (MAJOR).
+fat16 gap-fill stale bytes · F26 SVC fs server lacks uid rooting (MAJOR) ·
+F27 fleet.sh stale-pidfile kill hazard (MAJOR).
 
 Closed this round: none (first pass).
 
