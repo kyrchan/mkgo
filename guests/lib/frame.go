@@ -32,8 +32,8 @@ func Get64(b []byte) uint64 {
 	return v
 }
 
-// AppendLStr appends a {u16 len, bytes} length-prefixed string (no NULs
-// anywhere in the ABI).
+// AppendLStr appends a {u16 len, bytes} length-prefixed string (used in
+// payloads; NOT in the canonical header — that uses char[16]).
 func AppendLStr(dst []byte, s string) []byte {
 	dst = append(dst, 0, 0)
 	Put16(dst[len(dst)-2:], uint16(len(s)))
@@ -54,6 +54,61 @@ func LStr(b []byte, off int) (s string, next int, ok bool) {
 	return string(b[off : off+n]), off + n, true
 }
 
+// ---- canonical datagram header (ABI v1.1) ----
+//
+// Every §1 datagram starts:
+//
+//	0x00 u16 op    0x02 u16 seq    0x04 u32 uid    0x08 char rname[16]
+//
+// payload at offset 24. On send the kernel OVERWRITES uid with the
+// sender's registry uid (spoof-proof). rname names the requester-created
+// reply port; empty (all-zero) means synchronous transport (kernel-routed
+// §7 calls reply inline on the sending handle and ignore rname).
+
+const CanonicalHeaderLen = 24
+
+// HeaderView decodes the fixed fields of a datagram.
+type HeaderView struct {
+	Op   uint16
+	Seq  uint16
+	UID  uint32
+	RNam string
+}
+
+func ParseHeader(b []byte) (HeaderView, bool) {
+	if len(b) < CanonicalHeaderLen {
+		return HeaderView{}, false
+	}
+	return HeaderView{
+		Op:   Get16(b[0:]),
+		Seq:  Get16(b[2:]),
+		UID:  Get32(b[4:]),
+		RNam: cstr16(b[8:24]),
+	}, true
+}
+
+// FrameCanonical builds a full datagram: canonical header (uid left 0 —
+// the kernel stamps it) + payload.
+func FrameCanonical(op, seq uint16, rname string, payload []byte) []byte {
+	req := make([]byte, CanonicalHeaderLen, CanonicalHeaderLen+len(payload))
+	Put16(req, op)
+	Put16(req[2:], seq)
+	copy(req[8:24], padName(rname))
+	return append(req, payload...)
+}
+
+// FrameRequest builds an empty-rname canonical frame (§7 sync calls).
+func FrameRequest(op uint16, seq uint16, payload []byte) []byte {
+	return FrameCanonical(op, seq, "", payload)
+}
+
+// padName renders ≤15 chars NUL-padded to 16.
+func padName(s string) []byte {
+	b := make([]byte, 16)
+	copy(b, s)
+	return b
+}
+
 // RPC errors.
 var (
 	ErrNoReply   = errors.New("kern: no reply within budget")
@@ -70,12 +125,9 @@ const DefaultRecvBudget = 200000
 // Client is one session's request/response machinery.
 //
 // Kernel-owned §7 endpoints dispatch inline at send time and enqueue the
-// reply on the sending handle itself (core/kernsvc.cc), so those use
-// Direct mode. User-level servers cannot address the sender's private
-// handle — they follow the lane reply-channel convention instead
-// (services/ABI-NOTES.md): the client owns a uniquely-named inbox port,
-// puts its name in every request, and the server binds it once and
-// reuses that alias to deliver replies. That is Inbox mode.
+// reply on the sending handle itself (empty rname, Direct mode). User-
+// level servers route replies through the requester-declared rname port
+// (Inbox mode, now part of the ratified canonical header).
 type Client struct {
 	k         Kernel
 	inboxName string
@@ -129,14 +181,6 @@ func (c *Client) budget() int {
 	return DefaultRecvBudget
 }
 
-// FrameRequest builds {u16 op, u16 seq, payload} for Direct mode.
-func FrameRequest(op uint16, seq uint16, payload []byte) []byte {
-	req := make([]byte, 4, 4+len(payload))
-	Put16(req, op)
-	Put16(req[2:], seq)
-	return append(req, payload...)
-}
-
 // Call sends an already-framed request on h and polls for the reply with
 // the matching seq on h as well (Direct mode / kernel endpoints).
 func (c *Client) Call(h Handle, req []byte) ([]byte, error) {
@@ -148,7 +192,7 @@ func (c *Client) Call(h Handle, req []byte) ([]byte, error) {
 	for i := 0; i < c.budget(); i++ {
 		n := c.k.PortRecv(h, buf)
 		if n > 0 {
-			if n < 4 {
+			if n < CanonicalHeaderLen {
 				return nil, ErrShort
 			}
 			if Get16(buf[2:4]) == want {
@@ -166,20 +210,17 @@ func (c *Client) Call(h Handle, req []byte) ([]byte, error) {
 	return nil, ErrNoReply
 }
 
-// Request performs one Direct-mode round trip: frames {op,seq,payload},
-// sends on h, waits for the matching-seq reply.
+// Request performs one Direct-mode round trip: frames {op,seq,payload}
+// under the canonical header, sends on h, waits for the matching reply.
 func (c *Client) Request(h Handle, op uint16, payload []byte) ([]byte, error) {
 	return c.Call(h, FrameRequest(op, c.nextSeq(), payload))
 }
 
-// InboxRequest frames {u16 op, u16 seq, u16 inboxLen, inbox, payload} and
-// sends it on h; the reply arrives on this client's own inbox port.
+// InboxRequest frames a canonical-header datagram carrying this client's
+// inbox name in rname and polls its own inbox port for the matching-seq
+// reply.
 func (c *Client) InboxRequest(h Handle, op uint16, payload []byte) ([]byte, error) {
-	req := make([]byte, 4, 4+2+len(c.inboxName)+len(payload))
-	Put16(req, op)
-	Put16(req[2:], c.nextSeq())
-	req = AppendLStr(req, c.inboxName)
-	req = append(req, payload...)
+	req := FrameCanonical(op, c.nextSeq(), c.inboxName, payload)
 	if rc := c.k.PortSend(h, req); rc == StatusErr {
 		return nil, ErrBadHandle
 	}
@@ -192,7 +233,7 @@ func (c *Client) recvMatch() ([]byte, error) {
 	for i := 0; i < c.budget(); i++ {
 		n := c.k.PortRecv(c.inbox, buf)
 		if n > 0 {
-			if n < 4 {
+			if n < CanonicalHeaderLen {
 				return nil, ErrShort
 			}
 			if Get16(buf[2:4]) == want {
@@ -210,11 +251,10 @@ func (c *Client) recvMatch() ([]byte, error) {
 	return nil, ErrNoReply
 }
 
-// ReplyTo resolves a request's reply channel the server side of Inbox
-// mode: bind (once) the client-declared inbox name and remember its
-// alias. Returns the handle replies must be sent on. Servers MUST cache
-// per name — the kernel has no unbind, so re-binding per request would
-// exhaust the 8-handles-per-session budget.
+// ReplyBook resolves a request's reply channel the server side of Inbox
+// mode: bind (once) the client-declared rname port and remember its
+// alias. Servers MUST cache per name — the kernel has no unbind, so
+// re-binding per request would exhaust the 8-handles-per-session budget.
 type ReplyBook struct {
 	k    Kernel
 	byIn map[string]Handle
@@ -224,7 +264,7 @@ func NewReplyBook(k Kernel) *ReplyBook {
 	return &ReplyBook{k: k, byIn: make(map[string]Handle)}
 }
 
-// Bind returns the send-handle for the client inbox named name.
+// Bind returns the send-handle for the client reply port named name.
 func (rb *ReplyBook) Bind(name string) (Handle, error) {
 	if h, ok := rb.byIn[name]; ok {
 		return h, nil
@@ -236,6 +276,9 @@ func (rb *ReplyBook) Bind(name string) (Handle, error) {
 	rb.byIn[name] = h
 	return h, nil
 }
+
+// CStr16 renders a NUL-padded char[16] field.
+func CStr16(s string) []byte { return padName(s) }
 
 func uitoa(v uint64) string {
 	if v == 0 {

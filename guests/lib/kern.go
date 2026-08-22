@@ -54,14 +54,16 @@ const (
 	CapFSAdmin  uint64 = 1 << 4
 	CapNetAdmin uint64 = 1 << 5
 	CapSpawn    uint64 = 1 << 6
+	CapConf     uint64 = 1 << 7 // v1.1: SETCONF right (init.wasm)
 
 	// CapAll is the admin mask ("admin" holds every bit per AGENTS.md).
 	CapAll = CapKill | CapDevman | CapPower | CapFocus |
-		CapFSAdmin | CapNetAdmin | CapSpawn
+		CapFSAdmin | CapNetAdmin | CapSpawn | CapConf
 )
 
 var capNames = [...]string{
-	"kill", "devman", "power", "focus", "fs_admin", "net_admin", "spawn",
+	"kill", "devman", "power", "focus", "fs_admin", "net_admin",
+	"spawn", "conf",
 }
 
 // CapNames renders a capability mask as bit names (unknown bits hex).

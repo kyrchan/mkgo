@@ -220,8 +220,9 @@ type FakeKernel struct {
 	Bus
 
 	Sessions  []*FakeSession
-	Cur       *FakeSession // identity attributed to sends from the test
-	Audit     []string     // captured audit lines
+	Cur       *FakeSession      // identity attributed to sends from the test
+	Audit     []string          // captured audit lines
+	Knobs     map[string]uint64 // applied via SETCONF (v1.1)
 	SpawnHook SpawnFn
 	OnPower   func(op uint16)
 
@@ -290,14 +291,15 @@ func (fk *FakeKernel) PortSend(h Handle, data []byte) int32 {
 	return rc
 }
 
-// dispatch mirrors core/kernsvc.cc decision-for-decision.
+// dispatch mirrors the v1.1 kernel endpoints: canonical datagram header
+// (payload @24), replies under the same header on the sending handle.
 func (fk *FakeKernel) dispatch(epname string, data []byte) []byte {
-	if len(data) < 4 {
+	if len(data) < CanonicalHeaderLen {
 		return nil
 	}
 	op := Get16(data[0:2])
 	seq := Get16(data[2:4])
-	payload := data[4:]
+	payload := data[CanonicalHeaderLen:]
 	me := fk.Cur
 	if me == nil {
 		// sends without a test-declared identity behave like an
@@ -305,6 +307,7 @@ func (fk *FakeKernel) dispatch(epname string, data []byte) []byte {
 		me = &FakeSession{Sid: 0xFFFFFFFF, UID: 0xFFFFFFFF}
 	}
 
+	// rep builds a canonical-header reply of total length n (>= 28).
 	rep := func(n int) []byte {
 		r := make([]byte, n)
 		Put16(r, op)
@@ -316,9 +319,9 @@ func (fk *FakeKernel) dispatch(epname string, data []byte) []byte {
 	case NameRegistry:
 		switch op {
 		case OpRegistryList:
-			r := rep(8 + 25*len(fk.Sessions))
-			Put32(r[4:], uint32(len(fk.Sessions)))
-			off := 8
+			r := rep(28 + 25*len(fk.Sessions))
+			Put32(r[24:], uint32(len(fk.Sessions)))
+			off := 28
 			for _, s := range fk.Sessions {
 				Put32(r[off:], s.Sid)
 				Put32(r[off+4:], s.UID)
@@ -338,11 +341,11 @@ func (fk *FakeKernel) dispatch(epname string, data []byte) []byte {
 					mask = s.Capmask
 				}
 			}
-			n := uint32(popcount(mask & ((1 << 7) - 1)))
-			r := rep(8 + 12*int(n))
-			Put32(r[4:], n)
-			off := 8
-			for b := uint(0); b < 7; b++ {
+			n := uint32(popcount(mask & ((1 << 8) - 1)))
+			r := rep(28 + 12*int(n))
+			Put32(r[24:], n)
+			off := 28
+			for b := uint(0); b < 8; b++ {
 				if mask&(1<<b) != 0 {
 					Put32(r[off:], uint32(b))
 					Put64(r[off+4:], 1<<b)
@@ -371,8 +374,43 @@ func (fk *FakeKernel) dispatch(epname string, data []byte) []byte {
 			case me.Capmask&CapKill == 0:
 				fk.auditf("[audit] sid=%d op=KILL reason=cap target=registry", me.Sid)
 			}
-			r := rep(8)
-			Put32(r[4:], uint32(rc))
+			r := rep(28)
+			Put32(r[24:], uint32(rc))
+			return r
+		case OpRegistryLogin:
+			// v1.1: caller must own the "login" well-known name; the
+			// named session receives uid+capmask.
+			if me.Name != "login" {
+				fk.auditf("[audit] sid=%d op=LOGIN reason=owner target=registry", me.Sid)
+				return nil
+			}
+			name := cstr16(padName(string(payload[0:16])))
+			uid := Get32(payload[16:20])
+			mask := uint64(Get32(payload[20:24]))
+			rc := int32(-1)
+			for _, s := range fk.Sessions {
+				if s.Name == name {
+					s.UID = uid
+					s.Capmask = mask
+					rc = 0
+				}
+			}
+			r := rep(28)
+			Put32(r[24:], uint32(rc))
+			return r
+		case OpRegistrySetconf:
+			if me.Capmask&CapConf == 0 {
+				fk.auditf("[audit] sid=%d op=SETCONF reason=cap target=registry", me.Sid)
+				return nil
+			}
+			key := cstr16(padName(string(payload[0:16])))
+			val := Get64(payload[16:24])
+			if fk.Knobs == nil {
+				fk.Knobs = make(map[string]uint64)
+			}
+			fk.Knobs[key] = val
+			r := rep(28)
+			Put32(r[24:], 0)
 			return r
 		case OpRegistrySpawn:
 			if me.Capmask&CapSpawn == 0 {
@@ -385,8 +423,8 @@ func (fk *FakeKernel) dispatch(epname string, data []byte) []byte {
 			mask := uint64(Get32(payload[spawnMaskOff:]))
 			if mask&^me.Capmask != 0 {
 				fk.auditf("[audit] sid=%d op=SPAWN reason=cap target=registry", me.Sid)
-				r := rep(8)
-				Put32(r[4:], 0xFFFFFFFF)
+				r := rep(28)
+				Put32(r[24:], 0xFFFFFFFF)
 				return r
 			}
 			var args []string
@@ -404,11 +442,11 @@ func (fk *FakeKernel) dispatch(epname string, data []byte) []byte {
 			} else {
 				ns = fk.AddSession(name, me.UID, mask)
 			}
-			r := rep(8)
+			r := rep(28)
 			if ns == nil {
-				Put32(r[4:], 0xFFFFFFFF)
+				Put32(r[24:], 0xFFFFFFFF)
 			} else {
-				Put32(r[4:], ns.Sid)
+				Put32(r[24:], ns.Sid)
 			}
 			return r
 		default:
@@ -439,8 +477,8 @@ func (fk *FakeKernel) dispatch(epname string, data []byte) []byte {
 			if fk.OnPower != nil {
 				fk.OnPower(op)
 			}
-			r := rep(8)
-			Put32(r[4:], 0)
+			r := rep(28)
+			Put32(r[24:], 0)
 			return r
 		}
 		return nil

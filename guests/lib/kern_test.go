@@ -124,7 +124,7 @@ func TestRegistryDirectRPC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(caps) != 7 || caps[0].Rights != CapKill {
+	if len(caps) != 8 || caps[0].Rights != CapKill {
 		t.Fatalf("caps=%+v", caps)
 	}
 
@@ -211,17 +211,18 @@ func TestInboxClientRoundTrip(t *testing.T) {
 		buf := make([]byte, MaxMsg)
 		for {
 			n := b.PortRecv(srvPort, buf)
-			if n > 4+2 {
-				inboxName, _, ok := LStr(buf[:int(n)], 4)
-				if !ok {
+			if n >= CanonicalHeaderLen {
+				hdr, _ := ParseHeader(buf[:int(n)])
+				if hdr.RNam == "" {
 					continue
 				}
-				rh, err := book.Bind(inboxName)
+				rh, err := book.Bind(hdr.RNam)
 				if err != nil {
 					t.Error(err)
 					return
 				}
-				rep := FrameRequest(Get16(buf[0:2]), Get16(buf[2:4]), []byte("pong"))
+				// replies carry the canonical header too; uid left 0
+				rep := FrameCanonical(hdr.Op, hdr.Seq, "", []byte("pong"))
 				if rc := b.PortSend(rh, rep); rc != StatusOK {
 					t.Errorf("reply rc=%d", rc)
 				}
@@ -235,14 +236,15 @@ func TestInboxClientRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// inbox-mode reply layout: {op, seq, payload}
-	if string(rep[4:]) != "pong" {
-		t.Fatalf("rep=%q", rep[4:])
+	// inbox-mode reply layout: {canonical header}{payload} — "pong" @24
+	if string(rep[24:]) != "pong" {
+		t.Fatalf("rep=%q", rep[24:])
 	}
 	<-done
 
 	// seq mismatch filtering: a stale reply for another seq is ignored
-	stale := FrameRequest(OpFSStat, cli.seq+77, nil)
+	cli.seq++
+	stale := FrameCanonical(OpFSStat, cli.seq+77, "", nil)
 	if rc := b.PortSend(cli.Inbox(), stale); rc != StatusOK {
 		t.Fatal("stale inject failed")
 	}
@@ -251,13 +253,10 @@ func TestInboxClientRoundTrip(t *testing.T) {
 		buf := make([]byte, MaxMsg)
 		for {
 			n := b.PortRecv(srvPort, buf)
-			if n > 0 && Get16(buf[0:2]) == OpFSList {
-				inboxName, _, ok := LStr(buf[:int(n)], 4)
-				if !ok {
-					continue
-				}
-				rh, _ := book.Bind(inboxName)
-				b.PortSend(rh, FrameRequest(OpFSList, Get16(buf[2:4]), []byte{1, 0}))
+			if n >= CanonicalHeaderLen && Get16(buf[0:2]) == OpFSList {
+				hdr, _ := ParseHeader(buf[:int(n)])
+				rh, _ := book.Bind(hdr.RNam)
+				b.PortSend(rh, FrameCanonical(OpFSList, hdr.Seq, "", []byte{1, 0}))
 				return
 			}
 			b.Yield()

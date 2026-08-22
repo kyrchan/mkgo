@@ -8,7 +8,8 @@ const (
 	OpRegistryCaps    uint16 = 2
 	OpRegistryKill    uint16 = 3
 	OpRegistrySpawn   uint16 = 4
-	OpRegistrySetconf uint16 = 5 // proposed, services/ABI-NOTES.md §6
+	OpRegistryLogin   uint16 = 5 // v1.1: issue uid+capmask to a named session
+	OpRegistrySetconf uint16 = 6 // v1.1: kernel knobs {key[16], u64 value}
 	OpDevmanEnum      uint16 = 1
 	OpPowerReboot     uint16 = 1
 	OpPowerOff        uint16 = 2
@@ -57,12 +58,12 @@ func (r *RegistryClient) List() ([]SessionInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(rep) < 8 {
+	if len(rep) < 28 {
 		return nil, ErrShort
 	}
-	n := int(Get32(rep[4:8]))
+	n := int(Get32(rep[24:28]))
 	out := make([]SessionInfo, 0, n)
-	off := 8
+	off := 28
 	for i := 0; i < n; i++ {
 		if off+25 > len(rep) {
 			break
@@ -93,12 +94,12 @@ func (r *RegistryClient) Caps(sid uint32) ([]CapEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(rep) < 8 {
+	if len(rep) < 28 {
 		return nil, ErrShort
 	}
-	n := int(Get32(rep[4:8]))
+	n := int(Get32(rep[24:28]))
 	out := make([]CapEntry, 0, n)
-	off := 8
+	off := 28
 	for i := 0; i < n; i++ {
 		if off+12 > len(rep) {
 			break
@@ -117,10 +118,49 @@ func (r *RegistryClient) Kill(sid uint32) (int32, error) {
 	if err != nil {
 		return -1, err
 	}
-	if len(rep) < 8 {
+	if len(rep) < 28 {
 		return -1, ErrShort
 	}
-	return int32(Get32(rep[4:8])), nil
+	return int32(Get32(rep[24:28])), nil
+}
+
+// Login issues uid+capmask to the session named name (ABI v1.1 op 5).
+// Callable only by the session that owns the "login" well-known port.
+func (r *RegistryClient) Login(name string, uid uint32, capmask uint64) error {
+	pl := make([]byte, 24)
+	copy(pl[0:16], padName(name))
+	Put32(pl[16:], uid)
+	Put32(pl[20:], uint32(capmask))
+	rep, err := r.c.Request(r.rg, OpRegistryLogin, pl)
+	if err != nil {
+		return err
+	}
+	if len(rep) < 28 {
+		return ErrShort
+	}
+	if st := int32(Get32(rep[24:28])); st != 0 {
+		return ErrRejected
+	}
+	return nil
+}
+
+// SetConf applies a kernel knob via §7 op 6 ({key[16], u64 value});
+// needs CapConf on the caller (intended: init).
+func (r *RegistryClient) SetConf(key string, value uint64) error {
+	pl := make([]byte, 24)
+	copy(pl[0:16], padName(key))
+	Put64(pl[16:], value)
+	rep, err := r.c.Request(r.rg, OpRegistrySetconf, pl)
+	if err != nil {
+		return err
+	}
+	if len(rep) < 28 {
+		return ErrShort
+	}
+	if st := int32(Get32(rep[24:28])); st != 0 {
+		return ErrRejected
+	}
+	return nil
 }
 
 // ErrSpawnDenied marks a capmask/privilege rejection (kernel returns
@@ -151,7 +191,10 @@ func (r *RegistryClient) Spawn(name, path string, capmask uint64, args ...string
 	if len(rep) < 8 {
 		return 0, ErrShort
 	}
-	sid := Get32(rep[4:8])
+	if len(rep) < 28 {
+		return 0, ErrShort
+	}
+	sid := Get32(rep[24:28])
 	if sid == 0xFFFFFFFF {
 		return 0, ErrSpawnDenied
 	}
@@ -218,12 +261,12 @@ func (d *DevmanClient) Enum() ([]DeviceRec, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(rep) < 8 {
+	if len(rep) < 28 {
 		return nil, ErrShort
 	}
-	n := int(Get32(rep[4:8]))
+	n := int(Get32(rep[24:28]))
 	out := make([]DeviceRec, 0, n)
-	off := 8
+	off := 28
 	for i := 0; i < n; i++ {
 		if off+16 > len(rep) {
 			break

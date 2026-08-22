@@ -125,12 +125,14 @@ func BindFS(k Kernel, roleTag string) (*FSClient, error) {
 
 func pathPayload(path string) []byte { return AppendLStr(nil, path) }
 
+// splitReply decodes a canonical-header reply: status at payload start
+// (offset 24), body after it.
 func splitReply(rep []byte) (int32, []byte, error) {
-	if len(rep) < 6 {
+	if len(rep) < 28 {
 		return 0, nil, ErrShort
 	}
-	st := int32(Get32(rep[4:8]))
-	return st, rep[8:], nil
+	st := int32(Get32(rep[24:28]))
+	return st, rep[28:], nil
 }
 
 // Stat returns metadata for path.
