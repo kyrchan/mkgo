@@ -35,6 +35,14 @@ type Shell struct {
 
 // Run drives a shell session until Stop.
 func Run(k lib.Kernel, opts ShellOptions) {
+	// §4: the shell claims focus for itself once it owns its well-known
+	// port (v1.1 flow — readiness-driven focus).
+	if h := k.PortCreate(lib.NameShell); h != lib.InvalidHandle {
+		k.FocusSet(h)
+	} else if h := k.PortBind(lib.NameShell); h != lib.InvalidHandle {
+		k.FocusSet(h)
+	}
+
 	// NOTE: 0 is a VALID port handle; only -1 means "none".
 	sh := &Shell{k: k, root: opts.Root, con: lib.InvalidHandle}
 	for sh.con == lib.InvalidHandle {

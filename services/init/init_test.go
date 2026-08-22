@@ -86,8 +86,11 @@ func TestBootOrderAndKnobs(t *testing.T) {
 		t.Fatalf("boot order %v", order)
 	}
 	wait(t, func() bool { return rec.has("spawned fs sid=") }, "fs spawn log missing")
-	wait(t, func() bool { return rec.has("rejected (registry lacks SETCONF)") },
-		"knob rejection not tolerated/logged")
+	wait(t, func() bool { return rec.has("knob quantum_ms=50 applied") },
+		"SETCONF knob not applied")
+	if k.Knobs["quantum_ms"] != 50 {
+		t.Fatalf("kernel knobs=%v", k.Knobs)
+	}
 	close(stop)
 }
 

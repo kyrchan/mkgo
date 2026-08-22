@@ -96,25 +96,25 @@ func Serve(k lib.Kernel, opts LoginOptions) {
 	}
 }
 
-// kernAuth processes one AUTH datagram end-to-end.
+// kernAuth processes one AUTH datagram end-to-end. Requests carry the
+// canonical v1.1 header; the requester's reply port arrives in rname.
 func kernAuth(k lib.Kernel, reg *lib.RegistryClient, replies *lib.ReplyBook, req []byte, opts LoginOptions) {
-	op := lib.Get16(req[0:2])
-	seq := lib.Get16(req[2:4])
-	inboxName, off, ok := lib.LStr(req, 4)
-	if !ok || op != opAuth {
+	hdr, ok := lib.ParseHeader(req)
+	if !ok || hdr.Op != opAuth || hdr.RNam == "" {
 		return // silent on junk, mirroring §7 convention
 	}
-	name, n2, _ := lbyte(req[off:])
-	pass, _, _ := lbyte(req[n2:])
+	payload := req[lib.CanonicalHeaderLen:]
+	name, n2, _ := lbyte(payload)
+	pass, _, _ := lbyte(payload[n2:])
 
-	rh, err := replies.Bind(inboxName)
+	rh, err := replies.Bind(hdr.RNam)
 	if err != nil {
 		return
 	}
 
-	rep := make([]byte, 4, 4+16)
-	lib.Put16(rep, op)
-	lib.Put16(rep[2:], seq)
+	rep := make([]byte, lib.CanonicalHeaderLen, lib.CanonicalHeaderLen+16)
+	lib.Put16(rep, hdr.Op)
+	lib.Put16(rep[2:], hdr.Seq)
 
 	u, found := lookup(opts.users(), name)
 	switch {
@@ -132,10 +132,16 @@ func kernAuth(k lib.Kernel, reg *lib.RegistryClient, replies *lib.ReplyBook, req
 }
 
 func doSpawn(k lib.Kernel, reg *lib.RegistryClient, shell string, u *User) uint32 {
-	sid, err := reg.Spawn(shell, shell, u.Mask, u.Name)
+	// v1.1: spawn with NO capabilities, then issue the user's set via the
+	// registry LOGIN op — the sole capability-issuance mechanism. The op
+	// matches the target by session name (= module name today), so
+	// concurrent shells of different users need v2 session-id targeting
+	// (noted in services/ABI-NOTES.md §5).
+	sid, err := reg.Spawn(shell, shell, 0, u.Name)
 	if err != nil {
 		return spawnNone
 	}
+	_ = reg.Login(shell, u.UID, u.Mask)
 	return sid
 }
 
@@ -172,6 +178,8 @@ func lbyte(b []byte) (string, int, bool) {
 	return string(b[1 : 1+n]), 1 + n, true
 }
 
+// appendStatus appends {i32 status, u64 capmask, u32 sid} after the
+// canonical header already present in rep.
 func appendStatus(rep []byte, status int32, mask uint64, sid uint32) []byte {
 	var tail [16]byte
 	lib.Put32(tail[0:], uint32(status))

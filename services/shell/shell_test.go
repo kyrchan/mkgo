@@ -40,13 +40,13 @@ func (f *fakeFS) serve(h lib.Handle) {
 	for {
 		n := f.k.PortRecv(h, buf)
 		if n > 8 {
-			op := lib.Get16(buf[0:2])
-			seq := lib.Get16(buf[2:4])
-			inbox, off, ok := lib.LStr(buf[:int(n)], 4)
-			pl := buf[off:int(n)]
-			if !ok {
+			hdr, ok := lib.ParseHeader(buf[:int(n)])
+			if !ok || hdr.RNam == "" {
 				continue
 			}
+			op, seq := hdr.Op, hdr.Seq
+			inbox := hdr.RNam
+			pl := buf[lib.CanonicalHeaderLen:int(n)]
 			rh, err := book.Bind(inbox)
 			if err != nil {
 				continue
@@ -66,11 +66,12 @@ func (f *fakeFS) serve(h lib.Handle) {
 
 func (f *fakeFS) reply(op, seq uint16, pl []byte) []byte {
 	path, _, _ := lib.LStr(pl, 0)
+	// canonical-header reply (v1.1): {op,seq,uid=0,rname empty},{status,body}
 	mk := func(status int32, body ...byte) []byte {
-		r := make([]byte, 8, 8+len(body))
+		r := make([]byte, 28, 28+len(body))
 		lib.Put16(r, op)
 		lib.Put16(r[2:], seq)
-		lib.Put32(r[4:], uint32(status))
+		lib.Put32(r[24:], uint32(status))
 		return append(r, body...)
 	}
 	switch op {

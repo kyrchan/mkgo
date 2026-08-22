@@ -59,8 +59,8 @@ func (a *authClient) auth(user, pass string) (int32, uint64, uint32, error) {
 	if len(rep) < 20 {
 		return 0, 0, 0, lib.ErrShort
 	}
-	// layout: {op, seq, i32 status, u64 capmask, u32 sid}
-	return int32(lib.Get32(rep[4:])), lib.Get64(rep[8:]), lib.Get32(rep[16:]), nil
+	// layout: {canonical header}{i32 status, u64 capmask, u32 sid}
+	return int32(lib.Get32(rep[24:])), lib.Get64(rep[28:]), lib.Get32(rep[36:]), nil
 }
 
 func TestAuthIssuesPerUserCapsets(t *testing.T) {

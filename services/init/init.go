@@ -199,27 +199,25 @@ func (s *supervisor) sweep() {
 	}
 }
 
-// applyKnobs pushes kernel.conf entries through the proposed §7 SETCONF
-// op (services/ABI-NOTES.md §6). The v1 kernel has no SETCONF: each knob
-// is rejected with no reply — tolerated and logged.
+// applyKnobs pushes kernel.conf entries through §7 op 6 SETCONF
+// {char key[16], u64 value} (ABI v1.1; needs CAP_CONF). Non-numeric
+// values have no u64 representation — logged and skipped. A pre-v1.1
+// kernel answers with no reply (unknown op): tolerated and logged.
 func (s *supervisor) applyKnobs(knobsText string) {
 	if knobsText == "" {
 		return
 	}
-	h := s.reg.Handle()
 	for key, val := range ParseKnobs(knobsText) {
-		pl := lib.AppendLStr(nil, key)
-		pl = lib.AppendLStr(pl, val)
-		rep, err := s.reg.Request(h, lib.OpRegistrySetconf, pl)
-		switch {
-		case err == lib.ErrNoReply:
-			s.logf("[init] knob " + key + "=" + val + " rejected (registry lacks SETCONF)")
-		case err != nil:
-			s.logf("[init] knob " + key + " error: " + err.Error())
-		default:
-			st := int32(lib.Get32(rep[4:]))
-			s.logf("[init] knob " + key + "=" + val + " status=" + fmt.Sprint(st))
+		num, err := strconv.ParseUint(val, 10, 64)
+		if err != nil {
+			s.logf("[init] knob " + key + "=" + val + " skipped (not numeric)")
+			continue
 		}
+		if err := s.reg.SetConf(key, num); err != nil {
+			s.logf("[init] knob " + key + "=" + val + " rejected (" + err.Error() + ")")
+			continue
+		}
+		s.logf("[init] knob " + key + "=" + val + " applied")
 	}
 }
 

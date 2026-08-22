@@ -1,9 +1,16 @@
 # services/ABI-NOTES.md — lane-services protocol notes
 
-`abi/ABI.md` v1 is FROZEN and untouched. This file records (a) the
-concrete instantiations of under-specified ABI points that lane MAINLINE
-must mirror on the kernel side, and (b) lane-local service protocols.
-Nothing here relaxes or extends the ABI.
+This file records concrete instantiations of under-specified ABI points
+that lane MAINLINE must mirror, plus lane-local service protocols.
+
+**UPDATE 2026-08-22: ABI v1.1 RATIFIED (master b9263a2) and ADOPTED by
+this lane.** The canonical datagram header `{u16 op,u16 seq,u32 uid,
+char rname[16]}` (payload @24) replaces this file's old reply-channel
+payload convention; §3 offsets are now pinned in the ABI itself; LOGIN
+(op 5) / SETCONF (op 6, CAP_CONF bit7) are live registry ops; managed-
+runtime guests use `kern_blk_read/write` imports. Sections below were
+revised accordingly; superseded text is kept struck through where still
+informative.
 
 ## 1. Block window byte offsets (ABI §3)
 
@@ -25,13 +32,14 @@ own memory base — wasm32 base is 0).
 fs.wasm finds its window via devman ENUM (class=block). The boot
 preload must therefore grant the fs session CAP_DEVMAN (bit1).
 
-## 2. Reply routing for user-level servers (ABI §1 gap)
+## 2. Reply routing for user-level servers (SUPERSEDED by v1.1 header)
 
-§7 kernel endpoints reply onto the sending handle because dispatch is
-inline (core/kernsvc.cc). User servers have no such visibility: §1
-datagrams carry no reply-to metadata, and the kernel has no unbind —
-binding a fresh alias per request would exhaust the 8-handles/session
-budget. Convention adopted by fs/login/shell:
+~~§1 datagrams carried no reply-to metadata~~ — v1.1 ratifies the
+requester-declared reply channel as `char rname[16]` in the canonical
+header. The kernel has no unbind, so servers MUST still cache one bind
+alias per distinct rname (kern.ReplyBook): re-binding per request would
+exhaust the 8-handles/session budget. The old payload-embedded inbox
+field is gone from all lane protocols.
 
 - Each CLIENT creates ONE inbox port with a unique global name:
   `<role>.<nanosecond-salt>` (≤15 chars), e.g. `fs.16895`.
@@ -67,16 +75,17 @@ root as argv[1] and shells prefix all RELATIVE paths with it; absolute
 cross-user paths are not offered by any tooling. Kernel-enforced
 rooting needs per-datagram session identity — same future hook as §2.
 
-## 5. Login AUTH protocol v0 (lane-local)
+## 5. Login AUTH protocol v1.1 (lane-local, over canonical header)
 
-Login owns "login". Request: `{u16 op=1, u16 seq, u16 inboxLen, inbox,
-{u8 nameLen, name, u8 passLen, pass}}`. Reply: `{op, seq, i32 status,
-u64 capmask, u32 sid}` — status 0 ok / -1 unknown user; sid is the SPAWNed
-shell session (0xFFFFFFFF if spawn was denied). Password check is stubbed
-(accept-any) until Phase 10 hashes. Login requests registry SPAWN of the
-"shell" module with the USER's capmask; the kernel's never-more-than-
-caller rule means the boot-preloaded login session itself needs
-CAP_SPAWN plus at least the masks it hands out.
+Login owns "login". Request: `{canonical header}{u8 nameLen, name,
+u8 passLen, pass}`, reply channel in rname. Reply: `{canonical header}{
+i32 status, u64 capmask, u32 sid}` — 0 ok / -1 unknown user; sid = SPAWNed
+session (0xFFFFFFFF if denied). Flow since v1.1: spawn shell with mask 0,
+then issue the user's uid+capmask via §7 op 5 LOGIN (the sole issuance
+mechanism). LIMITATION: LOGIN matches by session name (= module name),
+so two concurrent shells cannot be distinguished — needs v2 session-id
+targeting (§11 roadmap). Password check remains accept-any until Phase 10
+hashes.
 
 ## 6. init.conf / kernel.conf transport
 
@@ -86,11 +95,10 @@ the ESP per AGENTS.md). init.conf line format:
 
     <name> <path> <capmask-hex> [respawn=yes|no]
 
-kernel.conf `key=value` lines are applied via a proposed registry op 5
-SETCONF `{u16 kLen,key,valLen,val}`. The v1 kernel has no SETCONF —
-init logs `[init] knob <k>=<v> rejected (registry lacks SETCONF)` and
-continues; MAINLINE may adopt op 5 in a later ABI note. Nothing else in
-this file depends on it.
+kernel.conf `key=value` lines apply via §7 op 6 SETCONF
+`{char key[16], u64 value}` (v1.1 ratified; requires CAP_CONF bit7).
+Non-numeric values are skipped with a log line. Numeric knob values only
+until a string-knob need appears (would require an ABI note).
 
 ## 7. hosteng validation status
 
@@ -114,3 +122,14 @@ Current version = 1, matching abi/ABI.md v1. Injected at build time by
 validate under stock `wasm-validate` (wabt). The kernel's instantiation
 check should scan custom sections for name "abi_ver" and compare the
 u32 against its own ABI version, refusing mismatches per AGENTS.md.
+
+## 9. Managed-runtime block transport notes (v1.1)
+
+fs.wasm uses `kern_blk_read(lba i32, ptr i32, count i32) -> i32` /
+`kern_blk_write(...)` (module "kernel"); ptr is an ordinary guest buffer
+pointer, NOT an absolute linear-memory address — no unsafe window mapping.
+The imports carry no geometry probe: fs.wasm assumes the AGENTS.md disk
+size (16384 sectors × 512 B). Proposal for a future ABI note:
+`kern_blk_geom(ptr)` returning {u32 blk_size, u64 num_blocks}, so image
+sizes can vary without rewrapping modules. Host-side tests exercise the
+identical BlockDev interface over the §3 window + RamDisk harness.
