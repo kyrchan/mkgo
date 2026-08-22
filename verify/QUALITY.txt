@@ -1,33 +1,31 @@
 # QUALITY.txt — rolling summary (LANE=VERIFY) — regenerated each pass
-# Last pass: 2026-08-22 (Phase-5 commit da43b41 reviewed; 6 kernel BLOCKERs remain open)
+# Last pass: 2026-08-22 late (post da43b41/6a22fec/b75d0f5/1929b87 reviews)
 
 | repo | head reviewed | mechanical | open BLOCKERs | open MAJORs | trend |
 |---|---|---|---|---|---|
-| MAIN  | 0907825 + uncommitted Phase-5 WIP (dirty tree; F1 fixed in tree, see CLOSED) | per-file C++ syntax pass: all clean now except tools/hosteng.cc (F4); kernsvc recompiles clean post-fix; -fanalyzer available but not rerun since F1 fix; go/vet n/a; wasm3 -Wunused-parameter noise only (vendored) | 7 (F1 build break · F2 v1.1 framing split · F11 port_recv ring regression · F12 devblk wraparound OOB · F13 LOGIN owner/binder escalation · F15 mk_req uid/rname overlap · F16 routed_rw reply clamp · F18 missing §7 status -1 — F1/F11/F22 fixed in tree) | 1 (F4) | WIP under active surgery — re-review on commit |
-| SVC   | 88ed8a7 | go vet clean ×3 modules; go test -race: guests/lib ok, console+login ok (-count=1), fs/init/shell RED via harness races (F3); addabiver untested (F7) | 0 | 2 (F3 race gate red, F17 Phase-7 imports in shipped wasm) | service logic itself reviewed clean; issues are test-infra + premature imports |
-| TLS   | e0bfb11 | go vet clean; go test -race clean (unit + mformat parity) | 0 | 0 | healthy |
+| MAIN  | 6a22fec (code committed at da43b41: Phase 5 fs.wasm + dual routing + multiuser stubs + VM retirement; ABI v1.1 RATIFIED) + active dirty tree (input.cc, boot orchestration, services copies) | per-file C++ syntax pass at da43b41: ALL core files clean; go vet n/a; -fanalyzer available but not rerun post-F1-fix | 6: F12 devblk wraparound OOB · F13 LOGIN owner/binder escalation · F16 routed_rw reply clamp · F18 §7 silent default · F31 kern_blk_* ungated · F32 uid stamping absent | 3 (F4 hosteng stale, F33-item1 SETCONF unimplemented, F37 ppa over-broad caps) | gates GREEN Ph0–5 per MEMORY.md; security blockers are negative-path, outside gate coverage |
+| SVC   | daac2b6 (+f5d2e23 lib v1.1 conformance merged master e3ef0ce) | go vet clean ×3 modules; go test -race: console ok, login ok (-count=1), guests/lib ok, tools/img ok; fs RED (F3a window-model races); init RED (race-classified; panic fixed); shell RED (F3b + LsCatStat budget-shape) | 0 | 3 (F3 race gate red, F35 partial-migration residue, F17 kernel-side now resolved in MAIN dirty tree — pending commit for full closure) | converging on v1.1; migration incomplete but progressing |
+| TLS   | 1929b87 + b75d0f5 README docs | go vet clean; go test -race clean incl. hvtest scaffolding + golden-file converter tests | 0 | 0 | healthy; Phase-12 prep started |
 
-Open BLOCKER list (all now COMMITTED at da43b41): F12 F13 F16 F18 F31 F32 + F2-residue(SVC-sync) (F33 MAJOR).
-(F1 CLOSED in tree). MAJORs: F3 F17 F23 F26.
-(8 total).
-Open MINOR/NOTE watchlist: F5 PTRACE scaffolding · F6 LIST/CAPS ungated ·
-F7 addabiver tests · F8 Yield budget math · F9 stub markers · F14 fan-in
-reply misrouting · F19 rname LStr-vs-fixed16 encoding · F20 host model
-couples to F18 and lacks LOGIN/SETCONF · F21 check_abiver LEB hardening · F25
-fat16 gap-fill stale bytes · F26 SVC fs server lacks uid rooting (MAJOR) ·
-F27 fleet.sh stale-pidfile kill hazard (MAJOR) · F29 devblk ungated ptr
- dumps + DEBUG-becomes-load-bearing · F30 block window undiscoverable (NOTE).
+Closed (committed evidence): F1 F5 F11 F15 F22 @da43b41.
+Closed (in-tree, awaiting commit): none currently provisional beyond above.
+Open MINOR/NOTE watchlist: F6 LIST/CAPS ungated (v2 roadmap §11 acknowledges) ·
+F7 addabiver tests · F8 Yield budget math · F9 stub markers · F14 fan-in reply
+misrouting · F19 rname LStr-vs-fixed16 encoding · F20 CLOSED @f5d2e23 ·
+F21 check_abiver LEB hardening · F24 dead fstransport · F25 fat16 gap-fill ·
+F26 SVC fs uid rooting (subsumed by F2 sync + MAIN fscore rooting) ·
+F27 fleet.sh stale-pidfile kill · F29/F29a ungated debug ptrs/traces ·
+F30 block window not in devman ENUM · F31-related F34 gap-fill mirrored in
+fscore.go · F36 TLS broadcast conformance N/A · F38 dual guest-lib lineages.
 
-Closed this round: none (first pass).
+Cross-lane state:
+- MAIN internal wire consistency reached (kernsvc/fs/glue/login/test_pp/
+  test_p5b all canonical 24B). SVC lib migrated @f5d2e23; SVC service-side
+  hand-built frames remain the open F2/F35 residue.
+- F32 (uid stamping) is the highest-leverage remaining fix: ratified promise,
+  unimplemented, and the sole thing making cross-user spoofing possible on
+  direct-port requests.
 
-Provenance notes:
-- F11 confirmed as WIP regression: HEAD@0907825 port_recv reads then advances.
-- F1/F4/F12/F13/F15/F16/F18 live only in the uncommitted Phase-5 batch or
-  stale host tools; committed HEAD kernel sources compile clean.
-- Cross-lane: F2/F17 mean SVC-built modules cannot run on MAIN's kernel
-  today (framing mismatch + unresolved imports). Unification plan should
-  land ONE canonical v1.1 header + stub-or-defer Phase-7 imports.
-
-Next-pass triggers: any MAIN commit (expect large Phase-5 batch),
-SVC/TLS new heads, MEMORY.md hash change. On fix-upstream: mark findings
-CLOSED with file:line evidence from the fixing commit.
+Next-pass triggers: new commits any lane, MEMORY.md hash change, or blocker-
+site drift in MAIN working tree (checked via md5 of ports.cc/kernsvc.cc/
+devblk.cc/wasi_glue.cc/fsroute.cc each pass).
