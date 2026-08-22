@@ -6,21 +6,37 @@ decisions, and gotchas. Update at milestones or near context limits.
 
 ## Status (as of 2026-08-22)
 
-**Phase 4 gate GREEN (commit 7e7c2dd).** Message ports per ABI §1 in
-'kernel' namespace; kernel-owned registry/devman/power endpoints (§7
-framing {u16 op,u16 seq,payload}, replies to sending port, capability
-bits + [audit] to serial); cooperative coroutine scheduler (ctx.S,
-per-session native stacks + per-session WASI state); console.wasm +
-login.wasm preloaded pre-EBS from /boot/modules; SPAWN resolves from a
-boot preload table until fs exists (documented interim divergence).
-Gate: ping-pong x3 + LIST shows 4 sessions + KILL console rc=0 with
-login heartbeats continuing + KERNEL-OK.
-Host driver tools/hostp4.cc runs the whole scenario pre-QEMU — always
-do that first. Next: **Phase 5** — fs.wasm (Go, FAT16 over §3 block
-window, RAM-disk backend), dual client routing (kernel-routed preview1
-path_open/fd_read/fd_write/fd_close/path_create* AND guests/lib direct
-ports), multiuser stubs (/etc static table, /home/<u> roots),
-abi_ver custom section check; retire kernel/vm+vasm+demo.
+**Phase 5 gate GREEN (commit da43b41) — Phases 0–5 ALL GREEN.**
+fs.wasm = FAT16 over kernel RAM disk; dual routing live: (a)
+kernel-routed preview1 path_open/fd_read/fd_write/fd_close via
+_fsbuf/_fsreq sync exports + fsroute yield-wait (NO wasm3 re-entry),
+per-session fd tables in sched_wasi_state (fd>=3 -> fs fh; 0/2 stdio);
+(b) direct-port framed ops. Paths rooted /home/<uid> (auto-vivified),
+admin=/. LOGIN op grants uid+capmask by session name (login-owner
+only). abi_ver=1 stamped on every module, checked at instantiation.
+8-opcode artifacts RETIRED (core/vm tools/vasm programs); make test =
+g1 smoke; full matrix: test-g1 g2 g3 p4 p5a p5b.
+Canonical request frame (ALL services/clients): {u16 op,u16 seq,
+u32 uid,char rname[16],u16 plen,path,payload} — replies go to rname.
+Block transport for managed-runtime guests: kern_blk_read/write
+imports (ABI v1.1 amendment); §3 window kept for raw guests.
+fs core is host-testable: cd services/fs && go test (RAM-disk stub).
+Next (Phases 6 optional / 7+): input+focus imports, shell/init,
+preemption, virtio re-back, net.
+
+Hard-won rules (Phase 4/5 debugging):
+- After EVERY scripted source edit, grep-verify the change landed —
+  silent pattern misses cost hours (authAs, doLogin framing).
+- Stale-artifact paranoia: verify marker strings INSIDE built binaries;
+  guest/service .wasm rebuilds need explicit rm+rebuild discipline.
+- Frame offsets must be identical on both ends — unify via one comment
+  block copied into parser+builder.
+- Never call into a suspended wasm3 runtime from another session;
+  route through ports + yield-wait instead (fsroute.cc).
+- Go guests own their low linear memory: no kernel data structures in
+  guest RAM below the heap horizon; use imports for device transport.
+- port_recv pops ring[qh] BEFORE advancing qh (order got reversed once).
+- Gate greps: escape [brackets] or they become regex char classes.
 
 Allocator lessons (rt.cc): free-list next ptr must NOT clobber hdr.size;
 binned blocks rounded to FULL class size so pops never undersize;
