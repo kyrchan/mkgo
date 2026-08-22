@@ -1,10 +1,49 @@
-# abi/ABI.md — guest-facing interface contracts (v1, FROZEN)
+# abi/ABI.md — guest-facing interface contracts (v1.1)
 
 Binding on both kernel substrate and all services/guests. Changes require a
 version bump here + note in MEMORY.md. All integers little-endian (wasm
 native). No NUL-terminated strings anywhere: lengths are explicit.
 "Window" = a region of a session's linear memory the kernel assigns at
 instantiation; guests never compute absolute addresses, only window offsets.
+
+## v1.1 changelog (RATIFIED by project owner, 2026-08-22 — all lanes adopt)
+
+- §7 registry gains op 5 = LOGIN {char name[16], u32 uid, u32 capmask}
+  -> status. Callable ONLY by the session that owns the "login"
+  well-known name (kernel-checked). The named session (matched by its
+  unique session name, i.e. argv[0]) receives uid + capmask; this is the
+  sole mechanism by which capabilities are issued (at login, never
+  otherwise). Motivated by Phase 5 multiuser stub.
+- §7 registry gains op 6 = SETCONF {char key[16], u64 value} -> status.
+  Applies kernel knobs (quantum_ms, log_level). Requires new capability
+  bit7 CONF; init.wasm is the intended caller (`/etc/kernel.conf`).
+- Service modules MUST carry a custom section `abi_ver` whose payload
+  starts with byte 0x01; the kernel refuses modules without it.
+- Block-class transport for MANAGED-RUNTIME guests (Go): instead of the
+  §3 in-linear-memory window (whose address range cannot be reserved
+  against a compacting/moving guest heap), such guests use imports
+    kern_blk_read(lba i32, ptr i32, count i32) -> i32   // 0 ok | -1 err
+    kern_blk_write(lba i32, ptr i32, count i32) -> i32
+  served by the same kernel backends (RAM-disk now, virtio-blk in Phase
+  8). Backend swap remains invisible; the §3 window stays the contract
+  for raw/native guests. request datagrams to services carry
+  `{u16 op, u16 seq, u32 uid, char rname[16], ...}`; the responder sends
+  its reply into the existing port named `rname` (created by the
+  requester). Empty rname = synchronous transport (kernel-routed calls),
+  no port reply. Prevents same-queue request/reply interleave.
+- Canonical datagram header RATIFIED for ALL port traffic (§1): every
+  datagram starts `{u16 op, u16 seq, u32 uid, char rname[16]}`, payload
+  at byte offset 24. On SEND the kernel OVERWRITES `uid` with the sending
+  session's registry uid — clients can never spoof identity. `rname` may
+  be empty (synchronous kernel-routed calls). Kernel-owned endpoints
+  (§7) reply inline on the sending handle and ignore `rname`.
+- §3 block-window offsets PINNED to naturally-aligned layout (see §3);
+  guest scratch area at window offset 0x1000; minimum window size 0x2000;
+  fs session receives CAP_DEVMAN at boot so devman ENUM can locate its
+  block instance.
+- v2 roadmap recorded in §11: one-shot reply capabilities
+  (`kern_port_reply(h, ptr, len)`), LIST/CAPS capability gating at Phase
+  10, IRQ arm flags post-Phase-9, class layouts per §9.
 
 ## 1. Message ports (binding from Phase 4)
 
@@ -31,18 +70,27 @@ Output only. Input arrives via §4.
 
 ## 3. Block window (RAM-disk backend in Phase 5, virtio-blk backend in Phase 8)
 
-Layout at window offset 0 (single outstanding request, polled):
+Layout at window offset 0 — offsets PINNED (v1.1), naturally aligned,
+little-endian (single outstanding request, polled):
 
-    u32  magic 'BLKW'          u32  blk_size (=512)
-    u64  num_blocks            u32  next_req_id (guest increments)
+    0x00 u32 magic 'BLKW'      0x04 u32 blk_size (=512)
+    0x08 u64 num_blocks        0x10 u32 next_req_id (guest increments)
+    0x14 u32 pad
     -- request mailbox (guest writes) --
-    u64 op (1=read, 2=write)   u64 lba     u32 count   u64 off (window offset, =count*blk_size)
+    0x18 u64 op (1=read, 2=write)
+    0x20 u64 lba               0x28 u32 count       0x2c u32 pad
+    0x30 u64 off  (window offset of data area, = count*blk_size aligned up)
     -- completion slot (kernel writes) --
-    u32 done_req_id            i32 status (0 ok, <0 err)
+    0x38 u32 done_req_id       0x3c i32 status (0 ok, <0 err)
+
+Guest scratch for data transfers: window offset **0x1000**; ≤8 sectors per
+request; **minimum window size 0x2000**.
 
 Guest: fill request, bump `next_req_id`, poll until `done_req_id` matches,
 then touch `off..off+count*blk_size`. Backend swap (RAM↔virtio-blk) is
-invisible to guests — same window, same semantics.
+invisible to guests — same window, same semantics. Managed-runtime guests
+(Go) do NOT use this window: they call `kern_blk_read/write` imports
+(see changelog); the same backends serve both transports.
 
 ## 4. Input events (Phase 7)
 
@@ -101,6 +149,10 @@ carry the same `seq`. Ops:
               4=SPAWN   {char name[16], char path[64], u32 capmask,
                          u16 argc; args bytes} -> {u32 sid}
                                                    (needs CAP_SPAWN right)
+              5=LOGIN   {char name[16], u32 uid, u32 capmask} -> status
+                          (login-name owner only; see changelog)
+              6=SETCONF {char key[16], u64 value} -> status
+                          (needs CAP_CONF right; intended: init.wasm)
     devman:    1=ENUM   -> {u32 n; rec{u32 class(1=block,2=net,3=input,
                                     4=timer,5=console), u32 inst,
                                     u64 win_off}}   (needs CAP_DEVMAN)
@@ -108,9 +160,10 @@ carry the same `seq`. Ops:
 
 Capability bits (u64 mask, enforced by kernel registry):
 bit0 KILL, bit1 DEVMAN, bit2 POWER, bit3 FOCUS, bit4 FS_ADMIN, bit5 NET_ADMIN,
-bit6 SPAWN. Login maps users→masks; `admin` gets all bits, regular users get
-none of 0-2 and scoped others. Unknown op / insufficient bit => status -1,
-audited (see §10).
+bit6 SPAWN, bit7 CONF. Login maps users→masks; `admin` gets all bits, regular
+users get none of 0-2 and scoped others. Unknown op / insufficient bit =>
+status -1, audited (see §10). LIST/CAPS gain self-or-admin gating at Phase
+10 (v2 roadmap); unguarded today by design of the stub phase.
 
 SPAWN semantics: kernel instantiates the named module from `/boot/modules/`
 as a fresh session with exactly the requested capmask (never more than the
@@ -172,3 +225,18 @@ v1 destination is serial only; a file sink under /var/log arrives with
 post-v1 storage work. Admin tooling for user management (`useradd`,
 `passwd`) edits `/etc/users` through fs.wasm using CAP_FS_ADMIN and then
 signals "login" to reload — no dedicated user server needed.
+
+## 11. v2 roadmap (scheduled, NOT in force until ratified)
+
+- Reply capabilities: `kern_port_reply(h, ptr, len)` — kernel mints a
+  one-shot, consumed-on-use reply right for the sender of the message
+  last received on `h`; supersedes the rname inbox convention (removes
+  name-squatting surface entirely). Precedent: seL4 reply caps, Mach
+  reply ports.
+- LIST/CAPS registry ops gain self-or-admin gating (Phase 10).
+- IRQ arm flags + kernel-routed wakeups on §3–§6 windows (post-Phase-9).
+- Class layouts for §9 reserved ids (USB-HC, WLAN, BLUETOOTH,
+  FRAMEBUFFER) as hardware phases demand.
+
+Any of these entering force requires a version bump here plus a note in
+MEMORY.md, ratified by the project owner.
