@@ -66,14 +66,23 @@ the kernel's fd layer should translate path_open/read/write/close/
 path_create* onto exactly these ops so both routes hit the same server
 protocol.
 
-## 4. Multiuser rooting (Phase 5 gate note)
+## 4. Multiuser rooting (IMPLEMENTED, extended mandate)
 
-v1 fs.wasm enforces no per-session uid (datagrams carry none). The
-Phase-5 denial gate ("second session rooted at /home/u2 cannot open
-u1's file") holds because login spawns each user's shell with the user
-root as argv[1] and shells prefix all RELATIVE paths with it; absolute
-cross-user paths are not offered by any tooling. Kernel-enforced
-rooting needs per-datagram session identity — same future hook as §2.
+With v1.1's kernel-stamped uid in every canonical header, fs.wasm now
+enforces per-uid policy server-side:
+
+- REGISTER (op 8, lane-local): `{u32 uid, u16 nLen, name, u64 capmask}`
+  — issued by login/init after auth; feeds the uid→(name,capmask) table.
+- uid 0 = admin: unrestricted.
+- registered user: relative paths rooted at /home/<name>; own subtree
+  fully writable; /tmp world-writable; /etc + /boot writes need
+  CAP_FS_ADMIN (bit4 of the registered mask); /boot read-only;
+  OTHER users' homes return FSNoEntry (existence hidden).
+- unregistered uid: guest — reads on /etc,/boot,/tmp; /tmp writes only.
+- New status FSAccess = -10 ("permission denied").
+
+Standard skeleton (/etc,/home,/tmp,/boot/modules) is auto-provisioned on
+first mount of a fresh volume.
 
 ## 5. Login AUTH protocol v1.1 (lane-local, over canonical header)
 

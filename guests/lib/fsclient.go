@@ -52,6 +52,7 @@ const (
 	FSBadName  = int32(-7)
 	FSNotEmpty = int32(-8)
 	FSRange    = int32(-9)
+	FSAccess   = int32(-10) // permission denied (multiuser policy)
 )
 
 var (
@@ -64,6 +65,7 @@ var (
 	ErrFSBadName  = errors.New("fs: bad name")
 	ErrFSNotEmpty = errors.New("fs: directory not empty")
 	ErrFSRange    = errors.New("fs: offset out of range")
+	ErrFSAccess   = errors.New("fs: permission denied")
 )
 
 // FSErr converts a wire status into its Go sentinel.
@@ -87,6 +89,8 @@ func FSErr(status int32) error {
 		return ErrFSNotEmpty
 	case FSRange:
 		return ErrFSRange
+	case FSAccess:
+		return ErrFSAccess
 	default:
 		return ErrFSIO
 	}
@@ -301,3 +305,30 @@ func (f *FSClient) simple(op uint16, path string) error {
 
 // SetBudget overrides the recv poll budget for this client (tests).
 func (f *FSClient) SetBudget(n int) { f.c.Budget = n }
+
+// OpFSRegister is the lane-local session-registration op (fs server
+// multiuser model; services/ABI-NOTES.md §4).
+const OpFSRegister uint16 = 8
+
+// Register binds uid→(name, capmask) on the fs server. Issued by
+// login/init after successful auth.
+func (f *FSClient) Register(uid uint32, name string, capmask uint64) error {
+	pl := make([]byte, 0, 14+len(name))
+	var head [4]byte
+	Put32(head[:], uid)
+	pl = append(pl, head[:]...)
+	pl = AppendLStr(pl, name)
+	var m [8]byte
+	Put64(m[:], capmask)
+	pl = append(pl, m[:]...)
+
+	rep, err := f.c.InboxRequest(f.h, OpFSRegister, pl)
+	if err != nil {
+		return err
+	}
+	st, _, err := splitReply(rep)
+	if err != nil {
+		return err
+	}
+	return FSErr(st)
+}

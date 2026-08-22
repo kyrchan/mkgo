@@ -56,8 +56,8 @@ func TestFSServerEndToEnd(t *testing.T) {
 
 	cli := newClient(t, k)
 
-	// mkdir /etc + write /etc/motd + read back
-	if err := cli.Mkdir("/etc"); err != nil {
+	// mkdir /etc (may be pre-provisioned) + write /etc/motd + read back
+	if err := cli.Mkdir("/etc"); err != nil && err != lib.ErrFSExists {
 		t.Fatal(err)
 	}
 	if err := cli.Create("/etc/motd"); err != nil {
@@ -79,8 +79,17 @@ func TestFSServerEndToEnd(t *testing.T) {
 	}
 
 	ents, err := cli.List("/")
-	if err != nil || len(ents) != 1 || ents[0].Name != "ETC" || !ents[0].IsDir() {
-		t.Fatalf("list=%+v err=%v", ents, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, e := range ents {
+		names[e.Name] = e.IsDir()
+	}
+	for _, want := range []string{"ETC", "HOME", "TMP", "BOOT"} {
+		if !names[want] {
+			t.Fatalf("root missing %s: %+v", want, ents)
+		}
 	}
 
 	// error mapping across the wire
@@ -106,7 +115,7 @@ func TestFSServerLargeTransferChunking(t *testing.T) {
 	startServer(t, k, stop)
 	cli := newClient(t, k)
 
-	if err := cli.Mkdir("/home"); err != nil {
+	if err := cli.Mkdir("/home"); err != nil && err != lib.ErrFSExists {
 		t.Fatal(err)
 	}
 	if err := cli.Create("/home/big.bin"); err != nil {
@@ -159,4 +168,145 @@ func TestFSServerMultiClientReplyRouting(t *testing.T) {
 	if _, err := b.Stat("/b-file.txt"); err != nil {
 		t.Fatalf("b lost its reply channel: %v", err)
 	}
+}
+
+// ---- multiuser policy (AGENTS.md Phase 5 gate) ----
+
+func TestMultiuserRootingAndDenials(t *testing.T) {
+	k := lib.NewFakeKernel()
+	stop := make(chan struct{})
+	defer close(stop)
+	startServer(t, k, stop)
+
+	restoreAdmin := k.As(0) // admin = uid 0
+	admin := newUidClient(t, k, "admin0", 0)
+
+	// seed: admin creates /etc, homes, motd
+	for _, d := range []string{"/etc", "/home", "/home/u1", "/home/u2", "/boot", "/boot/modules"} {
+		if err := admin.Mkdir(d); err != nil && err != ErrExists && err != lib.ErrFSExists {
+			t.Fatalf("admin mkdir %s: %v", d, err)
+		}
+	}
+	if err := admin.Create("/etc/motd"); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := admin.WriteFile("/etc/motd", 0, []byte("welcome\n")); err != nil || n != 8 {
+		t.Fatalf("admin motd write %d %v", n, err)
+	}
+	restoreAdmin()
+
+	u1 := newUidClient(t, k, "u1sess", uint32(1001), "u1", lib.CapFocus)
+	u2 := newUidClient(t, k, "u2sess", uint32(1002), "u2", lib.CapFocus)
+
+	// u1 writes into OWN home via relative path (rooted at /home/u1)
+	restoreU1 := k.As(1001)
+	if err := u1.Create("secret.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := u1.WriteFile("secret.txt", 0, []byte("u1 data")); err != nil || n != 7 {
+		t.Fatalf("u1 write %d %v", n, err)
+	}
+	restoreU1()
+
+	// u2 CANNOT see or touch u1's file — hidden as ENOENT
+	scopeU2 := k.As(1002)
+	if _, err := u2.Stat("/home/u1/secret.txt"); err != lib.ErrFSNoEntry {
+		t.Fatalf("u2 stat u1 file: %v", err)
+	}
+	if _, err := u2.Stat("/home/u1"); err != lib.ErrFSNoEntry {
+		t.Fatalf("u2 stat u1 home: %v", err)
+	}
+	buf := make([]byte, 32)
+	if _, err := u2.ReadFile("/home/u1/secret.txt", 0, buf); err != lib.ErrFSNoEntry {
+		t.Fatalf("u2 read u1 file: %v", err)
+	}
+	if err := u2.Delete("/home/u1/secret.txt"); err != lib.ErrFSNoEntry {
+		t.Fatalf("u2 delete u1 file: %v", err)
+	}
+
+	// u2 CAN write /tmp (world-writable); u1 sees it
+	if err := u2.Create("/tmp/shared.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := u2.WriteFile("/tmp/shared.txt", 0, []byte("shared")); err != nil || n != 6 {
+		t.Fatalf("u2 tmp write %d %v", n, err)
+	}
+
+	// u2's home is writable by u2 but invisible to u1
+	if err := u2.Create("mine.txt"); err != nil {
+		t.Fatal(err)
+	}
+	scopeU2()
+	restoreU1 = k.As(1001)
+	if _, err := u1.Stat("/home/u2/mine.txt"); err != lib.ErrFSNoEntry {
+		t.Fatalf("u1 sees u2 file: %v", err)
+	}
+	restoreU1()
+
+	// /etc writes denied without CAP_FS_ADMIN; allowed with it
+	scopeU2 = k.As(1002)
+	if err := u2.Create("/etc/hax"); err != lib.ErrFSAccess {
+		t.Fatalf("u2 /etc create: %v", err)
+	}
+	if _, err := u2.WriteFile("/etc/motd", 0, []byte("pwned")); err != lib.ErrFSAccess {
+		t.Fatalf("u2 /etc write: %v", err)
+	}
+	scopeU2()
+	restoreU3 := k.As(1003)
+	u3 := newUidClient(t, k, "u3sess", uint32(1003), "u3", lib.CapFocus|lib.CapFSAdmin)
+	if err := u3.Create("/etc/allowed.cfg"); err != nil {
+		t.Fatalf("fs-admin user /etc create: %v", err)
+	}
+
+	// /boot read-only for users even with FS_ADMIN
+	if err := u3.Create("/boot/modules/evil"); err != lib.ErrFSAccess {
+		t.Fatalf("u3 /boot create: %v", err)
+	}
+	if ents, err := u3.List("/boot/modules"); err != nil || len(ents) != 0 {
+		t.Fatalf("u3 /boot list=%+v err=%v", ents, err)
+	}
+	restoreU3()
+
+	// unregistered uid = guest: reads OK, relative paths refused
+	guestScope := k.As(5555)
+	guest := newUidClient(t, k, "guestx", uint32(5555))
+	if _, err := guest.Stat("/etc/motd"); err != nil {
+		t.Fatalf("guest /etc read: %v", err)
+	}
+	if err := guest.Create("anything"); err != lib.ErrFSAccess {
+		t.Fatalf("guest relative create: %v", err)
+	}
+	guestScope()
+
+	// admin still absolute
+	restoreAdmin()
+	if st, err := admin.Stat("/home/u1/secret.txt"); err != nil || st.Size != 7 {
+		t.Fatalf("admin cross-home stat=%+v err=%v", st, err)
+	}
+	if err := admin.Create("/rootfile"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// newUidClient binds an fs client; when uid>0 it registers the session
+// under that uid (scoped via FakeKernel.As so the kernel-stamped uid in
+// the canonical header matches).
+func newUidClient(t *testing.T, k *lib.FakeKernel, role string, args ...interface{}) *lib.FSClient {
+	t.Helper()
+	c, err := lib.BindFS(k, role)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetBudget(20000)
+	if len(args) >= 3 {
+		uid := args[0].(uint32)
+		name := args[1].(string)
+		mask := args[2].(uint64)
+		restore := k.As(uid)
+		defer restore()
+		if err := c.Register(uid, name, mask); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
+	return c
 }

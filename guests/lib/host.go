@@ -227,7 +227,11 @@ type FakeKernel struct {
 	OnPower   func(op uint16)
 
 	nextSid uint32
-	seq     uint16 // reply seq bookkeeping not needed: echo request seq
+
+	// ForceUID overrides sender-uid stamping when set (tests simulate
+	// multiple sessions against one bus without goroutine juggling).
+	ForceUID    uint32
+	forceUIDSet bool
 }
 
 // NewFakeKernel boots the three kernel-owned endpoints and seeds the
@@ -239,6 +243,17 @@ func NewFakeKernel() *FakeKernel {
 	}
 	fk.Sessions = append(fk.Sessions, &FakeSession{Sid: 0, UID: 0, Name: "kernel", Capmask: CapAll, State: StateRunning})
 	return fk
+}
+
+// As returns a function scoping sends to the given uid (defer-style):
+//
+//	restore := fk.As(1001)
+//	...client calls...
+//	restore()
+func (fk *FakeKernel) As(uid uint32) func() {
+	prevUID, prevSet := fk.ForceUID, fk.forceUIDSet
+	fk.ForceUID, fk.forceUIDSet = uid, true
+	return func() { fk.ForceUID, fk.forceUIDSet = prevUID, prevSet }
 }
 
 // AddSession registers a session (boot-preload stand-in for console.wasm
@@ -276,6 +291,13 @@ func (fk *FakeKernel) PortSend(h Handle, data []byte) int32 {
 	} else {
 		cp := make([]byte, len(data))
 		copy(cp, data)
+		if len(cp) >= 8 {
+			if fk.forceUIDSet {
+				Put32(cp[4:8], fk.ForceUID) // v1.1: kernel stamps sender uid
+			} else if fk.Cur != nil {
+				Put32(cp[4:8], fk.Cur.UID)
+			}
+		}
 		p.queue = append(p.queue, cp)
 	}
 	fk.mu.Unlock()
