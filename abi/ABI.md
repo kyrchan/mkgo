@@ -1,10 +1,21 @@
-# abi/ABI.md — guest-facing interface contracts (v1.2)
+# abi/ABI.md — guest-facing interface contracts (v1.3)
 
 Binding on both kernel substrate and all services/guests. Changes require a
 version bump here + note in MEMORY.md. All integers little-endian (wasm
 native). No NUL-terminated strings anywhere: lengths are explicit.
 "Window" = a region of a session's linear memory the kernel assigns at
 instantiation; guests never compute absolute addresses, only window offsets.
+
+## v1.3 changelog (RATIFIED by project owner, 2026-08-23)
+
+- §4 input records gain `u16 scan` — raw i8042 scancode (set 1, as
+  emitted untranslated by the shim). Record layout becomes:
+  `{u8 kind, u8 mods, u16 scan, u16 codepoint}` (6 bytes). `codepoint`
+  remains the kernel's US-layout mapping for backward compatibility;
+  keyboard LAYOUTS become userland policy: sessions load keymap tables
+  from `/etc/keymaps/<layout>` and translate from `scan` when a non-US
+  layout is active. Rationale: layouts are userland data, not kernel
+  policy.
 
 ## v1.2 changelog (RATIFIED by project owner, 2026-08-22)
 
@@ -103,10 +114,11 @@ invisible to guests — same window, same semantics. Managed-runtime guests
 
     kern_input_recv(ptr, cap) -> i32   // >0 len | 0 none
 
-Record stream into `ptr`, each record:
+Record stream into `ptr`, each record (v1.3 layout):
 
     u8 kind (1=key_down, 2=key_up)   u8 mods (bit0 shift bit1 ctrl bit2 alt)
-    u16 codepoint (Unicode; raw scancodes mapped by kernel)
+    u16 scan  (raw i8042 scancode set 1, untranslated)
+    u16 codepoint (kernel's US-layout mapping; consumers may re-map via scan)
 
 Delivered ONLY to the focused session. Focus is a kernel-owned attribute;
 `kern_focus_set(port_handle)` moves it (login/shell use this after auth).
