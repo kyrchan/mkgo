@@ -142,3 +142,25 @@ size (16384 sectors × 512 B). Proposal for a future ABI note:
 `kern_blk_geom(ptr)` returning {u32 blk_size, u64 num_blocks}, so image
 sizes can vary without rewrapping modules. Host-side tests exercise the
 identical BlockDev interface over the §3 window + RamDisk harness.
+
+## 10. "net" socket service protocol v0 (extended-mandate lane contract)
+
+Served by net.wasm on the well-known "net" port over the canonical
+header. Payload integers LE; IP addresses raw 4-byte arrays.
+
+	OPEN   {u16 kind(0=tcp,1=udp), u16 port}  -> {i32 st, u16 sock}
+	       port=0 → outbound TCP socket (CONNECT next); nonzero → listen/bind
+	CONNECT{u16 sock, u8 ip[4], u16 rport}    -> {i32 st}
+	SEND   {u16 sock, u16 len, data}          -> {i32 st}
+	RECV   {u16 sock, u16 max}                -> {i32 st, u16 got, data[got]}
+	CLOSE  {u16 sock}                         -> {i32 st}
+
+st: 0 ok, -1 no-such-socket, -2 bad-op, -3 state. RECV with an empty
+buffer is st=0/got=0 (poll semantics). Guests use `kern.NetClient`
+(guests/lib) instead of hand-framing.
+
+§6 window instantiation: devman ENUM class=net records ordered by
+instance — [0]=RX ring, [1]=TX ring; each mapped into the session's own
+linear memory at win_off (same unsafe-slice rationale as pre-v1.1 block;
+a managed-runtime-safe import pair is proposed for §11/v2 alongside the
+reply-cap work). Address assignment via argv[1]="<mac> <ip>".

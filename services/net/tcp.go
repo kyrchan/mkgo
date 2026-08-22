@@ -283,6 +283,9 @@ func (c *TCPConn) handle(seg *TCPSegment) {
 				c.inFlight = c.inFlight[acked:]
 			}
 			c.sndUNA = seg.Ack
+			if c.state == stateEstablished {
+				c.flushLocked() // window opened: push queued bytes
+			}
 		}
 	}
 

@@ -135,6 +135,7 @@ func TestNetServerTCPRoundTrip(t *testing.T) {
 		t.Fatalf("send st=%v err=%v", rep, err)
 	}
 
+	var acc []byte
 	waitForCond(t, func() bool {
 		pl := make([]byte, 4)
 		lib.Put16(pl[0:2], outID)
@@ -143,8 +144,11 @@ func TestNetServerTCPRoundTrip(t *testing.T) {
 		if err != nil || len(rep) < 30 {
 			return false
 		}
-		got := int(lib.Get16(rep[28:30]))
-		return got == len(payload) && bytes.Equal(rep[30:30+got], payload)
+		if int32(lib.Get32(rep[24:])) == netStatusOK {
+			got := int(lib.Get16(rep[28:30]))
+			acc = append(acc, rep[30:30+got]...)
+		}
+		return bytes.Equal(acc, payload)
 	}, "echo not received")
 
 	// teardown both ends
