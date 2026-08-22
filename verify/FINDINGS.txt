@@ -155,3 +155,6 @@ progress notes: (1) struct port gained `creator` (ports.cc:22, set in port_creat
 ===== FINDING 39 2026-08-22 TLS@d461037 =====
 severity: NOTE
 commit d461037 adds golden-file coverage for the VMDK/VDI converters (golden_test.go + testdata/vdi_header.golden + vmdk_descriptor.golden): output locked byte-for-byte against format drift with UPDATE_GOLDEN regeneration flow. Mechanical re-run at this head: go vet clean, go test -race fully green from tools/img module root. Purely additive test coverage; no defects found.
+===== FINDING 40 2026-08-22 TLS@1929b87 =====
+severity: NOTE
+tools/hvtest (new package) · headless hypervisor test-matrix scaffolding per AGENTS.md Phase 12: QEMU/VMware/VBox runners, file-backed + socket serial gate polling with deadlines, tool locator, golden gates. go vet clean; go test -race green (1.0s). Purely additive test infrastructure; no defects found this pass.
