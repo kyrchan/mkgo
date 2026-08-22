@@ -158,3 +158,8 @@ commit d461037 adds golden-file coverage for the VMDK/VDI converters (golden_tes
 ===== FINDING 40 2026-08-22 TLS@1929b87 =====
 severity: NOTE
 tools/hvtest (new package) · headless hypervisor test-matrix scaffolding per AGENTS.md Phase 12: QEMU/VMware/VBox runners, file-backed + socket serial gate polling with deadlines, tool locator, golden gates. go vet clean; go test -race green (1.0s). Purely additive test infrastructure; no defects found this pass.
+===== FINDING 41 2026-08-22 SVC@fb53fe2 =====
+severity: NOTE
+services/net (new, 2576 lines) reviewed clean — Phase-9 scope landed early. §6 WindowRing matches the ratified pinned layout (head@0/tail@4, N=256, stride 1536, len+data[1526]); corrupt-slot length clamp; unsigned-lag full-ring drop documented as no-backpressure v1. 'net' port server uses lib.ParseHeader canonical framing and replies to requester rname per v1.1; socket API documented lane-local in ABI-NOTES §10 per fleet proposal rule. TCP v1: standard state set, SYN/FIN consume seq, cumulative ACKs, single-segment send window, no CC/options — correctly scoped. Mechanical at this head: go vet clean ×3 modules; go test -race: net ok, fs NOW GREEN (blk-import migration resolved F3a's window-model races), console/login/guests-lib ok; init/shell remain red on known race-classified items.
+===== FINDING 3a-CLOSED 2026-08-22 SVC@fb53fe2 =====
+CLOSED: services/fs block-window mailbox races no longer exist — daac2b6/fb53fe2 moved fs.wasm onto kern_blk_read/write managed-runtime imports, removing RamDisk.serveWindow from the production path; fs package passes go test -race green (-count=1 verified this pass). Remaining race-gate items are init/shell harness races only (F3b/c residue tracked under F35).
