@@ -4,13 +4,14 @@ import "errors"
 
 // §7 request ops (abi/ABI.md; core/kernsvc.cc is the reference server).
 const (
-	OpRegistryList  uint16 = 1
-	OpRegistryCaps  uint16 = 2
-	OpRegistryKill  uint16 = 3
-	OpRegistrySpawn uint16 = 4
-	OpDevmanEnum    uint16 = 1
-	OpPowerReboot   uint16 = 1
-	OpPowerOff      uint16 = 2
+	OpRegistryList    uint16 = 1
+	OpRegistryCaps    uint16 = 2
+	OpRegistryKill    uint16 = 3
+	OpRegistrySpawn   uint16 = 4
+	OpRegistrySetconf uint16 = 5 // proposed, services/ABI-NOTES.md §6
+	OpDevmanEnum      uint16 = 1
+	OpPowerReboot     uint16 = 1
+	OpPowerOff        uint16 = 2
 )
 
 // SPAWN wire layout (v1, per core/kernsvc.cc): name[16], path[64],
@@ -33,6 +34,14 @@ type RegistryClient struct {
 
 // SetBudget bounds the reply poll (yields) for every registry call.
 func (r *RegistryClient) SetBudget(n int) { r.c.Budget = n }
+
+// Handle exposes the underlying registry bind handle (raw ops).
+func (r *RegistryClient) Handle() Handle { return r.rg }
+
+// Request performs one raw framed registry request (extension ops).
+func (r *RegistryClient) Request(h Handle, op uint16, payload []byte) ([]byte, error) {
+	return r.c.Request(h, op, payload)
+}
 
 func BindRegistry(k Kernel) (*RegistryClient, error) {
 	h := k.PortBind(NameRegistry)
