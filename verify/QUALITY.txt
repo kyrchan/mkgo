@@ -7,7 +7,7 @@
 | SVC   | 88ed8a7 | go vet clean ×3 modules; go test -race: guests/lib ok, console+login ok (-count=1), fs/init/shell RED via harness races (F3); addabiver untested (F7) | 0 | 2 (F3 race gate red, F17 Phase-7 imports in shipped wasm) | service logic itself reviewed clean; issues are test-infra + premature imports |
 | TLS   | e0bfb11 | go vet clean; go test -race clean (unit + mformat parity) | 0 | 0 | healthy |
 
-Open BLOCKER list (all MAIN working tree): F2 F12 F13 F16 F18 F31
+Open BLOCKER list: F2 F12 F13 F16 F18 F31 F32 (F33 MAJOR).
 (F1 CLOSED in tree). MAJORs: F3 F17 F23 F26.
 (8 total).
 Open MINOR/NOTE watchlist: F5 PTRACE scaffolding · F6 LIST/CAPS ungated ·
