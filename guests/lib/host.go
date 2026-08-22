@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Bus is the host-side Kernel: it mirrors core/ports.cc exactly —
@@ -150,9 +151,14 @@ func (b *Bus) FocusSet(h Handle) {
 	}
 }
 
-// Yield cooperatively reschedules; on the host this just yields to other
-// goroutines so concurrent service loops and test drivers interleave.
-func (b *Bus) Yield() { runtime.Gosched() }
+// Yield cooperatively reschedules; on the host this parks briefly so
+// concurrent service loops and test drivers interleave the way they do
+// across real kernel quanta (a pure Gosched spin starves peers under
+// load and made RPC budgets nondeterministic).
+func (b *Bus) Yield() {
+	runtime.Gosched()
+	time.Sleep(20 * time.Microsecond)
+}
 
 // ---- test conveniences ----
 
