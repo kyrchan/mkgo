@@ -6,15 +6,21 @@ decisions, and gotchas. Update at milestones or near context limits.
 
 ## Status (as of 2026-08-22)
 
-**Phase 3 gate GREEN (commit 39dc3fb).** wasm3 + frozen WASI profile +
-session scheduler in kernel; hello.wat/hello.rs/hello.go all print via
-fd_write through the kernel (make test-all = TEST PASS + g1/g2/g3).
-Toolchains: wat2wasm@~/.local/wabt, rustc wasm32v1-none target
-(RUSTUP_HOME=~/.local/rustup — wasip1 target's crt1 conflicts with a
-custom _start), stock go 1.24 GOOS=wasip1 (zero patching).
-Next: **Phase 4** — port imports per abi/ABI.md §1 (kern_port_*),
-kernel-owned registry/devman/power listeners per §7, console.wasm +
-login.wasm, gate = ping-pong + kill-console isolation + LIST.
+**Phase 4 gate GREEN (commit 7e7c2dd).** Message ports per ABI §1 in
+'kernel' namespace; kernel-owned registry/devman/power endpoints (§7
+framing {u16 op,u16 seq,payload}, replies to sending port, capability
+bits + [audit] to serial); cooperative coroutine scheduler (ctx.S,
+per-session native stacks + per-session WASI state); console.wasm +
+login.wasm preloaded pre-EBS from /boot/modules; SPAWN resolves from a
+boot preload table until fs exists (documented interim divergence).
+Gate: ping-pong x3 + LIST shows 4 sessions + KILL console rc=0 with
+login heartbeats continuing + KERNEL-OK.
+Host driver tools/hostp4.cc runs the whole scenario pre-QEMU — always
+do that first. Next: **Phase 5** — fs.wasm (Go, FAT16 over §3 block
+window, RAM-disk backend), dual client routing (kernel-routed preview1
+path_open/fd_read/fd_write/fd_close/path_create* AND guests/lib direct
+ports), multiuser stubs (/etc static table, /home/<u> roots),
+abi_ver custom section check; retire kernel/vm+vasm+demo.
 
 Allocator lessons (rt.cc): free-list next ptr must NOT clobber hdr.size;
 binned blocks rounded to FULL class size so pops never undersize;
@@ -22,6 +28,7 @@ cls_of returns NCLASS sentinel for oversized → exact alloc, leaked on
 free; Go runtime PANICS at init unless fd_prestat_get returns EBADF;
 host shims must use __libc_malloc aliases (std::malloc resolves to your
 own definition). make test ≈150s each — budget bash timeouts.
+ctx_make: RIP slot is the HIGHEST address of the crafted frame.
 
 Phase-2 notes: C++ has no range designators (vm jump table fills at
 runtime); efi_main needs extern "C" or the linker silently defaults the
