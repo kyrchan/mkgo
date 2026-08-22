@@ -6,7 +6,24 @@ decisions, and gotchas. Update at milestones or near context limits.
 
 ## Status (as of 2026-08-22)
 
-**Phase 5 gate GREEN (commit da43b41) — Phases 0–5 ALL GREEN.**
+**Phase 7 gate GREEN (commit 95a22d7) — Phases 0-5 + 7 ALL GREEN.**
+Interactive userland live: input/focus (§4), init-driven boot (kernel
+spawns only init; conf via argv[1]), typed login -> focus shell,
+shell built-ins echo/cat/ls/stat/kill-session, services/lib = guest
+libc (module kernel.services). Gate p7 drives scripted stdin over a
+QEMU serial pipe (scripts/run_p7.sh). kmain has TWO modes: init-driven
+(mod_init present) or legacy payload-slot gates (p4/p5 disks).
+Phase-7 lessons: Go runtimes call poll_oneoff routinely — stub must
+YIELD quanta, not return instantly (starvation) nor ENOSYS (fatal);
+serial RX needs EOF-safe readiness (never push garbage at EOF);
+services need bounded lifetimes so sessions drain and KERNEL-OK
+prints; /etc is world-readable via namespace special-case.
+Next: **Phase 8** — §5 timer window, IRQ-preemptive RR (quantum from
+kernel.conf via SETCONF), cooperative fallback flag, virtio-blk shim
+re-backing the block class behind kern_blk_* imports. Gates:
+persistence across reset + busy-loop cannot starve second session.
+
+**Phase 5 gate GREEN (commit da43b41).**
 fs.wasm = FAT16 over kernel RAM disk; dual routing live: (a)
 kernel-routed preview1 path_open/fd_read/fd_write/fd_close via
 _fsbuf/_fsreq sync exports + fsroute yield-wait (NO wasm3 re-entry),
