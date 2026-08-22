@@ -296,3 +296,6 @@ func (f *FSClient) simple(op uint16, path string) error {
 	}
 	return FSErr(st)
 }
+
+// SetBudget overrides the recv poll budget for this client (tests).
+func (f *FSClient) SetBudget(n int) { f.c.Budget = n }

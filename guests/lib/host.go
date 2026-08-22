@@ -191,73 +191,6 @@ func (b *Bus) HasPort(name string) bool {
 	return ok
 }
 
-// ---- input record helpers (ABI §4) ----
-
-// Input event kinds / modifier bits.
-const (
-	KeyDown uint8 = 1
-	KeyUp   uint8 = 2
-
-	ModShift uint8 = 1 << 0
-	ModCtrl  uint8 = 1 << 1
-	ModAlt   uint8 = 1 << 2
-)
-
-// InputRecLen is one §4 record: u8 kind, u8 mods, u16 codepoint.
-const InputRecLen = 4
-
-// InputEvent is a decoded §4 record.
-type InputEvent struct {
-	Kind      uint8
-	Mods      uint8
-	Codepoint uint16
-}
-
-// Encode renders the wire form.
-func (e InputEvent) Encode() []byte {
-	b := make([]byte, InputRecLen)
-	b[0] = e.Kind
-	b[1] = e.Mods
-	Put16(b[2:], e.Codepoint)
-	return b
-}
-
-// DecodeInputEvent parses one wire record.
-func DecodeInputEvent(b []byte) (InputEvent, bool) {
-	if len(b) < InputRecLen {
-		return InputEvent{}, false
-	}
-	return InputEvent{Kind: b[0], Mods: b[1], Codepoint: Get16(b[2:4])}, true
-}
-
-// PollInput drains at most one §4 record through k.
-func PollInput(k Kernel) (InputEvent, bool) {
-	var buf [InputRecLen]byte
-	n := k.InputRecv(buf[:])
-	if n < InputRecLen {
-		return InputEvent{}, false
-	}
-	ev, _ := DecodeInputEvent(buf[:])
-	return ev, true
-}
-
-// InjectKey queues a typed character for the focused session (tests).
-func (b *Bus) InjectKey(cp uint16, kind, mods uint8) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.InputQ = append(b.InputQ, InputEvent{Kind: kind, Mods: mods, Codepoint: cp}.Encode())
-}
-
-// TypeString queues key_down records for each rune.
-func (b *Bus) TypeString(s string) {
-	for _, r := range s {
-		b.InjectKey(uint16(r), KeyDown, 0)
-	}
-}
-
-// Enter queues a carriage return (shell line commit).
-func (b *Bus) Enter() { b.InjectKey('\r', KeyDown, 0) }
-
 // ---- FakeKernel: Bus + inline §7 endpoints mirroring core/kernsvc.cc ----
 
 // FakeSession is one registry-listed session.
@@ -302,11 +235,15 @@ func NewFakeKernel() *FakeKernel {
 }
 
 // AddSession registers a session (boot-preload stand-in for console.wasm
-// etc.) and returns it.
+// etc.) and returns it. The session's well-known port name is created
+// too when free — modeling a module that binds its own name at startup.
 func (fk *FakeKernel) AddSession(name string, uid uint32, mask uint64) *FakeSession {
 	s := &FakeSession{Sid: fk.nextSid, UID: uid, Name: name, Capmask: mask, State: StateRunning}
 	fk.nextSid++
 	fk.Sessions = append(fk.Sessions, s)
+	if _, exists := fk.ports[name]; !exists && len(name) <= MaxName {
+		fk.ports[name] = &busPort{name: name}
+	}
 	return s
 }
 
@@ -513,3 +450,20 @@ func popcount(v uint64) int {
 	}
 	return n
 }
+
+// InjectKey queues a typed character for the focused session (tests).
+func (b *Bus) InjectKey(cp uint16, kind, mods uint8) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.InputQ = append(b.InputQ, InputEvent{Kind: kind, Mods: mods, Codepoint: cp}.Encode())
+}
+
+// TypeString queues key_down records for each rune (tests).
+func (b *Bus) TypeString(s string) {
+	for _, r := range s {
+		b.InjectKey(uint16(r), KeyDown, 0)
+	}
+}
+
+// Enter queues a carriage return (shell line commit).
+func (b *Bus) Enter() { b.InjectKey('\r', KeyDown, 0) }

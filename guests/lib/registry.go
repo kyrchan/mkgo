@@ -31,6 +31,9 @@ type RegistryClient struct {
 	rg Handle
 }
 
+// SetBudget bounds the reply poll (yields) for every registry call.
+func (r *RegistryClient) SetBudget(n int) { r.c.Budget = n }
+
 func BindRegistry(k Kernel) (*RegistryClient, error) {
 	h := k.PortBind(NameRegistry)
 	if h == InvalidHandle {
