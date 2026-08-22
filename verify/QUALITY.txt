@@ -3,7 +3,7 @@
 
 | repo | head reviewed | mechanical | open BLOCKERs | open MAJORs | trend |
 |---|---|---|---|---|---|
-| MAIN  | 6a22fec (code committed at da43b41: Phase 5 fs.wasm + dual routing + multiuser stubs + VM retirement; ABI v1.1 RATIFIED) + active dirty tree (input.cc, boot orchestration, services copies) | per-file C++ syntax pass at da43b41: ALL core files clean; go vet n/a; -fanalyzer available but not rerun post-F1-fix | 6: F12 devblk wraparound OOB · F13 LOGIN owner/binder escalation · F16 routed_rw reply clamp · F18 §7 silent default · F31 kern_blk_* ungated · F32 uid stamping absent | 3 (F4 hosteng stale, F33-item1 SETCONF unimplemented, F37 ppa over-broad caps) | gates GREEN Ph0–5 per MEMORY.md; security blockers are negative-path, outside gate coverage |
+| MAIN  | 95a22d7 (Phase 7 interactive userland COMMITTED; Phases 0-5+7 gates GREEN per MEMORY.md) | per-file C++ syntax pass at HEAD: zero failures incl. input.cc | 6: F12 devblk wraparound OOB · F13 LOGIN owner/binder escalation · F16 routed_rw reply clamp · F18 §7 silent default · F31 kern_blk_* ungated · F32 uid stamping absent | 3 (F4 hosteng stale, F33-item1 SETCONF unimplemented, F37 ppa over-broad caps) | gates GREEN Ph0–5 per MEMORY.md; security blockers are negative-path, outside gate coverage |
 | SVC   | dadeaf4 | go vet: fs BROKEN at HEAD (F42); -race: init+shell+login+console+net green (fs unbuildable); net TCP flaky under parallel load (F43) | 0 | 2 (F42 fs build break, F17 pending MAIN commit; F35 races CLOSED @dadeaf4) | race-hardening landed but shipped broken fs build |
 | TLS   | 1929b87 + b75d0f5 README docs | go vet clean; go test -race clean incl. hvtest scaffolding + golden-file converter tests | 0 | 0 | healthy; Phase-12 prep started |
 
