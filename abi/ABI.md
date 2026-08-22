@@ -1,10 +1,17 @@
-# abi/ABI.md — guest-facing interface contracts (v1.1)
+# abi/ABI.md — guest-facing interface contracts (v1.2)
 
 Binding on both kernel substrate and all services/guests. Changes require a
 version bump here + note in MEMORY.md. All integers little-endian (wasm
 native). No NUL-terminated strings anywhere: lengths are explicit.
 "Window" = a region of a session's linear memory the kernel assigns at
 instantiation; guests never compute absolute addresses, only window offsets.
+
+## v1.2 changelog (RATIFIED by project owner, 2026-08-22)
+
+- §9 class 9 FRAMEBUFFER is now DEFINED (layout in §9). Backends: Bochs
+  DISPI LFB first (QEMU `-device bochs-display`, VirtualBox), VMware
+  SVGA II FIFO second (Phase 12). Consumers: `display.wasm` text
+  terminal / future compositor — layer-2 policy per §8.
 
 ## v1.1 changelog (RATIFIED by project owner, 2026-08-22 — all lanes adopt)
 
@@ -194,13 +201,29 @@ Phase 12).
 IRQ policy: v1 fully polled (windows only). v2 (post-Phase-9, ABI bump)
 may add `arm` flags + kernel-routed wakeups; never direct guest IRQs.
 
-## 9. Reserved device classes (NOT defined yet — v2 material)
+## 9. Reserved device classes
 
 Class IDs reserved so early code doesn't squat them:
 
-    6 = WLAN      7 = BLUETOOTH      8 = USB-HC      9 = FRAMEBUFFER
+    6 = WLAN      7 = BLUETOOTH      8 = USB-HC      9 = FRAMEBUFFER (DEFINED v1.2)
 
-Window layouts undefined on purpose. When defined, expect:
+### 9.FB — FRAMEBUFFER window layout (v1.2, binding)
+
+    0x00 u32 magic 'FBW'
+    0x04 u32 width            0x08 u32 height      0x0c u32 bpp (=32 XRGB)
+    0x10 u64 fb_off           // pixel data; stride = width*4
+    0x18 u32 caps             // bit0 double-buffer, bit1 damage-rects
+    -- control mailbox (§3 request/completion shape, polled) --
+    0x20 u32 op   1=SET_MODE {u32 w,u32 h,u32 bpp @0x30}
+                  2=FLIP (present back buffer; no-op if !caps.bit0)
+                  3=UPDATE_RECT {u32 x,y,w,h @0x30} (requires caps.bit1)
+    0x24 u32 next_req_id      0x28 u32 done_req_id      0x2c i32 status
+
+v1 rule: single-buffer default (FLIP is a no-op unless double-buffer
+negotiated); consumers must tolerate width==0 ("no display attached").
+Backends MUST expose identical semantics regardless of transport.
+
+Window layouts still undefined on purpose:
 
 - BLUETOOTH: HCI transport window (H4 framing over a UART instance, or
   USB interrupt/bulk pipes once class 8 exists). L2CAP/ATT/GATT live in a
