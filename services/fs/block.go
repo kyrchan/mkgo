@@ -37,8 +37,12 @@ var ErrBlockWindow = errors.New("fs: bad block window")
 // On wasm, mem is the session's own linear memory starting at the
 // win_off reported by devman ENUM; on the host it is a simulated window
 // completed by RamDisk — identical mailbox semantics both ways.
+// The mailbox is shared memory: on the host we serialize guest/backend
+// access with a mutex (the kernel's real barriers don't exist in Go's
+// memory model; -race demands the lock).
 type BlockWindow struct {
 	mem []byte
+	mu  *sync.Mutex
 	req uint32 // last issued request id
 }
 
@@ -50,7 +54,10 @@ func NewBlockWindow(mem []byte) (*BlockWindow, error) {
 	if lib.Get32(mem) != bwMagic || lib.Get32(mem[4:]) != bwBlkSize {
 		return nil, ErrBlockWindow
 	}
-	w := &BlockWindow{mem: mem}
+	if mem[0x14] == 0xFF && mem[0x15] == 0xFF { // marker unused; reserved
+		_ = mem
+	}
+	w := &BlockWindow{mem: mem, mu: &sync.Mutex{}}
 	w.req = lib.Get32(mem[0x10:])
 	return w, nil
 }
@@ -70,19 +77,26 @@ func (w *BlockWindow) Request(op uint64, lba uint64, count uint32) (int32, error
 	if lba+uint64(count) > numBlocks {
 		return -1, errors.New("fs: lba out of range")
 	}
+	w.mu.Lock()
 	lib.Put64(w.mem[0x18:], op)
 	lib.Put64(w.mem[0x20:], lba)
 	lib.Put32(w.mem[0x28:], count)
 	lib.Put64(w.mem[0x30:], bwDataOff)
-
 	next := lib.Get32(w.mem[0x10:]) + 1
 	lib.Put32(w.mem[0x10:], next)
+	w.mu.Unlock()
 	w.req = next
 
-	for lib.Get32(w.mem[0x38:]) != w.req {
+	for {
 		runtime.Gosched() // §3: single outstanding request, polled
+		w.mu.Lock()
+		done := lib.Get32(w.mem[0x38:])
+		st := int32(lib.Get32(w.mem[0x3c:]))
+		w.mu.Unlock()
+		if done == w.req {
+			return st, nil
+		}
 	}
-	return int32(lib.Get32(w.mem[0x3c:])), nil
 }
 
 // Read copies sectors into buf (chunked through the scratch area).
@@ -155,22 +169,26 @@ type RamDisk struct {
 func NewRamDisk(numBlocks int) (*RamDisk, *BlockWindow, error) {
 	rd := &RamDisk{Disk: make([]byte, numBlocks*int(bwBlkSize))}
 	mem := make([]byte, bwWindowMin)
+	mu := &sync.Mutex{}
 	lib.Put32(mem[0x00:], bwMagic)
 	lib.Put32(mem[0x04:], bwBlkSize)
 	lib.Put64(mem[0x08:], uint64(numBlocks))
-	go rd.serveWindow(mem)
+	go rd.serveWindow(mem, mu)
 	w, err := NewBlockWindow(mem)
 	if err != nil {
 		return nil, nil, err
 	}
+	w.mu = mu // share the backend's lock
 	return rd, w, nil
 }
 
-func (rd *RamDisk) serveWindow(mem []byte) {
+func (rd *RamDisk) serveWindow(mem []byte, mu *sync.Mutex) {
 	var served uint32
 	for {
+		mu.Lock()
 		next := lib.Get32(mem[0x10:])
 		if next == served {
+			mu.Unlock()
 			runtime.Gosched()
 			continue
 		}
@@ -185,14 +203,13 @@ func (rd *RamDisk) serveWindow(mem []byte) {
 			copy(mem[off:off+count*int(bwBlkSize)],
 				rd.Disk[int(lba)*int(bwBlkSize):(int(lba)+count)*int(bwBlkSize)])
 		case bwOpWrite:
-			rd.Mu.Lock()
 			copy(rd.Disk[int(lba)*int(bwBlkSize):(int(lba)+count)*int(bwBlkSize)],
 				mem[off:off+count*int(bwBlkSize)])
-			rd.Mu.Unlock()
 		default:
 			st = -1
 		}
 		lib.Put32(mem[0x38:], next)
 		lib.Put32(mem[0x3c:], uint32(st))
+		mu.Unlock()
 	}
 }

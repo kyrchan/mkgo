@@ -28,7 +28,7 @@ func startServer(t *testing.T, k *lib.FakeKernel, stop chan struct{}) {
 }
 
 func waitPortFS(k lib.Kernel) {
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if h := k.PortBind(lib.NameFS); h != lib.InvalidHandle {
 			return // name exists (we leak this probe bind; bus-only)

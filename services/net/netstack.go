@@ -21,6 +21,10 @@ type Stack struct {
 	sink PacketSink
 	arp  *ARPCache
 
+	// hmu serializes pop+handle so multiple pumpers (service loops)
+	// cannot reorder inbound segments relative to each other.
+	hmu sync.Mutex
+
 	mu     sync.Mutex
 	icmpIn []ICMPPacket // completed echo replies for tests/clients
 	udp    *UDPDemux
@@ -46,6 +50,8 @@ func NewStack(mac MAC, ip IP4, feed PacketFeed) *Stack {
 // pump services one inbound frame; returns whether a frame was present.
 // Call it in a loop (or from the future §6 window poller).
 func (s *Stack) pump() bool {
+	s.hmu.Lock()
+	defer s.hmu.Unlock()
 	raw, ok := s.src.Recv()
 	if !ok {
 		return false

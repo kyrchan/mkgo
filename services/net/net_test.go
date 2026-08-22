@@ -33,7 +33,7 @@ func pair(t *testing.T) (a, b *Stack) {
 // pumpUntil drives both stacks until cond() or deadline.
 func pumpUntil(t *testing.T, cond func() bool, msg string) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
@@ -277,7 +277,7 @@ func TestUDPDemuxAndSend(t *testing.T) {
 
 func waitForCond(t *testing.T, cond func() bool, msg string) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return

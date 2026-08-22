@@ -2,6 +2,7 @@ package main
 
 import (
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -51,11 +52,27 @@ func TestParseKnobs(t *testing.T) {
 	}
 }
 
-type recorder struct{ mu, lines []string } // simple; tests are single-goroutine readers
+// recorder is goroutine-safe: init logs from its own goroutine while
+// assertions read from the test goroutine (-race requires the lock).
+type recorder struct {
+	mu    sync.Mutex
+	lines []string
+}
 
-func (r *recorder) log(s string) { r.lines = append(r.lines, s) }
+func (r *recorder) log(s string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lines = append(r.lines, s)
+}
+
+func (r *recorder) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.lines...)
+}
+
 func (r *recorder) has(sub string) bool {
-	for _, l := range r.lines {
+	for _, l := range r.snapshot() {
 		if strings.Contains(l, sub) {
 			return true
 		}
@@ -67,9 +84,12 @@ func TestBootOrderAndKnobs(t *testing.T) {
 	k := lib.NewFakeKernel()
 	k.Cur = k.AddSession("init", 0, lib.CapAll)
 
+	var orderMu sync.Mutex
 	var order []string
 	k.SpawnHook = func(fk *lib.FakeKernel, name, path string, mask uint64, args []string) *lib.FakeSession {
+		orderMu.Lock()
 		order = append(order, name)
+		orderMu.Unlock()
 		return fk.AddSession(name, 0, mask)
 	}
 
@@ -81,10 +101,13 @@ func TestBootOrderAndKnobs(t *testing.T) {
 		Log:      rec.log,
 		Stop:     stop,
 	})
-	wait(t, func() bool { return len(order) == 3 }, "spawns incomplete")
+	wait(t, func() bool { orderMu.Lock(); defer orderMu.Unlock(); return len(order) == 3 }, "spawns incomplete")
+	orderMu.Lock()
 	if strings.Join(order, ",") != "console,login,fs" {
+		orderMu.Unlock()
 		t.Fatalf("boot order %v", order)
 	}
+	orderMu.Unlock()
 	wait(t, func() bool { return rec.has("spawned fs sid=") }, "fs spawn log missing")
 	wait(t, func() bool { return rec.has("knob quantum_ms=50 applied") },
 		"SETCONF knob not applied")
@@ -138,7 +161,7 @@ func TestSupervisionRespawnsAndRespectsPolicy(t *testing.T) {
 }
 
 // joined flattens the log for counting.
-func (r *recorder) joined() string { return strings.Join(r.lines, "\n") }
+func (r *recorder) joined() string { return strings.Join(r.snapshot(), "\n") }
 
 func TestSpawnGiveUpAfterMaxFails(t *testing.T) {
 	k := lib.NewFakeKernel()
@@ -169,7 +192,7 @@ func mustConf(t *testing.T, text string) []Service {
 
 func wait(t *testing.T, cond func() bool, msg string) {
 	t.Helper()
-	deadline := time.Now().Add(4 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return

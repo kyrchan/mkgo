@@ -286,12 +286,6 @@ func (c *TCPConn) handle(seg *TCPSegment) {
 		}
 	}
 
-	// in-order payload delivery
-	if len(seg.Payload) > 0 && seg.Seq == c.rcvNXT {
-		c.rcvBuf = append(c.rcvBuf, seg.Payload...)
-		c.rcvNXT += uint32(len(seg.Payload))
-	}
-
 	switch c.state {
 	case stateListen:
 		// passive open: SYN (no ACK) creates the half-open connection;
@@ -322,9 +316,6 @@ func (c *TCPConn) handle(seg *TCPSegment) {
 			}
 		}
 	case stateEstablished:
-		if len(seg.Payload) > 0 {
-			c.sendLocked(TCPAck, nil)
-		}
 		if seg.Flags&TCPFin != 0 {
 			c.rcvNXT++
 			c.sendLocked(TCPAck, nil)
@@ -352,6 +343,14 @@ func (c *TCPConn) handle(seg *TCPSegment) {
 			c.state = stateClosed
 			c.err = ErrClosed
 		}
+	}
+
+	// in-order payload delivery — AFTER the state switch so segments
+	// racing the handshake's final ACK land in a live rcv window.
+	if c.state == stateEstablished && len(seg.Payload) > 0 && seg.Seq == c.rcvNXT {
+		c.rcvBuf = append(c.rcvBuf, seg.Payload...)
+		c.rcvNXT += uint32(len(seg.Payload))
+		c.sendLocked(TCPAck, nil)
 	}
 }
 

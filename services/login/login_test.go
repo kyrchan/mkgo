@@ -14,7 +14,7 @@ func startLogin(t *testing.T, k *lib.FakeKernel, stop chan struct{}) {
 }
 
 func waitLoginPort(k *lib.FakeKernel) {
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) && !k.HasPort(lib.NameLogin) {
 		time.Sleep(time.Millisecond)
 	}

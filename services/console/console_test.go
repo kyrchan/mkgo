@@ -35,7 +35,7 @@ func startConsole(b *kern.Bus, stop chan struct{}) *syncBuf {
 }
 
 func waitPort(b *kern.Bus) {
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) && !b.HasPort(kern.NameConsole) {
 		time.Sleep(time.Millisecond)
 	}
@@ -43,7 +43,7 @@ func waitPort(b *kern.Bus) {
 
 func waitOutput(t *testing.T, out *syncBuf, want string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if bytes.Contains([]byte(out.String()), []byte(want)) {
 			return

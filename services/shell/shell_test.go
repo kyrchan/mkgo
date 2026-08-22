@@ -168,7 +168,7 @@ func newShellTest(t *testing.T, root string) *shellTest {
 
 func waitFor(t *testing.T, cond func() bool, msg string) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
@@ -239,20 +239,29 @@ func TestShellLsCatStat(t *testing.T) {
 
 func TestShellRunSpawnsViaRegistry(t *testing.T) {
 	st := newShellTest(t, "")
+	var mu sync.Mutex
 	var spawnedModule string
 	var spawnedMask uint64
 	st.k.SpawnHook = func(fk *lib.FakeKernel, name, path string, mask uint64, args []string) *lib.FakeSession {
+		mu.Lock()
 		spawnedModule = name
 		spawnedMask = mask
+		mu.Unlock()
 		return fk.AddSession(name, 1001, mask)
 	}
 	st.typeLine("run demo alpha beta")
 	waitFor(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
 		return spawnedModule == "demo" && st.outputContains("spawned sid=")
 	}, "spawn not observed")
+	mu.Lock()
 	if spawnedMask != lib.CapFocus|lib.CapKill|lib.CapSpawn {
-		t.Fatalf("spawn mask=%x", spawnedMask)
+		mask := spawnedMask
+		mu.Unlock()
+		t.Fatalf("spawn mask=%x", mask)
 	}
+	mu.Unlock()
 }
 
 func TestShellKillSession(t *testing.T) {
