@@ -11,17 +11,18 @@ set -u
 cd "$(dirname "$0")/.."
 
 LOG=.overnight.log
-STALL_SECS=${1:-300}
+STALL_SECS=${1:-900}
 CHECK_INTERVAL=30
 RESTART_MIN_GAP=120
 
 last_restart=0
+stale_strikes=0
 while true; do
     if [ -f .overnight-stop ]; then
         sleep "$CHECK_INTERVAL"
         continue
     fi
-    if tail -80 "$LOG" 2>/dev/null | grep -q "ALL PHASES COMPLETE"; then
+    if [ -f .overnight-complete ]; then
         echo "[watchdog] plan complete; exiting $(date)" >>"$LOG"
         break
     fi
@@ -38,9 +39,17 @@ while true; do
         mtime=$(stat -c %Y "$LOG" 2>/dev/null || echo "$now")
         age=$((now - mtime))
         if [ "$age" -gt "$STALL_SECS" ]; then
-            echo "[watchdog] log stalled ${age}s; killing stuck round $(date)" >>"$LOG"
-            pkill -f 'opencode run --auto' 2>/dev/null
-            sleep 5
+            stale_strikes=$((stale_strikes + 1))
+            # debounce: require two consecutive stale checks before killing,
+            # so cold starts / provider hiccups / clock jumps survive
+            if [ "$stale_strikes" -ge 2 ]; then
+                echo "[watchdog] log stalled ${age}s; killing stuck round $(date)" >>"$LOG"
+                pkill -f 'opencode run --auto' 2>/dev/null
+                stale_strikes=0
+                sleep 5
+            fi
+        else
+            stale_strikes=0
         fi
     fi
     sleep "$CHECK_INTERVAL"

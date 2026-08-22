@@ -11,6 +11,11 @@ struct boot_info {
     uint64_t mmap_dsize;
     uint64_t prog;
     uint64_t prog_len;
+    /* preloaded boot service modules (ESP -> EfiLoaderData, pre-EBS) */
+    uint64_t mod_console;
+    uint64_t mod_console_len;
+    uint64_t mod_login;
+    uint64_t mod_login_len;
 };
 
 void kmain(const struct boot_info *bi);

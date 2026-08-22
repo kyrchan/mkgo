@@ -2,6 +2,7 @@
  * WASI glue: heap over the mm pool, abort, vsnprintf subset, str helpers.
  * All allocations carry a 16-byte header so free/realloc know the size. */
 #include "rt.h"
+#include "lib.h"
 #include "mm.h"
 #include "plat.h"
 
@@ -237,15 +238,6 @@ int strncmp(const char *a, const char *b, uint64_t n) {
         a++, b++;
     }
     return 0;
-}
-
-char *strchr(const char *s, int c) {
-    for (;; s++) {
-        if (*s == (char)c)
-            return (char *)s;
-        if (!*s)
-            return 0;
-    }
 }
 
 /* ---- libc names wasm3 links against (thin aliases over the rt heap) ---- */

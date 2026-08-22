@@ -3,10 +3,20 @@
 
 static EFI_GUID sfs_guid = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
 
-static CHAR16 prog_path[] = {'v','m','\\','a','p','p',0};
+/* default payload path; load_esp_file overrides per call */
+static const CHAR16 *g_path;
+static CHAR16 def_path[] = {'v','m','\\','a','p','p',0};
+
+int load_esp_file(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st,
+                  const CHAR16 *path, void **out, uint64_t *out_len) {
+    g_path = path;
+    return load_program(image_handle, st, out, out_len);
+}
 
 int load_program(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st,
                  void **out, uint64_t *out_len) {
+    if (!g_path)
+        g_path = def_path;
     *out = 0;
     *out_len = 0;
     (void)image_handle;
@@ -32,8 +42,8 @@ int load_program(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st,
     void *file = 0;
     /* root->Open(root, &file, path, mode=READ(1), attr=0) */
     if (FW4(*(void **)((char *)root + 8), (UINTN)root, (UINTN)&file,
-            (UINTN)prog_path, 1) != EFI_SUCCESS || !file) {
-        console_puts("[loader] no vm/app on ESP\n");
+            (UINTN)g_path, 1) != EFI_SUCCESS || !file) {
+        console_puts("[loader] file not found\n");
         return -1;
     }
 

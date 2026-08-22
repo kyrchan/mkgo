@@ -32,6 +32,19 @@ extern "C" EFI_STATUS __attribute__((ms_abi)) efi_main(EFI_HANDLE image_handle,
     console_puts("[boot] loading guest program\n");
     load_program(image_handle, systab, &prog, &prog_len);
 
+    static CHAR16 pcon[] = {'b','o','o','t','\\','m','o','d','u','l','e','s','\\',
+                            'c','o','n','s','o','l','e','.','w','a','s','m',0};
+    static CHAR16 plog[] = {'b','o','o','t','\\','m','o','d','u','l','e','s','\\',
+                            'l','o','g','i','n','.','w','a','s','m',0};
+    void *cimg = 0, *limg = 0;
+    uint64_t clen = 0, llen = 0;
+    load_esp_file(image_handle, systab, pcon, &cimg, &clen);
+    load_esp_file(image_handle, systab, plog, &limg, &llen);
+    g_bi.mod_console = (uint64_t)(uintptr_t)cimg;
+    g_bi.mod_console_len = clen;
+    g_bi.mod_login = (uint64_t)(uintptr_t)limg;
+    g_bi.mod_login_len = llen;
+
     static uint8_t mmapbuf[16384];
     UINTN msize = sizeof(mmapbuf), dsize, key;
     UINT32 dver;

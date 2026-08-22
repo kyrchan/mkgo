@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Overnight autonomous runner for the kernel phase plan.
 #
-# Launch (survives logout):
-#   cd /home/cyr/kernel && nohup ./scripts/overnight.sh >/dev/null 2>&1 & disown
+# Launch fully detached:
+#   cd /home/cyr/kernel && setsid nohup ./scripts/overnight.sh >/dev/null 2>&1 </dev/null &
 #
-# Early stop:   touch .overnight-stop
+# Early stop:   touch .overnight-stop     Completion: .overnight-complete
 # Progress:     tail -f .overnight.log
 #
-# Uses its own dedicated session (.overnight.sid) — never attaches to an
-# interactive TUI session. Model pinned in opencode.json.
+# Owns a dedicated session (.overnight.sid). Completion is signaled ONLY
+# by .overnight-complete, created when the ASSISTANT's own emitted text
+# equals the sentinel exactly — never by grepping the raw log (prompts
+# contain the phrase too; that caused a false-positive livelock once).
 set -u
 cd "$(dirname "$0")/.."
 
@@ -23,9 +25,29 @@ switch to another track (services/, guests/, docs) and return later. \
 Start at Phase 0 now."
 CONT="Continue the phase plan from where MEMORY.md says it stands, per AGENTS.md. \
 Never stop while work remains; switch tracks when blocked. \
-When Phases 0-5 are all green, print exactly: ALL PHASES COMPLETE"
+When every phase gate in AGENTS.md is green, your FINAL line must be exactly: ALL PHASES COMPLETE"
 
-run_round() { # $1 = prompt
+sentinel_in_chunk() { # $1 = chunk file; exit 0 iff assistant said exactly the sentinel
+    python3 - "$1" <<'PYEOF'
+import json, sys
+try:
+    for line in open(sys.argv[1], encoding='utf-8', errors='ignore'):
+        try:
+            e = json.loads(line)
+        except Exception:
+            continue
+        if e.get('type') != 'text':
+            continue
+        t = e.get('part', {}).get('text')
+        if isinstance(t, str) and t.strip() == 'ALL PHASES COMPLETE':
+            sys.exit(0)
+except Exception:
+    pass
+sys.exit(1)
+PYEOF
+}
+
+run_round() { # $1 = prompt ; streams JSON events to stdout
     if [ -f .overnight.sid ]; then
         opencode run --auto --session "$(cat .overnight.sid)" --format json "$1"
     else
@@ -44,18 +66,23 @@ echo "[overnight] start $(date)" >>"$LOG"
 round=1
 while [ "$round" -le "$MAX_ROUNDS" ]; do
     [ -f .overnight-stop ] && { echo "[overnight] stop requested $(date)" >>"$LOG"; break; }
+    [ -f .overnight-complete ] && break
+    CHUNK=$(mktemp)
     echo "[overnight] round $round begin $(date)" >>"$LOG"
     if [ "$round" -eq 1 ]; then
-        run_round "$SEED" | tee -a "$LOG"
+        run_round "$SEED" | tee -a "$LOG" | tee "$CHUNK" >/dev/null
         capture_sid
     else
-        run_round "$CONT" | tee -a "$LOG"
+        run_round "$CONT" | tee -a "$LOG" | tee "$CHUNK" >/dev/null
     fi
     echo "[overnight] round $round end $(date)" >>"$LOG"
-    if tail -80 "$LOG" | grep -q "ALL PHASES COMPLETE"; then
-        echo "[overnight] plan complete $(date)" >>"$LOG"
+    if sentinel_in_chunk "$CHUNK"; then
+        touch .overnight-complete
+        echo "[overnight] sentinel emitted; plan complete $(date)" >>"$LOG"
+        rm -f "$CHUNK"
         break
     fi
+    rm -f "$CHUNK"
     sleep 10
     round=$((round + 1))
 done

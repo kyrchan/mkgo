@@ -31,11 +31,13 @@ LDFLAGS := -nostdlib -no-pie -Wl,--build-id=none -Wl,-e,efi_main -T kernel/link.
 CORE_OBJS := $(BUILD)/core/main.o $(BUILD)/core/kmain.o $(BUILD)/core/lib.o \
              $(BUILD)/core/loader.o $(BUILD)/core/mm.o $(BUILD)/core/rt.o \
              $(BUILD)/core/engine.o $(BUILD)/core/wasi_glue.o \
-             $(BUILD)/core/sched.o $(BUILD)/core/vm/vm.o
+             $(BUILD)/core/sched.o $(BUILD)/core/ports.o $(BUILD)/core/kernsvc.o \
+             $(BUILD)/core/ctx.o $(BUILD)/core/vm/vm.o
 ARCH_OBJS := $(BUILD)/arch/x86_64/uart.o $(BUILD)/arch/x86_64/cpu.o \
              $(BUILD)/arch/x86_64/traps.o $(BUILD)/arch/x86_64/traps_s.o \
              $(BUILD)/arch/x86_64/paging.o $(BUILD)/arch/x86_64/vector.o \
-             $(BUILD)/arch/x86_64/timer.o $(BUILD)/arch/x86_64/math.o
+             $(BUILD)/arch/x86_64/timer.o $(BUILD)/arch/x86_64/math.o \
+             $(BUILD)/arch/x86_64/ctx_s.o
 WASM3_SRC := $(wildcard third_party/wasm3/*.c)
 WASM3_OBJS := $(patsubst %.c,$(BUILD)/wasm3/%.o,$(notdir $(WASM3_SRC)))
 OBJS := $(CORE_OBJS) $(ARCH_OBJS) $(WASM3_OBJS)
@@ -62,7 +64,7 @@ $(BUILD)/arch/x86_64/vector.o: arch/x86_64/vector.cc $(wildcard arch/x86_64/*.h)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -mavx2 -c $< -o $@
 
-$(BUILD)/arch/x86_64/traps_s.o: arch/x86_64/traps.S | $(BUILD)
+$(BUILD)/arch/x86_64/%_s.o: arch/x86_64/%.S | $(BUILD)
 	@mkdir -p $(dir $@)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
@@ -85,6 +87,15 @@ build/hello2.wasm: guests/hello.rs
 
 build/hello3.wasm: guests/hello.go
 	cd guests && GOOS=wasip1 GOARCH=wasm go build -gcflags=all=-N -ldflags=-w -o ../$@ hello.go
+
+services/console/console.wasm: services/console/main.go
+	cd services/console && GOOS=wasip1 GOARCH=wasm go build -o console.wasm main.go
+
+services/login/login.wasm: services/login/main.go
+	cd services/login && GOOS=wasip1 GOARCH=wasm go build -o login.wasm main.go
+
+build/test_pp.wasm: guests/test_pp.go
+	cd guests && GOOS=wasip1 GOARCH=wasm go build -o ../$@ test_pp.go
 
 
 $(BUILD)/vasm: $(wildcard tools/vasm/*.go) | $(BUILD)
@@ -118,6 +129,21 @@ $(BUILD)/disk-g2.img: $(BUILD)/BOOTX64.EFI build/hello2.wasm | $(BUILD)
 
 $(BUILD)/disk-g3.img: $(BUILD)/BOOTX64.EFI build/hello3.wasm | $(BUILD)
 	$(call MKDISK,$@,build/hello3.wasm)
+
+# Phase 4 disk: payload = test_pp; boot services under /boot/modules
+define MKDISKP4
+dd if=/dev/zero of=$(1) bs=1M count=0 seek=64 status=none
+$(MFORMAT) -i $(1) ::
+$(MMD) -i $(1) ::/EFI ::/EFI/BOOT ::/vm ::/boot ::/boot/modules
+$(MCOPY) -i $(1) $(BUILD)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
+$(MCOPY) -i $(1) build/test_pp.wasm ::/vm/app
+$(MCOPY) -i $(1) services/console/console.wasm ::/boot/modules/console.wasm
+$(MCOPY) -i $(1) services/login/login.wasm ::/boot/modules/login.wasm
+endef
+
+$(BUILD)/disk-p4.img: $(BUILD)/BOOTX64.EFI build/test_pp.wasm \
+                      services/console/console.wasm services/login/login.wasm | $(BUILD)
+	$(call MKDISKP4,$@)
 
 image: $(BUILD)/disk.img
 
@@ -164,7 +190,16 @@ test-g3: $(BUILD)/disk-g3.img $(BUILD)/VARS.fd
 		$(BUILD)/serial.log && echo "TEST PASS (g3)" \
 		|| { echo "TEST FAIL (g3)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -30; exit 1; }
 
-test-all: test test-g1 test-g2 test-g3
+test-p4: $(BUILD)/disk-p4.img $(BUILD)/VARS.fd
+	$(call RUN_QEMU,$(BUILD)/disk-p4.img)
+	@grep -q 'KERNEL-OK' $(BUILD)/serial.log \
+		&& grep -q 'rounds ok=3' $(BUILD)/serial.log \
+		&& grep -q 'sessions=' $(BUILD)/serial.log \
+		&& grep -q '\[kill\] console rc=0' $(BUILD)/serial.log \
+		&& echo "TEST PASS (p4)" \
+		|| { echo "TEST FAIL (p4)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -40; exit 1; }
+
+test-all: test test-g1 test-g2 test-g3 test-p4
 
 clean:
 	rm -rf $(BUILD)

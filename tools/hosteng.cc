@@ -1,19 +1,6 @@
-/* Host harness: runs a .wasm through the REAL engine + WASI glue + rt
- * (same objects the kernel links) so guest issues surface in seconds,
- * not QEMU-round-trips. */
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
-#include <ctime>
-
-void console_init(void) {}
-void console_putc(char c) { fputc(c, stdout); }
-void console_puts(const char *s) { fputs(s, stdout); }
-void console_hex64(uint64_t v) { printf("0x%llx", (unsigned long long)v); }
-uint64_t cpu_cycles(void) { return (uint64_t)clock(); }
-void cpu_halt(void) { exit(0); }
-uint64_t timer_calibrate_tsc_khz(void) { return 1000000; }
-
 #include "mm.h"
 void *mm_alloc(uint64_t n, uint64_t align) {
     if (!align || align < 16)
@@ -46,9 +33,12 @@ int main(int argc, char **argv) {
     wasi_calibrate_clock(timer_calibrate_tsc_khz());
     fprintf(stderr, "[stage] clock calibrated\n");
 
-    extern int sched_spawn(const uint8_t *, uint64_t, const char *const *,
-                           int);
+    extern int sched_spawn_named(const char *, const uint8_t *, uint64_t,
+                                 uint32_t, uint64_t);
+    extern void ports_init(void);
+    extern void sched_run(void);
     extern void sched_init(void);
+    ports_init();
     sched_init();
     fprintf(stderr, "[stage] sched_init done\n");
     int rc = sched_spawn(blob, len, 0, 0);

@@ -5,8 +5,6 @@
 struct M3Module;
 typedef struct M3Module *IM3Module;
 
-void wasi_reset_session(void);
-void wasi_set_argv(const char *const *argv, int argc);
 bool wasi_exited(void);
 int  wasi_exit_code(void);
 void wasi_calibrate_clock(uint64_t tsc_khz);

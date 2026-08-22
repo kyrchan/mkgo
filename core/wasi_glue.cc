@@ -8,6 +8,7 @@
  * wasm3 raw-call convention: _sp[0..numRets) = return slots, then args;
  * memory pointers arrive as u32 offsets resolved through _mem. */
 #include "wasi_glue.h"
+#include "lib.h"
 #include "plat.h"
 #include "rt.h"
 
@@ -17,30 +18,13 @@ extern "C" {
 #include "m3_function.h"
 }
 
-uint64_t strlen(const char *s);
-int strcmp(const char *a, const char *b);
 
-/* ---- session context ---- */
-static const char *g_args[16] = {"app", 0};
-static bool g_exited;
-static int g_exit_code;
+/* ---- session context: lives in the owning session (see sched.h) ---- */
+#include "sched.h"
+static sched_wasi_state *wctx() { return sched_wasi_current(); }
 
-bool wasi_exited(void) { return g_exited; }
-int wasi_exit_code(void) { return g_exit_code; }
-void wasi_reset_session(void) {
-    g_exited = false;
-    g_exit_code = 0;
-    g_args[0] = "app";
-    g_args[1] = 0;
-}
-
-void wasi_set_argv(const char *const *argv, int argc) {
-    for (int i = 0; i < argc && i < 15; i++)
-        g_args[i] = argv[i];
-    g_args[argc < 15 ? argc : 15] = 0;
-    if (argc == 0)
-        g_args[1] = 0;
-}
+bool wasi_exited(void) { sched_wasi_state *w = wctx(); return w ? w->exited : false; }
+int wasi_exit_code(void) { sched_wasi_state *w = wctx(); return w ? w->exit_code : -1; }
 
 /* errno (preview1) */
 #define WASI_ESUCCESS 0
@@ -112,8 +96,11 @@ m3ApiRawFunction(wasi_fd_write) {
 
 m3ApiRawFunction(wasi_proc_exit) {
     m3ApiGetArg(int32_t, code)
-    g_exit_code = code;
-    g_exited = true;
+    sched_wasi_state *w = wctx();
+    if (w) {
+        w->exit_code = code;
+        w->exited = true;
+    }
     /* trap out of guest execution; engine treats this marker as clean end */
     return m3Err_trapExit;
 }
@@ -146,10 +133,13 @@ m3ApiRawFunction(wasi_random_get) {
 }
 
 static void args_sizes(uint32_t *argc, uint32_t *bufsize) {
+    sched_wasi_state *w = wctx();
     *argc = 0;
     *bufsize = 0;
-    while (g_args[*argc]) {
-        const char *s = g_args[*argc];
+    if (!w)
+        return;
+    while (w->argv[*argc]) {
+        const char *s = w->argv[*argc];
         uint64_t n = 0;
         while (s[n])
             n++;
@@ -180,10 +170,13 @@ m3ApiRawFunction(wasi_args_get) {
     if (!mem_ok(runtime, argv, (uint64_t)argc * 4) ||
         !mem_ok(runtime, argv_buf, bufsz))
         m3ApiTrap(m3Err_trapOutOfBoundsMemoryAccess);
+    sched_wasi_state *w = wctx();
+    if (!w)
+        return m3Err_none;
     uint32_t off = 0;
     for (uint32_t i = 0; i < argc; i++) {
         argv[i] = m3ApiPtrToOffset(argv_buf + off);
-        const char *s = g_args[i];
+        const char *s = w->argv[i];
         uint64_t k = 0;
         for (; s[k]; k++)
             argv_buf[off + k] = s[k];
@@ -213,8 +206,60 @@ m3ApiRawFunction(wasi_environ_get) {
 
 m3ApiRawFunction(wasi_sched_yield) {
     m3ApiReturnType(int32_t)
-    m3ApiReturn(WASI_ESUCCESS); /* cooperative no-op in single-session mode */
+    extern void sched_yield_current(void);
+    sched_yield_current(); /* coroutine switch; resumes here next quantum */
+    m3ApiReturn(WASI_ESUCCESS);
 }
+
+/* ---------------- kernel namespace (abi/ABI.md §1 ports) ---------------- */
+
+#include "ports.h"
+
+m3ApiRawFunction(kern_port_create) {
+    m3ApiReturnType(int32_t)
+    m3ApiGetArgMem(const char *, name)
+    m3ApiGetArg(int32_t, name_len)
+    m3ApiReturn(port_create(sched_current_sid(), name,
+                            name_len < 0 ? 0 : (uint32_t)name_len));
+}
+
+m3ApiRawFunction(kern_port_bind) {
+    m3ApiReturnType(int32_t)
+    m3ApiGetArgMem(const char *, name)
+    m3ApiGetArg(int32_t, name_len)
+    m3ApiReturn(port_bind(sched_current_sid(), name,
+                          name_len < 0 ? 0 : (uint32_t)name_len));
+}
+
+m3ApiRawFunction(kern_port_send) {
+    m3ApiReturnType(int32_t)
+    m3ApiGetArg(int32_t, h)
+    m3ApiGetArgMem(const void *, buf)
+    m3ApiGetArg(int32_t, len)
+    m3ApiReturn(port_send(sched_current_sid(), h, buf,
+                          len < 0 ? 0 : (uint32_t)len));
+}
+
+m3ApiRawFunction(kern_port_recv) {
+    m3ApiReturnType(int32_t)
+    m3ApiGetArg(int32_t, h)
+    m3ApiGetArgMem(void *, buf)
+    m3ApiGetArg(int32_t, cap)
+    m3ApiReturn(port_recv(sched_current_sid(), h, buf,
+                          cap < 0 ? 0 : (uint32_t)cap));
+}
+
+struct link_entry2 {
+    const char *name;
+    M3RawCall fn;
+};
+static const link_entry2 kernlinks[] = {
+    {"kern_port_create", kern_port_create},
+    {"kern_port_bind", kern_port_bind},
+    {"kern_port_send", kern_port_send},
+    {"kern_port_recv", kern_port_recv},
+};
+#define NKERN (sizeof(kernlinks) / sizeof(kernlinks[0]))
 
 /* ---------------- conservative linkage stubs ----------------
  * Per-name stubs with preview1-correct errno semantics so stock runtimes'
@@ -309,6 +354,27 @@ const char *wasi_link_module(IM3Module mod) {
         M3Function *f = &mod->functions[i];
         if (!f->import.moduleUtf8)
             continue;
+        if (!strcmp(f->import.moduleUtf8, "kernel")) {
+            M3RawCall fn = 0;
+            for (unsigned e = 0; e < NKERN; e++) {
+                if (!strcmp(kernlinks[e].name, f->import.fieldUtf8)) {
+                    fn = kernlinks[e].fn;
+                    break;
+                }
+            }
+            if (!fn) {
+                console_puts("[link] unknown kernel import: ");
+                console_puts(f->import.fieldUtf8);
+                console_puts("\n");
+                return "unknown kernel import";
+            }
+            M3Result r = m3_LinkRawFunction(mod, f->import.moduleUtf8,
+                                            f->import.fieldUtf8,
+                                            sig_of(f->funcType), fn);
+            if (r)
+                return r;
+            continue;
+        }
         if (!strcmp(f->import.moduleUtf8, "wasi_snapshot_preview1")) {
             M3RawCall fn = 0;
             for (unsigned e = 0; e < NPROFILE; e++) {
