@@ -41,7 +41,7 @@ func ServeFS(k lib.Kernel, fat *FAT, opts ServerOptions) {
 	replies := lib.NewReplyBook(k)
 	for {
 		n := k.PortRecv(h, buf)
-		if n > 0 && int(n) >= 8 {
+		if n > 0 && int(n) >= lib.CanonicalHeaderLen {
 			if rep, inbox, ok := dispatch(fat, replies, buf[:int(n)]); ok {
 				if rh, err := replies.Bind(inbox); err == nil {
 					k.PortSend(rh, rep) // -2/-1: client queue full/lost; drop (v1)
@@ -59,15 +59,17 @@ func ServeFS(k lib.Kernel, fat *FAT, opts ServerOptions) {
 
 var errMalformed = errors.New("fs: malformed request")
 
-// dispatch parses one request datagram and renders the reply.
+// dispatch parses one canonical-header request (ABI v1.1) and renders
+// the reply. The requester's reply port comes from rname; uid is
+// kernel-stamped sender identity (v1 fs does not enforce per-uid roots —
+// see services/ABI-NOTES.md §4).
 func dispatch(fat *FAT, replies *lib.ReplyBook, req []byte) (rep []byte, inbox string, ok bool) {
-	op := lib.Get16(req[0:2])
-	seq := lib.Get16(req[2:4])
-	inboxName, off, ok2 := lib.LStr(req, 4)
-	if !ok2 || off+2 > len(req) {
-		return nil, "", false
+	hdr, okH := lib.ParseHeader(req)
+	if !okH || hdr.RNam == "" {
+		return nil, "", false // no reply channel → nothing we can answer
 	}
-	payload := req[off:]
+	op, seq := hdr.Op, hdr.Seq
+	payload := req[lib.CanonicalHeaderLen:]
 
 	var status int32
 	body := []byte{}
@@ -168,12 +170,13 @@ func dispatch(fat *FAT, replies *lib.ReplyBook, req []byte) (rep []byte, inbox s
 		return nil, "", false // unknown op: silent per §7 convention
 	}
 
-	rep = make([]byte, 8, 8+len(body))
+	rep = make([]byte, 28, 28+len(body))
 	lib.Put16(rep, op)
 	lib.Put16(rep[2:], seq)
-	lib.Put32(rep[4:], uint32(status))
+	// uid left 0; empty rname on replies (channel already known)
+	lib.Put32(rep[24:], uint32(status))
 	rep = append(rep, body...)
-	return rep, inboxName, true
+	return rep, hdr.RNam, true
 }
 
 func simpleOp(fn func(string) error, payload []byte) int32 {
