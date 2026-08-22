@@ -147,3 +147,6 @@ progress note on F33: kmain reworked to Phase-7 boot orchestration — kernel sp
 ===== FINDING 37 2026-08-22 MAIN@6a22fec+dirty =====
 severity: MINOR
 core/kmain.cc (~line 98) · gate payload session "ppa" (/vm/app slot) is spawned with SCHED_CAP_KILL|DEVMAN|POWER|SPAWN — admin-grade rights including POWER and KILL for what the comment calls a gates-only convenience slot. Ratified §7 spirit: regular sessions get none of bits 0-2. Any future non-test module dropped into /vm/app inherits kill/power/devman rights silently. Fix: spawn gate payloads with capmask 0 (like "ppb") and elevate specific gates via init.conf/SPAWN when actually needed.
+===== FINDING 38 2026-08-22 MAIN@6a22fec+dirty =====
+severity: NOTE
+services/lib/kern.go (new, vendored) · MAIN now carries its own rewritten 156-line guest-lib ("keep in lockstep with abi/ABI.md") while SVC's guests/lib remains the lane-of-record canonical implementation (f5d2e23-era v1.1 conformance). Two lineages of the guest libc invite silent drift in import names/signatures — the exact failure mode the guest-ABI-stability rule exists for. Fix process-level: either vendor SVC's package verbatim into MAIN at each merge, or add a CI check that diffs exported symbol sets/signatures between services/lib and guests/lib before gates run.
