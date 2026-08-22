@@ -1,0 +1,27 @@
+# QUALITY.txt — rolling summary (LANE=VERIFY) — regenerated each pass
+# Last pass: 2026-08-22 (round 1 complete: full first review of all three repos)
+
+| repo | head reviewed | mechanical | open BLOCKERs | open MAJORs | trend |
+|---|---|---|---|---|---|
+| MAIN  | 0907825 + uncommitted Phase-5 WIP (dirty tree) | per-file C++ syntax pass: all clean EXCEPT kernsvc.cc (F1) and tools/hosteng.cc (F4); -fanalyzer attempted, aborted at F1; go/vet n/a; wasm3 -Wunused-parameter noise only (vendored) | 7 (F1 build break · F2 v1.1 framing split · F11 port_recv ring regression · F12 devblk wraparound OOB · F13 LOGIN owner/binder escalation · F15 mk_req uid/rname overlap · F18 missing §7 status -1) | 1 (F4) | WIP under active surgery — re-review on commit |
+| SVC   | 88ed8a7 | go vet clean ×3 modules; go test -race: guests/lib ok, console+login ok (-count=1), fs/init/shell RED via harness races (F3); addabiver untested (F7) | 0 | 2 (F3 race gate red, F17 Phase-7 imports in shipped wasm) | service logic itself reviewed clean; issues are test-infra + premature imports |
+| TLS   | e0bfb11 | go vet clean; go test -race clean (unit + mformat parity) | 0 | 0 | healthy |
+
+Open BLOCKER list (all MAIN working tree): F1 F2 F11 F12 F13 F15 F18.
+Open MINOR/NOTE watchlist: F5 PTRACE scaffolding · F6 LIST/CAPS ungated ·
+F7 addabiver tests · F8 Yield budget math · F9 stub markers · F14 fan-in
+reply misrouting · F19 rname LStr-vs-fixed16 encoding.
+
+Closed this round: none (first pass).
+
+Provenance notes:
+- F11 confirmed as WIP regression: HEAD@0907825 port_recv reads then advances.
+- F1/F4/F12/F13/F15/F16/F18 live only in the uncommitted Phase-5 batch or
+  stale host tools; committed HEAD kernel sources compile clean.
+- Cross-lane: F2/F17 mean SVC-built modules cannot run on MAIN's kernel
+  today (framing mismatch + unresolved imports). Unification plan should
+  land ONE canonical v1.1 header + stub-or-defer Phase-7 imports.
+
+Next-pass triggers: any MAIN commit (expect large Phase-5 batch),
+SVC/TLS new heads, MEMORY.md hash change. On fix-upstream: mark findings
+CLOSED with file:line evidence from the fixing commit.
