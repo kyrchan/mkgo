@@ -102,3 +102,15 @@ by GOOS=wasip1 compile checks. Once hosteng exists:
 `hosteng services/<svc>/<svc>.wasm` should print the module's own log
 lines through stub imports (console/fs/login/shell/init each start with
 a bracket-tagged banner).
+
+## 8. abi_ver custom section (encoding used by this lane)
+
+Every service module carries a trailing custom section:
+
+    id=0x00, payload = {u8 nameLen=7, "abi_ver", u32 LE version}
+
+Current version = 1, matching abi/ABI.md v1. Injected at build time by
+`services/tools/addabiver` (pure Go, no deps). All five wrapped modules
+validate under stock `wasm-validate` (wabt). The kernel's instantiation
+check should scan custom sections for name "abi_ver" and compare the
+u32 against its own ABI version, refusing mismatches per AGENTS.md.
