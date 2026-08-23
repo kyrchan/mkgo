@@ -6,7 +6,17 @@ decisions, and gotchas. Update at milestones or near context limits.
 
 ## Status (as of 2026-08-23)
 
-**Phase 8 PARTIAL (commit aebdb7c).** Timer/PIC/IRQ0 infrastructure done
+**Phase 8 gate GREEN (commit 91a1367).** Cooperative no-starvation:
+busy+polite sessions interleave via voluntary yields; both complete.
+Timer/PIC/IRQ0 infrastructure done (PIC remapped, PIT @1kHz, vec32
+gate, EOI). Paging: full 4GB identity map. Preemptive scheduling
+implemented but DISABLED (preempt_on=0) — cross-stack wasm3 corruption
+under TCG; enable via SETCONF preempt=1 after debugging. Key fix:
+session_entry must read cur (set by mark_running) not g_entering global.
+Next: **Phase 9 (stretch)** — net.wasm or skip to **Phase 10** —
+multiuser hardening (/etc/users hashed), tools/img Go builder, README.
+
+**Phase 7 gate GREEN (commit 95a22d7) — Phases 0-5 + 7 ALL GREEN.** Timer/PIC/IRQ0 infrastructure done
 (PIC remapped, PIT @1kHz, vec32 gate, EOI). Paging: full 4GB identity
 map (Go wasm grows past old 512MB boundary — was the g3 crash).
 Cooperative scheduling primary; preemptive scheduling implemented in
