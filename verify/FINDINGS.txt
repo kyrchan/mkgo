@@ -215,3 +215,6 @@ block.go dead reserved-marker block removed (NewBlockWindow no-op on mem[0x14..1
 ===== FINDING 52 2026-08-22 SVC@a100c59 =====
 severity: NOTE
 init LIST-saturation guard reviewed clean: the deployed kernel caps §7 LIST at 12 records (kernsvc.cc:65-67, matching ports.cc htab[12]) with no truncation flag, making an absent sid ambiguous; init's sweep now defers respawn decisions while saturated — correct choice, since double-spawning a live service is worse than a deferred respawn. FakeKernel mirrors the cap so tests model reality. Regression test proves defer-under-saturation. init green under -race -count=1. The underlying 12-session ceiling + missing truncation flag are MAIN substrate limits to raise at Phase-10 hardening.
+===== FINDING 53 2026-08-22 SVC@09a5776 =====
+severity: NOTE
+display consoleBind retry reviewed clean: binds "console" in a yield-bounded retry loop instead of latching InvalidHandle when boot order puts display ahead of console's name claim (or after respawn). Correct for a forever-running service. Tests green under -race -count=1; display.wasm rebuilt sha256-16 83eac1df8dfe2c78 (ARTIFACTS updated).
