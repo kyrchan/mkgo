@@ -62,9 +62,16 @@ int devblk_attach(void) {
     return 0;
 }
 
+
+extern "C" int virtio_blk_available(void);
+
 int devblk_rw(uint32_t sid, int write, uint64_t lba, void *buf,
               uint32_t count_sectors) {
     (void)sid;
+    /* virtio-blk backend: real persistent storage */
+    if (virtio_blk_available())
+        return virtio_blk_rw(write, lba, buf, count_sectors);
+    /* RAM disk fallback */
     if (!dev.disk || count_sectors == 0 || count_sectors > 128 ||
         lba + count_sectors > dev.nblocks)
         return -1;

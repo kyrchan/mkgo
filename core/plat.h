@@ -21,6 +21,9 @@ void pit_init(uint32_t hz);
 void irq0_eoi(void);
 void sti_impl(void);
 void irq0_stub(void);
+void virtio_blk_init(void);
+int virtio_blk_rw(int write, uint64_t lba, void *buf, uint32_t count);
+int virtio_blk_available(void);
 
 /* cpu */
 void cpu_dump_features(void);

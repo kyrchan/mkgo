@@ -33,7 +33,7 @@ CORE_OBJS := $(BUILD)/core/main.o $(BUILD)/core/kmain.o $(BUILD)/core/lib.o \
              $(BUILD)/core/engine.o $(BUILD)/core/wasi_glue.o \
              $(BUILD)/core/sched.o $(BUILD)/core/ports.o $(BUILD)/core/kernsvc.o \
              $(BUILD)/core/ctx.o $(BUILD)/core/devblk.o $(BUILD)/core/fstransport.o \
-             $(BUILD)/core/input.o \
+             $(BUILD)/core/virtio_blk.o $(BUILD)/core/input.o \
              $(BUILD)/core/fsroute.o
 ARCH_OBJS := $(BUILD)/arch/x86_64/uart.o $(BUILD)/arch/x86_64/cpu.o \
              $(BUILD)/arch/x86_64/traps.o $(BUILD)/arch/x86_64/traps_s.o \

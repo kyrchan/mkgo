@@ -75,6 +75,7 @@ void kmain(const struct boot_info *bi) {
     }
 
     devblk_init();
+    { extern void virtio_blk_init(void); virtio_blk_init(); }
     devblk_attach();
 
     /* preload service modules so registry SPAWN can resolve them */
