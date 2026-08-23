@@ -25,7 +25,7 @@ switch to another track (services/, guests/, docs) and return later. \
 Start at Phase 0 now."
 CONT="Continue the phase plan from where MEMORY.md says it stands, per AGENTS.md. \
 Never stop while work remains; switch tracks when blocked. \
-When every phase gate in AGENTS.md is green, your FINAL line must be exactly: ALL PHASES COMPLETE"
+Completion is decided by the COORDINATOR, not by you: keep working until stopped."
 
 sentinel_in_chunk() { # $1 = chunk file ; true iff a text event's LAST
     python3 - "$1" <<'PYEOF'      # non-empty line is exactly the sentinel
@@ -69,7 +69,6 @@ echo "[overnight] start $(date)" >>"$LOG"
 round=1
 while [ "$round" -le "$MAX_ROUNDS" ]; do
     [ -f .overnight-stop ] && { echo "[overnight] stop requested $(date)" >>"$LOG"; break; }
-    [ -f .overnight-complete ] && break
     CHUNK=$(mktemp)
     echo "[overnight] round $round begin $(date)" >>"$LOG"
     if [ "$round" -eq 1 ]; then
@@ -79,12 +78,7 @@ while [ "$round" -le "$MAX_ROUNDS" ]; do
         run_round "$CONT" | tee -a "$LOG" | tee "$CHUNK" >/dev/null
     fi
     echo "[overnight] round $round end $(date)" >>"$LOG"
-    if sentinel_in_chunk "$CHUNK"; then
-        touch .overnight-complete
-        echo "[overnight] sentinel emitted; plan complete $(date)" >>"$LOG"
-        rm -f "$CHUNK"
-        break
-    fi
+    rm -f "$CHUNK"
     rm -f "$CHUNK"
     sleep 10
     round=$((round + 1))

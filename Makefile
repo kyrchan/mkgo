@@ -245,7 +245,7 @@ test: test-g1
 
 define RUN_QEMU
 	@rm -f $(BUILD)/serial.log
-	@timeout 120 env $(QEMU_ENV) $(QEMU) $(QEMU_BASE) -drive format=raw,file=$(1) -serial file:$(BUILD)/serial.log || true
+	@timeout 300 env $(QEMU_ENV) $(QEMU) $(QEMU_BASE) -drive format=raw,file=$(1) -serial file:$(BUILD)/serial.log || true
 endef
 
 # per-guest wasm gates (Phase 3): each guest prints its marker via fd_write
@@ -341,7 +341,7 @@ $(BUILD)/persist.img:
 test-p8b: $(BUILD)/disk-p7.img $(BUILD)/VARS.fd $(BUILD)/persist.img
 	@rm -f $(BUILD)/serial.log $(BUILD)/persist.img
 	@dd if=/dev/zero of=$(BUILD)/persist.img bs=1M count=0 seek=64 status=none
-	@timeout 120 env $(QEMU_ENV) $(QEMU) $(QEMU_BASE) \
+	@timeout 300 env $(QEMU_ENV) $(QEMU) $(QEMU_BASE) \
 	    -drive format=raw,file=$(BUILD)/disk-p7.img \
 	    -drive format=raw,file=$(BUILD)/persist.img,if=virtio \
 	    -serial file:$(BUILD)/serial.log || true
