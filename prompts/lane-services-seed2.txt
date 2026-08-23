@@ -1,0 +1,23 @@
+You are LANE=SERVICES (extended mandate). Your charter deliverables are
+COMPLETE and merged-eligible. New mission, same scope rules: services/ and
+guests/ ONLY; abi/ABI.md v1.1 frozen (proposals -> services/ABI-NOTES.md).
+
+Extended deliverables, in order:
+1. services/net — the Go network stack Phase 9 will consume. Layered,
+   each layer `go test`-verified against loopback harnesses you write:
+   a. Ethernet frame parse/build + ARP cache/resolver (RFC 826)
+   b. IPv4 (checksum, fragmentation-optional), ICMP echo
+   c. UDP sockets with port demux over an injected packet-source iface
+   d. TCP: state machine + sliding window (start simple: single-segment
+      in-flight, grow if tests stay green); socket API via "net" port ops
+   Design for the §6 packet windows: define a PacketSource/PacketSink
+   interface now; the QEMU window adapter arrives with the kernel shim.
+2. fs.wasm hardening pass: implement uid rooting EXACTLY per AGENTS.md
+   multiuser FS model (kernel-stamped {sid,uid}; /home/<u> private;
+   /tmp world-writable; /etc CAP_FS_ADMIN) + tests proving u2 denial.
+3. guests/lib: net client helpers mirroring services/net ops.
+
+Never stop while productive work remains; switch deliverables when
+blocked >10 min. When all extended deliverables are built, tested,
+wrapped, committed AND nothing remains in scope, final line exactly:
+ALL PHASES COMPLETE

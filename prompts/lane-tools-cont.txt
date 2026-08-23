@@ -1,0 +1,5 @@
+Continue your lane scope (tools/ and README.md ONLY). Pick up from your
+commit history in this worktree. Finish remaining deliverables, keep
+`go test` green. Never stop while work remains; switch deliverables when
+blocked >10 min. When all lane deliverables are built, tested, committed,
+final line exactly: ALL PHASES COMPLETE

@@ -134,6 +134,14 @@ ALL PHASES COMPLETE
 - Multiuser (stub): login.wasm accepts user names from a static table and
   issues per-user capability sets; fs.wasm roots each session's path
   namespace at `/home/<user>`. Enforcement lives in kernel registry.
+- Multiuser FS model (FAT16 stores NO owners — namespace-rooted isolation):
+  kernel stamps every forwarded FS op with `{sid, uid}` from its own
+  registry (clients cannot spoof identity); fs.wasm rejects any resolved
+  path escaping the caller's root (`..` beyond it). Sharing policy v1:
+  `/home/<u>/**` private · `/tmp` world-writable · `/etc` readable,
+  writable only with CAP_FS_ADMIN · `/boot/modules` writable only with
+  CAP_SPAWN+CAP_FS_ADMIN. Finer ownership via a sidecar owners.db is
+  post-v1 (documented deferral, not an omission).
 - Every service module embeds `abi_ver=1` custom section at build time
   (checked by kernel per the module-update rule).
 - Retire 8-opcode artifacts if not already: `kernel/vm/ tools/vasm
@@ -265,6 +273,33 @@ Test recipes (headless, same grep-the-serial pattern as make test):
   unchanged (guest ABI stability rule).
 - Two-agent split (if used): agent A scoped to core/arch/third_party,
   agent B to services/guests/abi only; disjoint paths, commits per subtree.
+- FLEET MODE (active since Phase 4 green, provider-unlimited week):
+  - Lane MAINLINE — main tree @ master; scope core/, arch/, third_party/,
+    kernel/, Makefile; drives phase plan 5→7→8→9→10; supervised by
+    scripts/watchdog.sh (+cron-guard).
+  - Lane SERVICES — worktree ../kernel-lane-services @ branch lane/services;
+    scope services/ + guests/ ONLY. Builds console/login/fs/shell/init as
+    host-tested Go → wasip1 wraps; guest libc in guests/lib.
+  - Lane TOOLS — worktree ../kernel-lane-tools @ branch lane/tools;
+    scope tools/ + README.md ONLY. Delivers tools/img, README, image-format
+    writers for Phase 12.
+  - Lane VERIFY — worktree ../kernel-lane-verify @ branch lane/verify.
+    QA department: read-only everywhere; writes verify/FINDINGS.txt +
+    verify/QUALITY.txt in its own tree only. Reviews every commit delta
+    across all repos: races, memory bugs, unused code, stubs, ABI
+    deviations, capability-check gaps. Severity rule: ABI violation or
+    capability-check gap = BLOCKER. Style nits not reported.
+  - Lane DOCS — worktree ../kernel-lane-docs @ branch lane/docs.
+    Publications department: IBM-style formal docs as PLAIN TEXT under
+    docs/*.txt (SDD, IFSPEC, GLOSSARY, TRACE matrix, TESTPLAN, RELHIST)
+    with document control blocks and revision history per change.
+  - Supervision: scripts/fleet.sh + scripts/lanes.conf per-lane (precise
+    child-PID kills, 900 s two-strike stalls); cron-guard revives watchdog
+    AND fleet. Lanes signal done via .overnight-complete marker only.
+  - Merging: lanes commit to their own branches (disjoint paths ⇒ trivial
+    merges); merge to master when a phase gate consumes lane output.
+  - ABI changes remain forbidden mid-week; proposals go to
+    services/ABI-NOTES.md for human review.
 
 ## System administration & configuration
 
@@ -349,6 +384,11 @@ package installer with signature checks, per-session memory quotas.
 - After ANY change: rebuild clean if kernel sources changed — stale objects
   have caused silent wrong-image bugs before (see MEMORY.md).
 - Never trust a boot log older than the binary that produced it.
+- **QA intake (binding)**: before committing, read
+  `/home/cyr/kernel-lane-verify/verify/FINDINGS.txt`. Every finding marked
+  against your repo at severity BLOCKER or MAJOR must be fixed (or answered
+  with a written rebuttal in MEMORY.md) BEFORE the next phase-gate commit.
+  MINOR/NOTE items go into MEMORY.md backlog.
 
 ## Target repo map (end state)
 

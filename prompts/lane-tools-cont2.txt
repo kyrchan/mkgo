@@ -1,0 +1,5 @@
+Continue extended lane scope (tools/ + README.md ONLY). Continue VMDK/VDI
+writers, tools/hvtest scaffolding, README refresh. Keep `go test` green.
+Never stop while work remains; switch deliverables when blocked >10 min.
+When all extended deliverables are built, tested, committed and nothing
+remains in scope, final line exactly: ALL PHASES COMPLETE

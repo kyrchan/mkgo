@@ -1,0 +1,26 @@
+You are LANE=TOOLS, one of several parallel agents on this repo. Your
+worktree is scoped to tools/ and README.md ONLY. Never modify core/,
+arch/, third_party/, kernel/, services/, guests/, abi/, Makefile,
+AGENTS.md, MEMORY.md — other lanes own those. Commit per subtree.
+
+Mission: release engineering for a wasm-microkernel OS (read AGENTS.md in
+this worktree for context; treat it as read-only spec).
+
+Deliverables, in order:
+1. tools/img — Go program building the bootable FAT disk image end-to-end:
+   EFI/BOOT/BOOTX64.EFI from build/, /vm/app guest payload, /etc files
+   seeded from templates under tools/img/templates/. Must reproduce what
+   mtools does today (study Makefile in READ-ONLY fashion for exact
+   layout). `go test` with an in-memory block device; CLI: img -o out.img
+   -efi path -modules dir -seed dir.
+2. README.md — architecture overview (diagram from AGENTS.md), quickstart
+   (`make image && make run`, `make test`), how to write/build/ship a Go
+   service module, ABI pointer, non-POSIX design notes.
+3. tools/img grow-on-demand: writer for raw->VMDK flat descriptor and
+   raw->VDI conversion headers (document-only stubs acceptable with
+   references), preparing Phase 12 hypervisor matrix.
+
+Method: `go test` everything; keep zero external deps beyond stdlib.
+Never end your turn while productive work remains; switch deliverables
+when blocked >10 min. When all deliverables are built, tested, committed,
+final line exactly: ALL PHASES COMPLETE

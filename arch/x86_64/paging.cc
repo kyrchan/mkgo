@@ -14,7 +14,7 @@ static uint64_t *mk_table(void) {
 }
 
 void paging_identity_init(void) {
-    uint64_t top = (mm_ram_top() + 0x1FFFFF) & ~0x1FFFFFULL;
+    uint64_t top = 1ULL << 32; /* full 4GB identity map */
     if (top > (1ULL << 32))
         top = 1ULL << 32;
     uint64_t *pml4 = mk_table();

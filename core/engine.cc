@@ -8,8 +8,52 @@ extern "C" {
 
 static constexpr uint64_t STACK_SLOTS = 8192;
 
+/* abi/ABI.md v1.1: every service module carries a custom section
+ * "abi_ver" whose first payload byte is the ABI version. Walk top-level
+ * sections of the raw blob and verify it before handing to wasm3. */
+static int check_abiver(const uint8_t *b, uint64_t len) {
+    uint64_t i = 8; /* skip magic+version */
+    while (i + 1 <= len) {
+        uint8_t id = b[i++];
+        uint64_t sz = 0;
+        int sh = 0;
+        while (i < len) {
+            uint8_t byte = b[i++];
+            sz |= (uint64_t)(byte & 0x7F) << sh;
+            sh += 7;
+            if (!(byte & 0x80))
+                break;
+        }
+        if (i + sz > len)
+            return -1;
+        if (id == 0) { /* custom */
+            uint64_t nl = 0;
+            if (i < len && !(b[i] & 0x80))
+                nl = b[i];
+            else if (i < len)
+                nl = ((b[i] & 0x7F) | ((uint64_t)b[i + 1] << 7)) & 0xFFFFFFFF;
+            if (nl == 7 && i + 1 + nl <= len &&
+                b[i + 1] == 'a' && b[i + 2] == 'b' && b[i + 3] == 'i' &&
+                b[i + 4] == '_' && b[i + 5] == 'v' && b[i + 6] == 'e' &&
+                b[i + 7] == 'r') {
+                const uint8_t *pl = b + i + 1 + nl;
+                return pl < b + len ? (int)pl[0] : -1;
+            }
+        }
+        i += sz;
+    }
+    return -1; /* missing section */
+}
+
 int engine_init(struct engine *e, const uint8_t *blob, uint64_t len) {
     e->env = e->rt = e->mod = 0;
+    int av = check_abiver(blob, len);
+    if (av != 1) {
+        console_puts("[engine] refusing module: abi_ver ");
+        console_hex64((uint64_t)(uint32_t)(av < 0 ? 0xFFFF : av));
+        console_puts(" != 1\n");
+        return 1;
+    }
     IM3Environment env = m3_NewEnvironment();
     if (!env)
         return -1;

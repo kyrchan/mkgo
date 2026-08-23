@@ -59,15 +59,29 @@ func cstr(s string) []byte {
 }
 
 /* ---- §7 request framing: {u16 op, u16 seq, payload} ---- */
+/* §7 framing v1.1: {u16 op,u16 seq,u32 uid,char rname[16],payload} */
+var myQ int32 = -1
+
+func ensureQ() {
+	if myQ < 0 {
+		myQ = port_create(&cstr(argv0)[0], uint32(len(argv0)))
+		if myQ < 0 {
+			myQ = port_bind(&cstr(argv0)[0], uint32(len(argv0)))
+		}
+	}
+}
+
 func regList(h int32) []byte {
-	req := make([]byte, 4)
+	ensureQ()
+	req := make([]byte, 24)
 	req[0] = 1 // LIST
-	req[1] = 0
-	port_send(h, &req[0], 4)
+	req[2] = 1 // seq
+	copy(req[8:24], argv0)
+	port_send(h, &req[0], 24)
 	out := make([]byte, 4096)
-	for i := 0; i < 10000; i++ {
-		n := port_recv(h, &out[0], uint32(len(out)))
-		if n > 0 {
+	for i := 0; i < 20000; i++ {
+		n := port_recv(myQ, &out[0], uint32(len(out)))
+		if n > 0 && out[2] == 1 {
 			return out[:n]
 		}
 		sched_yield()
@@ -76,18 +90,20 @@ func regList(h int32) []byte {
 }
 
 func regKill(h int32, sid uint32) int32 {
-	req := make([]byte, 8)
+	ensureQ()
+	req := make([]byte, 28)
 	req[0] = 3 // KILL
 	req[2] = 2 // seq
-	req[4] = byte(sid)
-	req[5] = byte(sid >> 8)
-	req[6] = byte(sid >> 16)
-	req[7] = byte(sid >> 24)
-	port_send(h, &req[0], 8)
+	copy(req[8:24], argv0)
+	req[24] = byte(sid)
+	req[25] = byte(sid >> 8)
+	req[26] = byte(sid >> 16)
+	req[27] = byte(sid >> 24)
+	port_send(h, &req[0], 28)
 	out := make([]byte, 256)
-	for i := 0; i < 10000; i++ {
-		n := port_recv(h, &out[0], uint32(len(out)))
-		if n >= 8 {
+	for i := 0; i < 20000; i++ {
+		n := port_recv(myQ, &out[0], uint32(len(out)))
+		if n >= 8 && out[2] == 2 {
 			return int32(uint32(out[4]) | uint32(out[5])<<8 |
 				uint32(out[6])<<16 | uint32(out[7])<<24)
 		}

@@ -1,0 +1,6 @@
+Continue QA duty. Re-poll branch heads and MEMORY.md hashes across
+MAIN/SVC/TLS. Review new deltas per your output discipline; append to
+verify/FINDINGS.txt, refresh verify/QUALITY.txt. Check whether previously
+filed findings were fixed by newer commits (mark CLOSED with evidence).
+Never stop while work remains. When everything is reviewed at current
+heads with zero open BLOCKERs, final line exactly: ALL PHASES COMPLETE
