@@ -4,7 +4,18 @@ Read this first. Source of truth when context is compacted.
 The full phase-by-phase plan lives in `AGENTS.md` — this file is state,
 decisions, and gotchas. Update at milestones or near context limits.
 
-## Status (as of 2026-08-22)
+## Status (as of 2026-08-23)
+
+**Phase 8 PARTIAL (commit aebdb7c).** Timer/PIC/IRQ0 infrastructure done
+(PIC remapped, PIT @1kHz, vec32 gate, EOI). Paging: full 4GB identity
+map (Go wasm grows past old 512MB boundary — was the g3 crash).
+Cooperative scheduling primary; preemptive scheduling implemented in
+preempt.S but DISABLED — cross-stack IRET corrupts wasm3 JIT state under
+TCG (fxsave/fxrstor + alignment all verified correct; root cause is
+deeper, likely wasm3's use of computed gotos + longjmp interplay with
+interrupted C frames). Preempt can be enabled via SETCONF preempt=1.
+Phase 8 persistence (virtio-blk re-back) and no-starvation gate NOT yet
+done. Next: fix preempt OR implement virtio-blk + p8b gate.
 
 **Phase 7 gate GREEN (commit 95a22d7) — Phases 0-5 + 7 ALL GREEN.**
 Interactive userland live: input/focus (§4), init-driven boot (kernel
