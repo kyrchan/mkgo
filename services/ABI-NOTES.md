@@ -165,8 +165,15 @@ buffer is st=0/got=0 (poll semantics). CLOSE returns immediately; the
 TCP FIN is deferred until all queued/unacked stream bytes have drained
 (no silent tail loss on window-limited sends), and a FIN carrying data
 delivers that data before remote-close surfaces via RECV=got 0.
-Guests use `kern.NetClient`
+UDP OPEN on an already-bound port shares the existing receive queue
+(v1 semantics: no exclusive-bind error); TCP LISTEN on a bound port
+fails with st=-3. Guests use `kern.NetClient`
 (guests/lib) instead of hand-framing.
+
+Wire fidelity record: guests/lib/frame.go implements the ratified v1.1
+canonical header exactly ({op@0,seq@2,uid@4,rname[16]@8}, payload@24,
+all integers LE) — audited against abi/ABI.md §1 this cycle, including
+LE multi-byte decode order and NUL-termination bounds of char[16].
 
 §6 window instantiation: devman ENUM class=net records ordered by
 instance — [0]=RX ring, [1]=TX ring; each mapped into the session's own
