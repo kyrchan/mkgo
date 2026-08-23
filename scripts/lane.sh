@@ -20,7 +20,6 @@ LANE_MAX_ROUNDS=${LANE_MAX_ROUNDS:-200}
 cd "$LANE_DIR" || exit 1
 
 echo $$ >"$LANE_DIR/.runner.pid"
-SENTINEL="ALL PHASES COMPLETE"
 SEED=$(cat "${LANE_SEED_FILE:?}") || exit 1
 CONT=$(cat "${LANE_CONT_FILE:?}") || exit 1
 
@@ -39,7 +38,6 @@ try:
         if not isinstance(t, str):
             continue
         lines = [l.strip() for l in t.strip().splitlines() if l.strip()]
-        if lines and lines[-1] == 'ALL PHASES COMPLETE':
             sys.exit(0)
 except Exception:
     pass
@@ -72,7 +70,6 @@ echo "[$LANE_NAME] start $(date)" >>"$LANE_LOG"
 round=1
 while [ "$round" -le "$LANE_MAX_ROUNDS" ]; do
     [ -f .overnight-stop ] && { echo "[$LANE_NAME] stop $(date)" >>"$LANE_LOG"; break; }
-    [ -f .overnight-complete ] && break
     CHUNK=$(mktemp)
     echo "[$LANE_NAME] round $round begin $(date)" >>"$LANE_LOG"
     if [ "$round" -eq 1 ]; then
@@ -82,11 +79,7 @@ while [ "$round" -le "$LANE_MAX_ROUNDS" ]; do
         run_round "$CONT" | tee -a "$LANE_LOG" | tee "$CHUNK" >/dev/null
     fi
     echo "[$LANE_NAME] round $round end $(date)" >>"$LANE_LOG"
-    if sentinel_in_chunk "$CHUNK"; then
-        touch .overnight-complete
-        echo "[$LANE_NAME] sentinel emitted $(date)" >>"$LANE_LOG"
-        rm -f "$CHUNK"; break
-    fi
+    rm -f "$CHUNK"
     rm -f "$CHUNK"
     sleep 10
     round=$((round + 1))
