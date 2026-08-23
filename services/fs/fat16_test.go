@@ -118,6 +118,54 @@ func TestLargeFileMultiCluster(t *testing.T) {
 	}
 }
 
+// TestSparseGapZeroedAcrossRealloc pins the zero-on-alloc rule: recycled
+// clusters must never surface stale bytes through a sparse write gap
+// (cross-file stale-data disclosure class).
+func TestSparseGapZeroedAcrossRealloc(t *testing.T) {
+	_, f := newFS(t)
+	if err := f.Mkdir("/tmp"); err != nil {
+		t.Fatal(err)
+	}
+
+	// victim file: recognizable pattern across many clusters, then delete
+	if err := f.Create("/tmp/victim.dat"); err != nil {
+		t.Fatal(err)
+	}
+	pattern := bytes.Repeat([]byte{0xA7}, 5*2048) // 10 sectors of poison
+	if err := f.WriteFile("/tmp/victim.dat", 0, pattern); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Delete("/tmp/victim.dat"); err != nil {
+		t.Fatal(err)
+	}
+
+	// new file: single byte written far past EOF — everything before it
+	// is a gap that POSIX/FAT semantics require to read as zeros
+	if err := f.Create("/tmp/gap.dat"); err != nil {
+		t.Fatal(err)
+	}
+	const off = 9 * 1024 // inside the 10th cluster; needs the recycled chain
+	if err := f.WriteFile("/tmp/gap.dat", off, []byte{0x42}); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, off+1)
+	n, err := f.ReadFile("/tmp/gap.dat", 0, got)
+	if err != nil || n != len(got) {
+		t.Fatalf("read n=%d err=%v", n, err)
+	}
+	for i, b := range got {
+		if i == off {
+			if b != 0x42 {
+				t.Fatalf("payload byte wrong at %d: %x", i, b)
+			}
+			continue
+		}
+		if b != 0x00 {
+			t.Fatalf("stale byte %x leaked into sparse gap at %d (victim pattern was 0xA7)", b, i)
+		}
+	}
+}
+
 func TestOffsetWritesAndReads(t *testing.T) {
 	_, f := newFS(t)
 	if err := f.Mkdir("/etc"); err != nil {

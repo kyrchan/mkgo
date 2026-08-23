@@ -215,10 +215,21 @@ func (f *FAT) allocOne() (uint32, error) {
 	for c := uint32(2); c < f.clusters+2; c++ {
 		if f.fatGet(c) == freeClus {
 			f.fatSet(c, eocFAT16)
+			if err := f.zeroCluster(c); err != nil {
+				return 0, err
+			}
 			return c, nil
 		}
 	}
 	return 0, ErrNoSpace
+}
+
+// zeroCluster clears one data cluster. Every runtime allocation starts
+// zeroed so recycled storage never leaks stale bytes through sparse
+// write gaps (cross-file disclosure class; FAT stores no owners).
+func (f *FAT) zeroCluster(c uint32) error {
+	z := make([]byte, secPerClus*512)
+	return f.dev.Write(f.clusLBA(c), z)
 }
 
 func (f *FAT) clusLBA(c uint32) uint64 {
@@ -559,19 +570,11 @@ func (f *FAT) Mkdir(path string) error {
 	if _, exists := parent.find(n11); exists {
 		return ErrExists
 	}
-	c, err := f.allocOne()
+	c, err := f.allocOne() // returns a zeroed cluster
 	if err != nil {
 		return err
 	}
 	// initialise "." / ".."
-	zlba := f.clusLBA(c)
-	var z [512]byte
-	if err := f.dev.Write(zlba, z[:]); err != nil {
-		return err
-	}
-	if err := f.dev.Write(zlba+1, z[:]); err != nil {
-		return err
-	}
 	dot := make([]byte, 32)
 	copy(dot[0:11], ".          ")
 	dot[11] = attrDir
@@ -585,6 +588,7 @@ func (f *FAT) Mkdir(path string) error {
 		pclus = parent.chain[0]
 	}
 	lib.Put16(dotdot[26:], uint16(pclus))
+	zlba := f.clusLBA(c) // cluster already zeroed by allocOne
 	if err := writePartial(f.dev, zlba, dot, dotdot); err != nil {
 		return err
 	}
