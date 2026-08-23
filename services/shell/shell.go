@@ -70,11 +70,11 @@ func Run(k lib.Kernel, opts ShellOptions) {
 
 	sh.out("shell ready (user root: " + sh.rootLabel() + ")")
 	sh.prompt()
-	buf := make([]byte, lib.InputRecLen)
+	buf := make([]byte, lib.RecvBufLen) // fits both v1 and v1.3 records
 	for {
 		n := k.InputRecv(buf)
 		if n >= lib.InputRecLen {
-			if ev, ok := lib.DecodeInputEvent(buf[:]); ok && ev.Kind == lib.KeyDown {
+			if ev, ok := lib.DecodeInputEvent(buf[:n]); ok && ev.Kind == lib.KeyDown {
 				sh.key(ev)
 			}
 		}

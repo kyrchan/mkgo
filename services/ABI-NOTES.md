@@ -68,6 +68,15 @@ protocol.
 
 ## 4. Multiuser rooting (IMPLEMENTED, extended mandate)
 
+§4 INPUT RECORD TRANSITION NOTE (v1.3): the ratified v1.3 record is
+6 bytes {u8 kind, u8 mods, u16 scan, u16 codepoint}; the DEPLOYED
+kernel still emits the 4-byte v1 form. guests/lib decodes BOTH
+(DecodeInputEvent / RecvBufLen) so lib-built guests survive the
+kernel-side flip without recompilation; Encode stays at the deployed
+4-byte form (input records are kernel→guest only). When MAIN lands
+v1.3 emission, no SVC change is required — verify via shell input.
+
+
 With v1.1's kernel-stamped uid in every canonical header, fs.wasm now
 enforces per-uid policy server-side:
 

@@ -104,6 +104,35 @@ func TestInputAndFocus(t *testing.T) {
 	}
 }
 
+// TestDecodeInputDualLayout pins the v1.3 transition tolerance: records
+// from the deployed 4-byte kernel AND ratified 6-byte (scan) form decode
+// correctly; short garbage does not.
+func TestDecodeInputDualLayout(t *testing.T) {
+	// deployed v1 record
+	ev, ok := DecodeInputEvent([]byte{KeyDown, ModCtrl, 'x', 0})
+	if !ok || ev.Kind != KeyDown || ev.Mods != ModCtrl ||
+		ev.Codepoint != 'x' || ev.Scan != 0 {
+		t.Fatalf("v1 decode: %+v ok=%v", ev, ok)
+	}
+	// ratified v1.3 record: scan=0x1E, codepoint='a'
+	v13 := []byte{KeyDown, 0, 0x1E, 0, 'a', 0}
+	ev, ok = DecodeInputEvent(v13)
+	if !ok || ev.Kind != KeyDown || ev.Scan != 0x1E || ev.Codepoint != 'a' {
+		t.Fatalf("v13 decode: %+v ok=%v", ev, ok)
+	}
+	// PollInput through a bus that serves the v1.3 width
+	fk := NewFakeKernel()
+	fk.InputQ = append(fk.InputQ, v13)
+	got, ok := PollInput(fk)
+	if !ok || got.Scan != 0x1E || got.Codepoint != 'a' {
+		t.Fatalf("poll v13: %+v ok=%v", got, ok)
+	}
+	// truncated input rejected
+	if _, ok := DecodeInputEvent([]byte{KeyDown}); ok {
+		t.Fatal("short record accepted")
+	}
+}
+
 func TestRegistryDirectRPC(t *testing.T) {
 	fk := NewFakeKernel()
 	admin := fk.AddSession("admin", 0, CapAll)
