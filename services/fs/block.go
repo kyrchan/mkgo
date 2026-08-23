@@ -54,9 +54,6 @@ func NewBlockWindow(mem []byte) (*BlockWindow, error) {
 	if lib.Get32(mem) != bwMagic || lib.Get32(mem[4:]) != bwBlkSize {
 		return nil, ErrBlockWindow
 	}
-	if mem[0x14] == 0xFF && mem[0x15] == 0xFF { // marker unused; reserved
-		_ = mem
-	}
 	w := &BlockWindow{mem: mem, mu: &sync.Mutex{}}
 	w.req = lib.Get32(mem[0x10:])
 	return w, nil
