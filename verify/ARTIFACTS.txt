@@ -10,7 +10,7 @@
 | services/login/login.wasm    | 0320eb5466d496be | §7 LOGIN/SPAWN caller — must be post-v1.1-canonical build ✓ rebuilt in 95a22d7 batch |
 | services/init/init.wasm      | 8c38566e396a8431 | SETCONF op6 caller — requires kernsvc case 6 (F33 item1, landed in MAIN dirty tree, not yet committed) |
 | services/display/display.wasm| 5616ea832182082e | §9.FB consumer per v1.2 ✓ |
-| services/net/net.wasm        | fe3c89089a0e05f0 | §6 rings + 'net' server per v1.1 canonical ✓ |
+| services/net/net.wasm        | 4b1c2f49ec40b3e0 | §6 rings + 'net' server per v1.1 canonical ✓ |
 | services/shell/shell.wasm    | fc32e81d9c0f9a0a | fs client + registry SPAWN caller |
 | services/fs/fs.wasm          | 880af8b95fbdd23b  | multiuser rooting @a32873b rebuild ✓ |
 | services/fs/fs.raw.wasm      | 9fa018aa47ea307e  | pre-abiver intermediate (not shippable) |
