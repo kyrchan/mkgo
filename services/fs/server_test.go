@@ -430,3 +430,85 @@ func newUidClient(t *testing.T, k *lib.FakeKernel, role string, args ...interfac
 	}
 	return c
 }
+
+// startKFSServer is startServer with the KFS log-structured backend —
+// proves the §-port protocol is identical either way (clients never
+// notice the format swap).
+func startKFSServer(t *testing.T, k *lib.FakeKernel, stop chan struct{}) {
+	t.Helper()
+	_, win, err := NewRamDisk(testBlocks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := FormatKFS(win); err != nil {
+		t.Fatal(err)
+	}
+	store, err := MountKFS(win)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go ServeFS(k, store, ServerOptions{Stop: stop})
+	waitPortFS(k)
+}
+
+// TestKFSServerProtocolParity drives the same client flows the FAT16
+// server tests cover, against KFS: end-to-end file ops + multiuser
+// rooting denials must behave identically.
+func TestKFSServerProtocolParity(t *testing.T) {
+	k := lib.NewFakeKernel()
+	stop := make(chan struct{})
+	defer close(stop)
+	startKFSServer(t, k, stop)
+
+	restoreAdmin := k.As(0)
+	admin := newUidClient(t, k, "admin0", 0)
+	for _, d := range []string{"/etc", "/home", "/home/u1", "/home/u2", "/tmp"} {
+		if err := admin.Mkdir(d); err != nil && err != ErrExists && err != lib.ErrFSExists {
+			t.Fatalf("admin mkdir %s: %v", d, err)
+		}
+	}
+	if err := admin.Create("/etc/motd"); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := admin.WriteFile("/etc/motd", 0, []byte("kfs motd\n")); err != nil || n != 9 {
+		t.Fatalf("admin write %d %v", n, err)
+	}
+	restoreAdmin()
+
+	u1 := newUidClient(t, k, "u1sess", uint32(1001), "u1", lib.CapFocus)
+	scopeU1 := k.As(1001)
+	if err := u1.Create("secret.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := u1.WriteFile("secret.txt", 0, []byte("u1 on kfs")); err != nil || n != 9 {
+		t.Fatalf("u1 write %d %v", n, err)
+	}
+	buf := make([]byte, 32)
+	if n, err := u1.ReadFile("secret.txt", 0, buf); err != nil || n != 9 ||
+		string(buf[:n]) != "u1 on kfs" {
+		t.Fatalf("u1 read n=%d err=%v", n, err)
+	}
+	if _, err := u1.List("/"); err == nil {
+		t.Fatal("u1 root list should be denied (policy parity with fat16)")
+	}
+	scopeU1()
+
+	u2 := newUidClient(t, k, "u2sess", uint32(1002), "u2", lib.CapFocus)
+	scopeU2 := k.As(1002)
+	defer scopeU2()
+	if _, err := u2.Stat("/home/u1/secret.txt"); err != lib.ErrFSNoEntry {
+		t.Fatalf("u2 cross-user stat: %v", err)
+	}
+	if _, err := u2.ReadFile("/home/u1/secret.txt", 0, buf); err != lib.ErrFSNoEntry {
+		t.Fatalf("u2 cross-user read: %v", err)
+	}
+	if err := u2.Create("/tmp/shared.kfs"); err != nil {
+		t.Fatalf("u2 /tmp create: %v", err)
+	}
+	if _, err := u2.Stat("/etc/motd"); err != nil {
+		t.Fatalf("u2 /etc read: %v", err)
+	}
+	if err := u2.Create("/etc/hax"); err != lib.ErrFSAccess {
+		t.Fatalf("u2 /etc create: %v", err)
+	}
+}

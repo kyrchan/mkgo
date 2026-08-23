@@ -42,7 +42,20 @@ type ServerOptions struct {
 }
 
 // ServeFS mounts fat and serves port requests until Stop.
-func ServeFS(k lib.Kernel, fat *FAT, opts ServerOptions) {
+// store is the on-disk backend contract consumed by the port server.
+// KFS (log-structured, default) and FAT16 (import/export filter) both
+// satisfy it; the §-port protocol above is identical either way.
+type store interface {
+	Create(path string) error
+	Mkdir(path string) error
+	Delete(path string) error
+	Stat(path string) (StatInfo, error)
+	List(path string) ([]StatInfo, error)
+	ReadFile(path string, off uint64, buf []byte) (int, error)
+	WriteFile(path string, off uint64, data []byte) error
+}
+
+func ServeFS(k lib.Kernel, fat store, opts ServerOptions) {
 	name := opts.Name
 	if name == "" {
 		name = lib.NameFS
@@ -86,7 +99,7 @@ var errMalformed = errors.New("fs: malformed request")
 
 // ensureStandardDirs provisions the AGENTS.md tree skeleton on a fresh
 // volume (/etc, /home, /tmp, /boot/modules); existing dirs are left as-is.
-func ensureStandardDirs(fat *FAT) {
+func ensureStandardDirs(fat store) {
 	for _, d := range []string{"/etc", "/home", "/tmp", "/boot", "/boot/modules"} {
 		if _, err := fat.Stat(d); err == ErrNoEntry {
 			_ = fat.Mkdir(d) // best effort; log-free in v1
@@ -215,7 +228,7 @@ func hasDotDot(raw string) bool {
 }
 
 // dispatch parses one canonical-header request and renders the reply.
-func dispatch(fat *FAT, sessions map[uint32]*fsSession, req []byte, replies *lib.ReplyBook) (rep []byte, inbox string, ok bool) {
+func dispatch(fat store, sessions map[uint32]*fsSession, req []byte, replies *lib.ReplyBook) (rep []byte, inbox string, ok bool) {
 	hdr, okH := lib.ParseHeader(req)
 	if !okH || hdr.RNam == "" {
 		return nil, "", false

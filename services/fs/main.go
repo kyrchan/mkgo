@@ -1,7 +1,8 @@
 //go:build wasip1
 
-// fs.wasm entry: mount-or-format FAT16 over the kernel block imports
-// (ABI v1.1 managed-runtime transport), then serve the "fs" port forever.
+// fs.wasm entry: mount-or-format KFS1 (log-structured) over the kernel
+// block imports (ABI v1.1 managed-runtime transport), then serve the
+// "fs" port forever. FAT16 remains in-tree as an import/export filter.
 //
 // Build:
 //
@@ -24,19 +25,19 @@ func main() {
 		os.Stdout.WriteString("[fs] no block device\n")
 		return
 	}
-	fat, err := Mount(dev)
+	store, err := MountKFS(dev)
 	if err != nil {
-		os.Stdout.WriteString("[fs] formatting fresh volume\n")
-		if ferr := Format(dev, "SYSDISK"); ferr != nil {
+		os.Stdout.WriteString("[fs] formatting fresh KFS volume\n")
+		if ferr := FormatKFS(dev); ferr != nil {
 			os.Stdout.WriteString("[fs] format failed\n")
 			return
 		}
-		fat, err = Mount(dev)
+		store, err = MountKFS(dev)
 		if err != nil {
 			os.Stdout.WriteString("[fs] mount failed after format\n")
 			return
 		}
 	}
 	os.Stdout.WriteString("[fs] serving /etc /home /boot/modules\n")
-	ServeFS(lib.Real(), fat, ServerOptions{})
+	ServeFS(lib.Real(), store, ServerOptions{})
 }
