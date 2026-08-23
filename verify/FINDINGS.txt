@@ -199,3 +199,6 @@ CLOSED: f11bb39 rebuilds ALL service .wasm wraps from the current tree (console/
 ===== FINDING 48 2026-08-22 SVC@f11bb39 =====
 severity: NOTE
 ARTIFACTS.txt refreshed with post-rebuild hashes: console 6022c69fe5072a81 · display f25bd7cd9e8ca016 · fs 667c28f461565cb8 · init b78b1dc6f0328221 · login d7826a96bea212c9 · net 52d399f33d9efc01 (unchanged @b8a9a74) · shell 0c7d84bd4384b1fe. All fresh against ABI commit 3912a37.
+===== FINDING 49 2026-08-22 SVC@4ebb737 =====
+severity: NOTE
+net close-drain + fs traversal hardening reviewed clean. (a) TCP: Close() defers FIN until sndBuf+inFlight drain; FIN+payload seq accounting fixed incl. handshake-completing segments; Pending() peek no longer consumes the queued conn; dead adopt()/TCPListener.l removed — 129 lines of new tests cover pending-peek, drain-across-close, FIN+payload, write-after-close. (b) fs policy layer now denies '..' components pre-storage (server.go:127 hasDotDot, uid!=0; storage splitPath retained as defense-in-depth) with regression tests for relative+absolute u2 escapes. Mechanical at this head: forced -count=1 -race GREEN across every module (console/init/login/net/shell + fs + display/terminal + guests/lib). Wraps rebuilt: fs.wasm 8b1670e9a8e19305 · net.wasm fe3c89089a0e05f0 (ARTIFACTS updated). No defects.
