@@ -106,3 +106,80 @@ func TestLibNetClientE2E(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestLibNetClientSendChunking pins the datagram-chunk arithmetic: a
+// payload larger than one §1 message must arrive byte-exact through the
+// chunk loop (boundary = MaxMsg - CanonicalHeaderLen - 4).
+func TestLibNetClientSendChunking(t *testing.T) {
+	fk := lib.NewFakeKernel()
+	stop := make(chan struct{})
+	defer close(stop)
+
+	seg := NewSegment()
+	stackSrv := NewStack(mustMAC(t, "02:00:00:00:00:02"), MustIP("10.0.0.2"), seg.Attach())
+	stackPeer := NewStack(mustMAC(t, "02:00:00:00:00:01"), MustIP("10.0.0.1"), seg.Attach())
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			stackSrv.pump()
+			stackPeer.pump()
+			time.Sleep(50 * time.Microsecond)
+		}
+	}()
+	go ServeNet(fk, stackSrv, stop)
+	waitForCond(t, func() bool { return fk.HasPort(lib.NameNet) }, "net port missing")
+
+	ln, err := stackPeer.tcp.Listen(7071)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nc, err := lib.BindNet(fk, "chunky")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc.SetBudget(60000) // several chunked round trips under -race load
+	sock, err := nc.OpenTCPOutbound()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nc.Connect(sock, [4]byte{10, 0, 0, 1}, 7071); err != nil {
+		t.Fatal(err)
+	}
+	var peerConn *TCPConn
+	waitForCond(t, func() bool {
+		if c, err := ln.Accept(); err == nil {
+			peerConn = c
+		}
+		return peerConn != nil && peerConn.State() == "ESTABLISHED"
+	}, "handshake never completed")
+
+	chunkCap := lib.MaxMsg - lib.CanonicalHeaderLen - 4
+	msg := make([]byte, 2*chunkCap+17) // two full chunks + a remainder
+	for i := range msg {
+		msg[i] = byte(i % 253)
+	}
+	if n, err := nc.Send(sock, msg); err != nil || n != len(msg) {
+		t.Fatalf("chunked send n=%d err=%v", n, err)
+	}
+
+	buf := make([]byte, len(msg)+128)
+	total := 0
+	waitForCond(t, func() bool {
+		for total < len(buf) {
+			n := peerConn.Recv(buf[total:])
+			if n == 0 {
+				break
+			}
+			total += n
+		}
+		return total == len(msg)
+	}, "chunked stream incomplete")
+	if !bytes.Equal(buf[:total], msg) {
+		t.Fatal("chunked stream corrupted")
+	}
+}
