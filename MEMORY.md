@@ -13,7 +13,13 @@ gate, EOI). Paging: full 4GB identity map. Preemptive scheduling
 implemented but DISABLED (preempt_on=0) — cross-stack wasm3 corruption
 under TCG; enable via SETCONF preempt=1 after debugging. Key fix:
 session_entry must read cur (set by mark_running) not g_entering global.
-## Status (as of 2026-08-23)
+## Status (as of 2026-08-23) — ALL GATES GREEN
+
+**ALL 9 GATES PASS: g1 g2 g3 p4 p5a p5b p7 p8a p8b.**
+Full test matrix verified on current tree (commit 3fbb85c).
+Phase 9 (net.wasm) dropped per AGENTS.md stretch provision.
+Phase 10: README.md written, tools/img deferred (mtools works),
+/etc/users hashed login deferred (static table functional).
 
 **Phase 7 + 8 GREEN.** All gates g1-g3, p4, p5a, p5b, p7, p8a PASS.
 virtio-blk backend implemented (core/virtio_blk.cc) re-backs
