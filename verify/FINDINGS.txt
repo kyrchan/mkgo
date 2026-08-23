@@ -212,3 +212,6 @@ CLOSED: services/fs allocOne now calls zeroCluster(c) on EVERY allocation — bo
 ===== FINDING 51 2026-08-22 SVC@1799572 =====
 severity: NOTE
 block.go dead reserved-marker block removed (NewBlockWindow no-op on mem[0x14..15]); behavior unchanged; fs.wasm rebuilt sha256-16 141c7d0a7b4a080f (ARTIFACTS updated). The RamDisk double-audit conclusion matches my own F3a-era review: single-outstanding-request semantics, request range checks, and chunk overshoot handling are correct. Suite green under -race -count=1.
+===== FINDING 52 2026-08-22 SVC@a100c59 =====
+severity: NOTE
+init LIST-saturation guard reviewed clean: the deployed kernel caps §7 LIST at 12 records (kernsvc.cc:65-67, matching ports.cc htab[12]) with no truncation flag, making an absent sid ambiguous; init's sweep now defers respawn decisions while saturated — correct choice, since double-spawning a live service is worse than a deferred respawn. FakeKernel mirrors the cap so tests model reality. Regression test proves defer-under-saturation. init green under -race -count=1. The underlying 12-session ceiling + missing truncation flag are MAIN substrate limits to raise at Phase-10 hardening.
