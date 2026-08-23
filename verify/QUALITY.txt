@@ -1,31 +1,24 @@
 # QUALITY.txt — rolling summary (LANE=VERIFY) — regenerated each pass
-# Last pass: 2026-08-22 late (post da43b41/6a22fec/b75d0f5/1929b87 reviews)
+# Last pass: 2026-08-23 catch-up (Phases 8+10 committed; ABI v1.2/v1.3 ratified; SVC display landed)
 
 | repo | head reviewed | mechanical | open BLOCKERs | open MAJORs | trend |
 |---|---|---|---|---|---|
-| MAIN  | 95a22d7 (Phase 7 interactive userland COMMITTED; Phases 0-5+7 gates GREEN per MEMORY.md) | per-file C++ syntax pass at HEAD: zero failures incl. input.cc | 6: F12 devblk wraparound OOB · F13 LOGIN owner/binder escalation · F16 routed_rw reply clamp · F18 §7 silent default · F31 kern_blk_* ungated · F32 uid stamping absent | 3 (F4 hosteng stale, F33-item1 SETCONF unimplemented, F37 ppa over-broad caps) | gates GREEN Ph0–5 per MEMORY.md; security blockers are negative-path, outside gate coverage |
-| SVC   | 2cc470f (+TCP flush-on-ACK, lib NetClient, ABI-NOTES §10/§6) | go vet clean; -race -count=1: fs+login+console+net green (init/shell green @dadeaf4) | 0 | 1 (F42 fs build break at dadeaf4 — recheck against a32873b working tree; F17 pending MAIN commit) | multiuser rooting hardened; F26 CLOSED |
-| TLS   | 1929b87 + b75d0f5 README docs | go vet clean; go test -race clean incl. hvtest scaffolding + golden-file converter tests | 0 | 0 | healthy; Phase-12 prep started |
+| MAIN  | 4e5b4fd (Phase 8 timer/PIC + virtio-blk backend; Phase 10 tools/img + p8b persistence + README; ABIs v1.2/v1.3 ratified; all-9-gates-green claimed; Makefile cross-gate deps fix) | per-file C++ syntax sweep: ZERO failures across core/ incl. virtio_blk.cc/input.cc/preempt.cc | 6: F12 devblk wraparound OOB · F13 LOGIN owner/binder escalation · F16 routed_rw reply clamp · F18 §7 silent default · F31 kern_blk_* ungated (now hits PERSISTENT disk) · F32 uid stamping absent | 2: F42-class none here… actually MAIN MAJORs: F4 hosteng stale · F37 ppa over-broad caps · NEW F45 virtio-blk completion path broken (stale poll / ignored status byte / missing NEXT flag) | Phases 0–5,7,8,10 gates GREEN; six security blockers persist in committed code |
+| SVC   | 00f3bc6 (net E2E + race-hardening + multiuser rooting hardening + NEW display service on §9.FB; fs/display split into own modules) | go vet clean; FULL suite -race -count=1 GREEN (console/init/login/net/shell in parent module; fs + display/terminal as sub-modules) | 0 | 0 (F35 races closed @dadeaf4; F26 rooting CLOSED @a32873b; F17 kernel-side resolved in MAIN tree) | healthiest lane; Phase-9 net + §9.FB display both green |
+| TLS   | b75d0f5 (+uncommitted MEMORY.md broadcast) | vet/test green incl. hvtest + golden files | 0 | 0 | healthy |
 
-Closed (committed evidence): F1 F5 F11 F15 F22 @da43b41.
-Closed (in-tree, awaiting commit): none currently provisional beyond above.
-Open MINOR/NOTE watchlist: F6 LIST/CAPS ungated (v2 roadmap §11 acknowledges) ·
-F7 addabiver tests · F8 Yield budget math · F9 stub markers · F14 fan-in reply
-misrouting · F19 rname LStr-vs-fixed16 encoding · F20 CLOSED @f5d2e23 ·
-F21 check_abiver LEB hardening · F24 dead fstransport · F25 fat16 gap-fill ·
-F26 SVC fs uid rooting (subsumed by F2 sync + MAIN fscore rooting) ·
-F27 fleet.sh stale-pidfile kill · F29/F29a ungated debug ptrs/traces ·
-F30 block window not in devman ENUM · F31-related F34 gap-fill mirrored in
-fscore.go · F36 TLS broadcast conformance N/A · F38 dual guest-lib lineages.
+Closed ledger: F1 F5 F11 F15 F20 F22 F26 F33 F3(all sub-items).
+Open BLOCKERs (6, all MAIN): F12 F13 F16 F18 F31 F32 — the multiuser-defeating
+trio (F31/F32/F13) is the priority order.
+Open MAJORs: F4 · F37 · F45 (NEW: virtio-blk shim completion path — stale
+poll skip, device status byte never checked, missing NEXT flag on desc 1;
+green p8b gate masked by QEMU fast sync completions) · F42 (SVC fs build
+break at dadeaf4 — recheck against a32873b working tree which builds green,
+so possibly resolved-in-tree pending verification from clean clone).
+Watchlist: F6 F7 F8 F9 F14 F19 F21 F24 F25 F34 F36 F38 F43 F44.
 
-Cross-lane state:
-- MAIN internal wire consistency reached (kernsvc/fs/glue/login/test_pp/
-  test_p5b all canonical 24B). SVC lib migrated @f5d2e23; SVC service-side
-  hand-built frames remain the open F2/F35 residue.
-- F32 (uid stamping) is the highest-leverage remaining fix: ratified promise,
-  unimplemented, and the sole thing making cross-user spoofing possible on
-  direct-port requests.
-
-Next-pass triggers: new commits any lane, MEMORY.md hash change, or blocker-
-site drift in MAIN working tree (checked via md5 of ports.cc/kernsvc.cc/
-devblk.cc/wasi_glue.cc/fsroute.cc each pass).
+Process notes:
+- fs + display are now separate Go modules under services/ — parent ./...
+  skips them; mechanical runs must target each module root.
+- Fleet broadcasts continue to sync into all worktrees' MEMORY.md
+  (verify worktree's copy left uncommitted by design).
