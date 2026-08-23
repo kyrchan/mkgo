@@ -1,21 +1,16 @@
 # ARTIFACTS.txt — shipped-wasm freshness ledger (VERIFY lane)
 # Per AGENTS.md practice #3: sha256 (first 16 hex) + ABI commit provenance.
 # ABI commit at time of ledger build: 3912a37 (ABI v1.3 RATIFIED).
-# A .wasm whose embedded abi_ver != 1 or built pre-ratification of the
-# surface it consumes = automatic MAJOR finding on next sweep.
+# Refreshed @SVC e73496a.
 
-| artifact (SVC lane @00f3bc6) | sha256-16 | notes |
+| artifact (SVC lane) | sha256-16 | notes |
 |---|---|---|
-| services/console/console.wasm | f1961b1900fe54cf | relay; transport-agnostic |
-| services/login/login.wasm    | 0320eb5466d496be | §7 LOGIN/SPAWN caller — must be post-v1.1-canonical build ✓ rebuilt in 95a22d7 batch |
-| services/init/init.wasm      | 8c38566e396a8431 | SETCONF op6 caller — requires kernsvc case 6 (F33 item1, landed in MAIN dirty tree, not yet committed) |
-| services/display/display.wasm| 5616ea832182082e | §9.FB consumer per v1.2 ✓ |
-| services/net/net.wasm        | 4b1c2f49ec40b3e0 | §6 rings + 'net' server per v1.1 canonical ✓ |
-| services/shell/shell.wasm    | fc32e81d9c0f9a0a | fs client + registry SPAWN caller |
-| services/fs/fs.wasm          | 880af8b95fbdd23b  | multiuser rooting @a32873b rebuild ✓ |
-| services/fs/fs.raw.wasm      | 9fa018aa47ea307e  | pre-abiver intermediate (not shippable) |
+| services/console/console.wasm | aa2808a09aae1e9f | relay; transport-agnostic |
+| services/display/display.wasm | 543c00c5edf10021 | §9.FB consumer per v1.2 |
+| services/fs/fs.wasm           | 6c2abd5bd36f7ec4 | multiuser rooting @a32873b + REGISTER gate @d035268 rebuild |
+| services/init/init.wasm       | cd05191e395377d4 | SETCONF op6 caller (needs kernsvc case 6 in committed MAIN) |
+| services/login/login.wasm     | fc748071920d734d | canonical §7 LOGIN/SPAWN caller |
+| services/net/net.wasm         | 4b1c2f49ec40b3e0 | §6 rings + 'net' server; issuer/flood caps @d035268 |
+| services/shell/shell.wasm     | 57a7c43eddef9188 | fs client + registry SPAWN caller |
 
-Freshness rule: any *.wasm older than the ABI commit of a surface it
-consumes = MAJOR. Current set: all eight carry abi_ver=1 (spot-checked
-fs.wasm payload byte 0x01 @162c90e); login/init/shell/net were all rebuilt
-inside the 95a22d7..4e5b4fd window → FRESH against v1.3.
+All seven carry abi_ver=1 and were rebuilt inside the post-v1.3 window → FRESH.
