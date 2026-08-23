@@ -311,7 +311,9 @@ func (f *FSClient) SetBudget(n int) { f.c.Budget = n }
 const OpFSRegister uint16 = 8
 
 // Register binds uid→(name, capmask) on the fs server. Issued by
-// login/init after successful auth.
+// login/init after successful auth — the fs server accepts REGISTER
+// only from the privileged session (kernel-stamped uid 0); other
+// callers receive FSAccess (ABI-NOTES §4 issuer gate).
 func (f *FSClient) Register(uid uint32, name string, capmask uint64) error {
 	pl := make([]byte, 0, 14+len(name))
 	var head [4]byte

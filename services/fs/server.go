@@ -224,6 +224,15 @@ func dispatch(fat *FAT, sessions map[uint32]*fsSession, req []byte, replies *lib
 	payload := req[lib.CanonicalHeaderLen:]
 
 	if op == OpFSRegister {
+		// Issuer gate: only the privileged session (kernel-stamped uid 0
+		// = login/init) may feed the uid→(name,capmask) table. Without
+		// this, any guest could self-register claiming another user's
+		// NAME and inherit its /home/<name> root — names are the rooting
+		// key, so registration authority IS the security boundary.
+		// Contract: ABI-NOTES.md §4; AGENTS.md "caps granted ONLY at login".
+		if hdr.UID != 0 {
+			return statusOnly(op, seq, lib.FSAccess), hdr.RNam, true
+		}
 		return statusOnly(op, seq, registerSession(sessions, payload)), hdr.RNam, true
 	}
 

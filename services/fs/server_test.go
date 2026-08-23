@@ -344,9 +344,73 @@ func TestDotDotEscapeDenied(t *testing.T) {
 	}
 }
 
+// TestRegisterIssuerGate pins the REGISTER authority boundary: only the
+// privileged session (kernel-stamped uid 0 = login/init) may feed the
+// uid→(name,capmask) table. A guest self-registering with another user's
+// NAME would otherwise inherit its /home/<name> root (names are the
+// rooting key).
+func TestRegisterIssuerGate(t *testing.T) {
+	k := lib.NewFakeKernel()
+	stop := make(chan struct{})
+	defer close(stop)
+	startServer(t, k, stop)
+
+	restoreAdmin := k.As(0)
+	admin := newUidClient(t, k, "admin0", 0)
+	if err := admin.Mkdir("/home/u1"); err != nil && err != ErrExists && err != lib.ErrFSExists {
+		t.Fatalf("admin mkdir: %v", err)
+	}
+	if err := admin.Mkdir("/home/u3"); err != nil && err != ErrExists && err != lib.ErrFSExists {
+		t.Fatalf("admin mkdir u3: %v", err)
+	}
+	if err := admin.Create("/home/u1/secret.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.WriteFile("/home/u1/secret.txt", 0, []byte("top secret")); err != nil {
+		t.Fatal(err)
+	}
+	restoreAdmin()
+
+	// hostile guest claims u1's identity via self-registration
+	guest := newUidClient(t, k, "evil5555")
+	scopeGuest := k.As(5555)
+	defer scopeGuest()
+	if err := guest.Register(5555, "u1", lib.CapAll); err != lib.ErrFSAccess {
+		t.Fatalf("guest self-register as 'u1': %v", err)
+	}
+	// registration must NOT have taken effect: guest stays unregistered —
+	// relative paths refused AND rooted view of "u1" not granted
+	if err := guest.Create("anything"); err != lib.ErrFSAccess {
+		t.Fatalf("guest relative create after denied register: %v", err)
+	}
+	if _, err := guest.Stat("secret.txt"); err != lib.ErrFSAccess {
+		t.Fatalf("guest rooted stat after denied register: %v", err)
+	}
+	// and the absolute cross-user path is still hidden (guest class)
+	if _, err := guest.Stat("/home/u1/secret.txt"); err == nil {
+		t.Fatal("guest sees u1 file despite gate")
+	}
+
+	// a registered non-admin user cannot register anyone either
+	u2 := newUidClient(t, k, "u2sess", uint32(1002), "u2", lib.CapFocus)
+	scopeU2 := k.As(1002)
+	defer scopeU2()
+	if err := u2.Register(uint32(1003), "u3", lib.CapAll); err != lib.ErrFSAccess {
+		t.Fatalf("user registering others: %v", err)
+	}
+
+	// the privileged issuer still works (regression for the gate itself)
+	u3 := newUidClient(t, k, "u3sess", uint32(1003), "u3", lib.CapFocus)
+	scopeU3 := k.As(1003)
+	defer scopeU3()
+	if err := u3.Create("mine.txt"); err != nil {
+		t.Fatalf("legit admin-issued registration broken: %v", err)
+	}
+}
+
 // newUidClient binds an fs client; when uid>0 it registers the session
-// under that uid (scoped via FakeKernel.As so the kernel-stamped uid in
-// the canonical header matches).
+// under that uid. Per the issuer gate, registration is performed by the
+// privileged admin session (uid 0) — the production issuer is login/init.
 func newUidClient(t *testing.T, k *lib.FakeKernel, role string, args ...interface{}) *lib.FSClient {
 	t.Helper()
 	c, err := lib.BindFS(k, role)
@@ -358,11 +422,11 @@ func newUidClient(t *testing.T, k *lib.FakeKernel, role string, args ...interfac
 		uid := args[0].(uint32)
 		name := args[1].(string)
 		mask := args[2].(uint64)
-		restore := k.As(uid)
-		defer restore()
+		regScope := k.As(0) // privileged issuer scope
 		if err := c.Register(uid, name, mask); err != nil {
 			t.Fatalf("register %s: %v", name, err)
 		}
+		regScope()
 	}
 	return c
 }

@@ -45,6 +45,60 @@ func pumpUntil(t *testing.T, cond func() bool, msg string) {
 
 // ---- Ethernet layer ----
 
+// TestWindowRingCorruptLenClamp pins the wasm32-safe clamp: a slot with
+// a hostile len (≥2^31, negative after int() on 32-bit) must yield a
+// clamped frame, not panic.
+func TestWindowRingCorruptLenClamp(t *testing.T) {
+	mem := make([]byte, RingSize)
+	ring, err := NewWindowRing(mem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lib.Put32(mem[4:], 1) // tail=1, head=0: one pending slot
+	lib.Put32(mem[RingHeaderLen:], 0xFFFFFFFF)
+	for i := RingHeaderLen + 4; i < RingHeaderLen+4+16; i++ {
+		mem[i] = byte(i)
+	}
+	f, ok := ring.Recv()
+	if !ok {
+		t.Fatal("slot lost")
+	}
+	if len(f) != SlotDataLen {
+		t.Fatalf("len=%d want %d", len(f), SlotDataLen)
+	}
+	if got := lib.Get32(mem[0:]); got != 1 {
+		t.Fatalf("head=%d want 1", got)
+	}
+}
+
+// TestICMPInBounded pins flood hardening: unmatched echo replies must
+// never grow icmpIn beyond its cap.
+func TestICMPInBounded(t *testing.T) {
+	a, b := pair(t)
+	for i := 0; i < icmpInCap+25; i++ {
+		reply := (&ICMPPacket{Type: ICMPEchoReply, ID: 9, Seq: uint16(i),
+			Data: []byte("flood")}).Build()
+		a.handleIPv4(&EthFrame{Dst: a.MAC, Src: b.MAC, Type: EthTypeIPv4,
+			Payload: mustIPv4(t, b.IP, a.IP, IP4ProtoICMP, reply)})
+	}
+	a.mu.Lock()
+	n := len(a.icmpIn)
+	a.mu.Unlock()
+	if n > icmpInCap {
+		t.Fatalf("icmpIn grew to %d (cap %d)", n, icmpInCap)
+	}
+}
+
+// mustIPv4 builds an IPv4 datagram with checksum for raw injection.
+func mustIPv4(t *testing.T, src, dst IP4, proto uint8, payload []byte) []byte {
+	t.Helper()
+	dg, err := (&IP4Packet{Src: src, Dst: dst, Proto: proto, Payload: payload}).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dg
+}
+
 func TestEthRoundTripAndPadding(t *testing.T) {
 	src := mustMAC(t, "02:00:00:00:00:01")
 	dst := mustMAC(t, "ff:ff:ff:ff:ff:ff")

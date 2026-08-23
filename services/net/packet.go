@@ -82,12 +82,12 @@ func (w *WindowRing) Recv() ([]byte, bool) {
 		return nil, false
 	}
 	base := w.slotBase(h)
-	n := int(lib.Get32(w.mem[base:]))
-	if n > SlotDataLen {
-		n = SlotDataLen // corrupt slot: clamp, never overflow
-	}
-	out := make([]byte, n)
-	copy(out, w.mem[base+4:base+4+n])
+	u := lib.Get32(w.mem[base:])
+	if u > SlotDataLen {
+		u = SlotDataLen // corrupt slot: clamp while still unsigned —
+	} // comparing after int() would go negative on wasm32 and panic
+	out := make([]byte, int(u))
+	copy(out, w.mem[base+4:base+4+int(u)])
 	w.setHead(h + 1)
 	return out, true
 }

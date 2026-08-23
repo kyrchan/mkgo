@@ -73,6 +73,11 @@ enforces per-uid policy server-side:
 
 - REGISTER (op 8, lane-local): `{u32 uid, u16 nLen, name, u64 capmask}`
   — issued by login/init after auth; feeds the uid→(name,capmask) table.
+  ISSUER GATE: accepted only from the privileged session
+  (kernel-stamped uid 0); any other caller receives FSAccess (-10).
+  Names are the rooting key (/home/<name>), so registration authority
+  is a security boundary — a guest self-registering with another user's
+  name must not inherit its root.
 - uid 0 = admin: unrestricted.
 - registered user: relative paths rooted at /home/<name>; own subtree
   fully writable; /tmp world-writable; /etc + /boot writes need

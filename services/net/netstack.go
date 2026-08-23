@@ -155,6 +155,11 @@ func (s *Stack) handleICMP(pkt *IP4Packet) {
 		s.sendIPv4(pkt.Src, IP4ProtoICMP, reply)
 	case ICMPEchoReply:
 		s.mu.Lock()
+		// bounded: a peer flooding unmatched echo replies must not
+		// grow the session heap without limit (drop-oldest)
+		if len(s.icmpIn) >= icmpInCap {
+			s.icmpIn = s.icmpIn[1:]
+		}
 		s.icmpIn = append(s.icmpIn, *msg)
 		s.mu.Unlock()
 	}
@@ -227,6 +232,9 @@ func (s *Stack) Stats() (eth, arp, ipv4, icmp uint64) {
 }
 
 var ErrNoReplyNet = &netError{"net: no reply"}
+
+// icmpInCap bounds the unmatched-echo-reply buffer (flood hardening).
+const icmpInCap = 64
 
 type netError struct{ msg string }
 
