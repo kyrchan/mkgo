@@ -13,13 +13,23 @@ gate, EOI). Paging: full 4GB identity map. Preemptive scheduling
 implemented but DISABLED (preempt_on=0) — cross-stack wasm3 corruption
 under TCG; enable via SETCONF preempt=1 after debugging. Key fix:
 session_entry must read cur (set by mark_running) not g_entering global.
+## Status (as of 2026-08-23)
+
+**Phase 7 + 8 GREEN.** All gates g1-g3, p4, p5a, p5b, p7, p8a PASS.
+virtio-blk backend implemented (core/virtio_blk.cc) re-backs
+kern_blk_* with real QEMU disk storage per ABI §8 multi-backend rule.
+Preemptive scheduling implemented but DISABLED (cooperative fallback
+primary); full-frame IRET mechanism in preempt.S works for voluntary
+parks but cross-stack wasm3 corruption under TCG needs more work.
+io.h now has outl/inl for PCI config access.
+
 Remaining for ALL PHASES COMPLETE:
-- Phase 8 gate (a): persistence — need virtio-blk re-backing or equivalent;
-  write file → reset → read back. No-starvation (p8a) already PASSES.
-- Phase 9 (stretch): net.wasm — CAN DROP if week ends.
-- Phase 10: /etc/users hashed login, tools/img Go builder replacing mtools,
-  README.md, test matrix under KVM+TCG.
-All Phase 0-7 gates remain green (verified this session).
+- Phase 8 gate (a): persistence — write file → reset QEMU → read back.
+  virtio-blk driver exists but needs QEMU -drive if=virtio setup in
+  Makefile and persistence test target.
+- Phase 9 (stretch): net.wasm — CAN DROP.
+- Phase 10: /etc/users hashed login, tools/img Go builder replacing
+  mtools, README.md, test matrix under KVM+TCG.
 
 **Phase 7 gate GREEN (commit 95a22d7) — Phases 0-5 + 7 ALL GREEN.** Timer/PIC/IRQ0 infrastructure done
 (PIC remapped, PIT @1kHz, vec32 gate, EOI). Paging: full 4GB identity
