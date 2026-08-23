@@ -37,9 +37,10 @@ CORE_OBJS := $(BUILD)/core/main.o $(BUILD)/core/kmain.o $(BUILD)/core/lib.o \
              $(BUILD)/core/fsroute.o
 ARCH_OBJS := $(BUILD)/arch/x86_64/uart.o $(BUILD)/arch/x86_64/cpu.o \
              $(BUILD)/arch/x86_64/traps.o $(BUILD)/arch/x86_64/traps_s.o \
+             $(BUILD)/arch/x86_64/ctx_s.o $(BUILD)/arch/x86_64/irq0_stub_s.o \
              $(BUILD)/arch/x86_64/paging.o $(BUILD)/arch/x86_64/vector.o \
-             $(BUILD)/arch/x86_64/timer.o $(BUILD)/arch/x86_64/math.o \
-             $(BUILD)/arch/x86_64/ctx_s.o
+             $(BUILD)/arch/x86_64/timer.o $(BUILD)/arch/x86_64/math.o
+
 WASM3_SRC := $(wildcard third_party/wasm3/*.c)
 WASM3_OBJS := $(patsubst %.c,$(BUILD)/wasm3/%.o,$(notdir $(WASM3_SRC)))
 OBJS := $(CORE_OBJS) $(ARCH_OBJS) $(WASM3_OBJS)
