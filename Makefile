@@ -331,6 +331,20 @@ test-p8a: $(BUILD)/disk-p8.img $(BUILD)/VARS.fd
 		|| { echo "TEST FAIL (p8a)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -30; exit 1; }
 
 
+
+# Phase 8b: persistence — write via virtio-blk, reset, read back
+$(BUILD)/persist.img:
+	dd if=/dev/zero of=$@ bs=1M count=0 seek=64 status=none
+
+test-p8b: $(BUILD)/disk-p7.img $(BUILD)/VARS.fd $(BUILD)/persist.img
+	@rm -f $(BUILD)/serial.log $(BUILD)/persist.img
+	@dd if=/dev/zero of=$(BUILD)/persist.img bs=1M count=0 seek=64 status=none
+	@timeout 120 env $(QEMU_ENV) $(QEMU) $(QEMU_BASE) \
+	    -drive format=raw,file=$(BUILD)/disk-p7.img \
+	    -drive format=raw,file=$(BUILD)/persist.img,if=virtio \
+	    -serial file:$(BUILD)/serial.log || true
+	@grep -q 'virtio-blk. ready' $(BUILD)/serial.log 		&& echo "TEST PASS (p8b virtio-blk detected)" 		|| { echo "TEST FAIL (p8b)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -20; exit 1; }
+
 test-all: test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7
 
 
