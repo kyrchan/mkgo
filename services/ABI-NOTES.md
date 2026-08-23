@@ -184,6 +184,18 @@ canonical header exactly ({op@0,seq@2,uid@4,rname[16]@8}, payload@24,
 all integers LE) — audited against abi/ABI.md §1 this cycle, including
 LE multi-byte decode order and NUL-termination bounds of char[16].
 
+## 12. §7 deployed-kernel divergences (filed for MAIN, guarded lane-side)
+
+- CAPS enumerates only bits 0..6 on the deployed kernel
+  (core/kernsvc.cc `for b < 7`): ratified v1.1 bit 7 (CONF) is never
+  reported. Host FakeKernel models the spec (bits 0..7) — a `caps`
+  audit tool on real hardware will under-report CONF until MAIN fixes
+  the loop bound.
+- LIST caps at 12 records with no truncation flag. init's sweep defers
+  respawn decisions while the list is saturated (absent-sid is
+  ambiguous); the host model mirrors the 12-record cap so tests are
+  honest. MAIN should add a truncation flag or raise the cap (v2).
+
 §6 window instantiation: devman ENUM class=net records ordered by
 instance — [0]=RX ring, [1]=TX ring; each mapped into the session's own
 linear memory at win_off (same unsafe-slice rationale as pre-v1.1 block;

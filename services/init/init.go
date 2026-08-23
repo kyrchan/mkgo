@@ -83,6 +83,9 @@ func ParseKnobs(text string) map[string]string {
 const (
 	maxSpawnFails    = 5
 	defaultPollEvery = 10000
+	// listSaturationCap mirrors the kernel LIST record cap
+	// (core/kernsvc.cc: sched_list(..., 12), no truncation flag).
+	listSaturationCap = 12
 )
 
 type svcState struct {
@@ -177,6 +180,13 @@ func (s *supervisor) sweep() {
 	list, err := s.reg.List()
 	if err != nil {
 		return // transient registry hiccup; retry next sweep
+	}
+	// The kernel LIST caps records (12, no truncation flag): a saturated
+	// list cannot distinguish "absent" from "beyond the cap", so respawn
+	// decisions would risk double-spawning live services. Defer instead.
+	if len(list) >= listSaturationCap {
+		s.logf("[init] session list saturated; deferring respawn sweep")
+		return
 	}
 	alive := make(map[uint32]bool, len(list))
 	for _, si := range list {

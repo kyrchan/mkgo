@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -200,4 +201,52 @@ func wait(t *testing.T, cond func() bool, msg string) {
 		time.Sleep(2 * time.Millisecond)
 	}
 	t.Fatal(msg)
+}
+
+// TestSweepDefersWhenListSaturated pins the truncation guard: the kernel
+// LIST caps records (12) with no truncation flag, so an absent sid in a
+// saturated list must NOT trigger a respawn — double-spawning a live
+// service is worse than deferring the sweep.
+func TestSweepDefersWhenListSaturated(t *testing.T) {
+	k := lib.NewFakeKernel()
+	k.Cur = k.AddSession("init", 0, lib.CapAll)
+	reg, err := lib.BindRegistry(k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.SetBudget(5000)
+
+	var logs []string
+	sup := &supervisor{k: k, reg: reg, poll: 1,
+		logf: func(s string) { logs = append(logs, s) }}
+	sup.states = append(sup.states, &svcState{
+		svc: Service{Name: "svc", Capmask: lib.CapFocus, Respawn: true}})
+	st := sup.states[0]
+	sup.spawn(st)
+	if !st.spawned {
+		t.Fatal("boot spawn failed")
+	}
+
+	// saturate the list past the kernel cap (kernel + init + svc = 3)
+	for i := 0; i < 12; i++ {
+		k.AddSession(fmt.Sprintf("filler%02d", i), 0, 0)
+	}
+	list, _ := reg.List()
+	if len(list) < listSaturationCap {
+		t.Fatalf("fixture broken: list=%d want >= %d", len(list), listSaturationCap)
+	}
+
+	// the supervised service dies; sweep must defer while saturated
+	if rc, err := reg.Kill(st.sid); err != nil || rc != 0 {
+		t.Fatalf("kill rc=%d err=%v", rc, err)
+	}
+	logs = nil
+	sup.sweep()
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "saturated") {
+		t.Fatalf("saturation not detected/logged: %q", joined)
+	}
+	if strings.Contains(joined, "respawning") || strings.Contains(joined, "spawned svc") {
+		t.Fatalf("respawn attempted under saturation: %q", joined)
+	}
 }

@@ -338,10 +338,18 @@ func (fk *FakeKernel) dispatch(epname string, data []byte) []byte {
 	case NameRegistry:
 		switch op {
 		case OpRegistryList:
-			r := rep(28 + 25*len(fk.Sessions))
-			Put32(r[24:], uint32(len(fk.Sessions)))
+			// core/kernsvc.cc caps LIST at 12 records with NO
+			// truncation flag — mirror that so supervisors built
+			// against this model handle saturation honestly.
+			const listCap = 12
+			n := len(fk.Sessions)
+			if n > listCap {
+				n = listCap
+			}
+			r := rep(28 + 25*n)
+			Put32(r[24:], uint32(n))
 			off := 28
-			for _, s := range fk.Sessions {
+			for _, s := range fk.Sessions[:n] {
 				Put32(r[off:], s.Sid)
 				Put32(r[off+4:], s.UID)
 				r[off+8] = s.State
