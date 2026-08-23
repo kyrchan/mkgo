@@ -288,6 +288,62 @@ func TestMultiuserRootingAndDenials(t *testing.T) {
 	}
 }
 
+// TestDotDotEscapeDenied pins the AGENTS.md traversal rule: no `..`
+// component may resolve a non-admin caller out of their root, relative
+// or absolute; the denial is policy-level (FSAccess), pre-storage.
+func TestDotDotEscapeDenied(t *testing.T) {
+	k := lib.NewFakeKernel()
+	stop := make(chan struct{})
+	defer close(stop)
+	startServer(t, k, stop)
+
+	restoreAdmin := k.As(0)
+	admin := newUidClient(t, k, "admin0", 0)
+	for _, d := range []string{"/home/u1", "/home/u2"} {
+		if err := admin.Mkdir(d); err != nil && err != ErrExists && err != lib.ErrFSExists {
+			t.Fatalf("admin mkdir %s: %v", d, err)
+		}
+	}
+	if err := admin.Create("/home/u1/secret.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.WriteFile("/home/u1/secret.txt", 0, []byte("u1 data")); err != nil {
+		t.Fatal(err)
+	}
+	if err := admin.Create("/tmp/pub.txt"); err != nil {
+		t.Fatal(err)
+	}
+	restoreAdmin()
+
+	u2 := newUidClient(t, k, "u2sess", uint32(1002), "u2", lib.CapFocus)
+	scopeU2 := k.As(1002)
+	defer scopeU2()
+
+	// rooted-relative climb: secret.txt sits at /home/u2/../u1/...
+	if _, err := u2.Stat("../u1/secret.txt"); err != lib.ErrFSAccess {
+		t.Fatalf("relative .. stat: %v", err)
+	}
+	if _, err := u2.ReadFile("../u1/secret.txt", 0, make([]byte, 16)); err != lib.ErrFSAccess {
+		t.Fatalf("relative .. read: %v", err)
+	}
+	if err := u2.Create("../u1/planted.txt"); err != lib.ErrFSAccess {
+		t.Fatalf("relative .. create: %v", err)
+	}
+
+	// absolute paths with an embedded .. component
+	if _, err := u2.Stat("/tmp/../home/u1/secret.txt"); err != lib.ErrFSAccess {
+		t.Fatalf("absolute embedded ..: %v", err)
+	}
+	if err := u2.Delete("/tmp/../home/u1/secret.txt"); err != lib.ErrFSAccess {
+		t.Fatalf("absolute .. delete: %v", err)
+	}
+
+	// sanity: normal tmp usage through the same session still works
+	if _, err := u2.Stat("/tmp/pub.txt"); err != nil {
+		t.Fatalf("legit /tmp stat broken: %v", err)
+	}
+}
+
 // newUidClient binds an fs client; when uid>0 it registers the session
 // under that uid (scoped via FakeKernel.As so the kernel-stamped uid in
 // the canonical header matches).

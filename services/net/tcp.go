@@ -127,6 +127,7 @@ type TCPConn struct {
 	rcvNXT           uint32 // next expected remote byte
 	finSeq           uint32 // seq of our FIN (valid when finPending/finSent)
 	finSent          bool
+	finPending       bool   // Close() called; FIN deferred until queue drain
 	sndBuf           []byte // queued bytes not yet segmented
 	rcvBuf           []byte // app-visible receive stream
 	inFlight         []byte // unacked payload bytes (v1 window)
@@ -156,6 +157,13 @@ func (c *TCPConn) rcvNXTUnderRace() uint32 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.rcvNXT
+}
+
+// sndNXTUnderRace reads our next-to-send seq (tests forge peer segments).
+func (c *TCPConn) sndNXTUnderRace() uint32 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.sndNXT
 }
 
 // Err surfaces terminal conditions (reset / remote closed / closed).
@@ -209,7 +217,7 @@ func maxInt(a, b int) int {
 func (c *TCPConn) Write(data []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.state != stateEstablished {
+	if c.state != stateEstablished || c.finPending {
 		return 0, ErrClosed
 	}
 	c.sndBuf = append(c.sndBuf, data...)
@@ -243,9 +251,32 @@ func minInt(a, b int) int {
 }
 
 // Close performs an orderly teardown from either established side.
+// The FIN is deferred until every queued/unacked byte has drained —
+// closing after a window-limited Write must not abandon stream tail.
 func (c *TCPConn) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	switch c.state {
+	case stateEstablished:
+		c.flushLocked()
+		c.finPending = true
+		c.trySendFinLocked()
+	case stateCloseWait:
+		c.finPending = true
+		c.trySendFinLocked()
+	case stateClosed:
+		return nil
+	default:
+		return ErrClosed
+	}
+	return nil
+}
+
+// trySendFinLocked emits the deferred FIN once sndBuf+inFlight are empty.
+func (c *TCPConn) trySendFinLocked() {
+	if !c.finPending || len(c.sndBuf) > 0 || len(c.inFlight) > 0 {
+		return
+	}
 	switch c.state {
 	case stateEstablished:
 		c.state = stateFinWait
@@ -253,12 +284,7 @@ func (c *TCPConn) Close() error {
 	case stateCloseWait:
 		c.state = stateLastAck
 		c.sendLocked(TCPFin, nil)
-	case stateClosed:
-		return nil
-	default:
-		return ErrClosed
 	}
-	return nil
 }
 
 // handle processes one inbound segment (stack pump goroutine).
@@ -286,6 +312,7 @@ func (c *TCPConn) handle(seg *TCPSegment) {
 			if c.state == stateEstablished {
 				c.flushLocked() // window opened: push queued bytes
 			}
+			c.trySendFinLocked() // drain may have completed
 		}
 	}
 
@@ -319,14 +346,26 @@ func (c *TCPConn) handle(seg *TCPSegment) {
 			}
 		}
 	case stateEstablished:
-		if seg.Flags&TCPFin != 0 {
+		// in-order payload first — a FIN carrying data must not drop it
+		if len(seg.Payload) > 0 && seg.Seq == c.rcvNXT {
+			c.rcvBuf = append(c.rcvBuf, seg.Payload...)
+			c.rcvNXT += uint32(len(seg.Payload))
+			c.sendLocked(TCPAck, nil)
+		}
+		if seg.Flags&TCPFin != 0 && seg.Seq+uint32(len(seg.Payload)) == c.rcvNXT {
 			c.rcvNXT++
 			c.sendLocked(TCPAck, nil)
 			c.state = stateCloseWait
 			c.err = ErrRemoteClosed
 		}
 	case stateFinWait:
-		if seg.Flags&TCPFin != 0 {
+		// late payload while we drain our own side: deliver it too
+		if len(seg.Payload) > 0 && seg.Seq == c.rcvNXT {
+			c.rcvBuf = append(c.rcvBuf, seg.Payload...)
+			c.rcvNXT += uint32(len(seg.Payload))
+			c.sendLocked(TCPAck, nil)
+		}
+		if seg.Flags&TCPFin != 0 && seg.Seq+uint32(len(seg.Payload)) == c.rcvNXT {
 			c.rcvNXT++
 			c.sendLocked(TCPAck, nil)
 		}
@@ -348,8 +387,9 @@ func (c *TCPConn) handle(seg *TCPSegment) {
 		}
 	}
 
-	// in-order payload delivery — AFTER the state switch so segments
-	// racing the handshake's final ACK land in a live rcv window.
+	// A segment completing the handshake (SYN-RCVD→ESTABLISHED above)
+	// may itself carry payload: deliver here too. Idempotent — if the
+	// switch already consumed it, rcvNXT has moved past seg.Seq.
 	if c.state == stateEstablished && len(seg.Payload) > 0 && seg.Seq == c.rcvNXT {
 		c.rcvBuf = append(c.rcvBuf, seg.Payload...)
 		c.rcvNXT += uint32(len(seg.Payload))
@@ -433,13 +473,6 @@ func (t *TCPStack) Dial(laddr IP4, raddr IP4, rport uint16) (*TCPConn, error) {
 	return conn, nil
 }
 
-// adopt registers an inbound-established child under its accepted port.
-func (t *TCPStack) adopt(conn *TCPConn) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.conns[conn.LocalPort] = conn
-}
-
 // ---- listener ----
 
 // TCPListener accepts inbound connections on one port.
@@ -447,7 +480,6 @@ type TCPListener struct {
 	stack *TCPStack
 	port  uint16
 	q     chan *TCPConn
-	l     *TCPConn // the LISTEN-state placeholder conn
 }
 
 // Accept blocks until a handshake completes (driver must pump both
@@ -461,12 +493,8 @@ func (l *TCPListener) Accept() (*TCPConn, error) {
 	}
 }
 
-// Pending reports whether a completed handshake awaits Accept (tests).
+// Pending reports whether a completed handshake awaits Accept (peek —
+// never consumes the queue entry).
 func (l *TCPListener) Pending() bool {
-	select {
-	case <-l.q:
-		return false // popped nothing; channel semantics handled below
-	default:
-		return len(l.q) > 0
-	}
+	return len(l.q) > 0
 }

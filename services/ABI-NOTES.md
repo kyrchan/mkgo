@@ -156,7 +156,11 @@ header. Payload integers LE; IP addresses raw 4-byte arrays.
 	CLOSE  {u16 sock}                         -> {i32 st}
 
 st: 0 ok, -1 no-such-socket, -2 bad-op, -3 state. RECV with an empty
-buffer is st=0/got=0 (poll semantics). Guests use `kern.NetClient`
+buffer is st=0/got=0 (poll semantics). CLOSE returns immediately; the
+TCP FIN is deferred until all queued/unacked stream bytes have drained
+(no silent tail loss on window-limited sends), and a FIN carrying data
+delivers that data before remote-close surfaces via RECV=got 0.
+Guests use `kern.NetClient`
 (guests/lib) instead of hand-framing.
 
 §6 window instantiation: devman ENUM class=net records ordered by

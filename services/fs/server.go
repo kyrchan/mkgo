@@ -124,6 +124,12 @@ type view struct {
 // authorize maps (uid, rawPath) to the effective filesystem path,
 // applying the multiuser policy. write=true gates mutation ops.
 func authorize(sessions map[uint32]*fsSession, uid uint32, raw string, write bool) (string, int32) {
+	if uid != 0 && hasDotDot(raw) {
+		// AGENTS.md multiuser model: no path may traverse out of the
+		// caller's root. Denied by POLICY here (storage layer rejects
+		// independently — defense in depth).
+		return "", lib.FSAccess
+	}
 	if uid == 0 {
 		p := absPath(raw)
 		if p == "" {
@@ -196,6 +202,16 @@ func absPath(raw string) string {
 		return ""
 	}
 	return raw
+}
+
+// hasDotDot reports whether any path component is "..".
+func hasDotDot(raw string) bool {
+	for _, p := range strings.Split(raw, "/") {
+		if p == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // dispatch parses one canonical-header request and renders the reply.
