@@ -195,6 +195,7 @@ $(MCOPY) -i $(1) services/login/login.wasm ::/boot/modules/login.wasm
 endef
 
 $(BUILD)/disk-p5a.img: $(BUILD)/BOOTX64.EFI build/test_p5a.wasm \
+                       build/test_p5b.wasm \
                        services/fs/fs.wasm services/console/console.wasm \
                        services/login/login.wasm | $(BUILD)
 	$(call MKDISK5,$@)
@@ -202,6 +203,7 @@ $(BUILD)/disk-p5a.img: $(BUILD)/BOOTX64.EFI build/test_p5a.wasm \
 	$(MCOPY) -i $@ build/test_p5b.wasm ::/vm/app2
 
 $(BUILD)/disk-p5b.img: $(BUILD)/BOOTX64.EFI build/test_p5b.wasm \
+                       build/test_p5a.wasm \
                        services/fs/fs.wasm services/console/console.wasm \
                        services/login/login.wasm | $(BUILD)
 	$(call MKDISK5,$@)
