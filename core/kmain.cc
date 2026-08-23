@@ -131,6 +131,7 @@ void kmain(const struct boot_info *bi) {
         (void)sb;
     }
 
+    /* Cooperative scheduling primary; preempt deferred (Phase 9+) */
     sched_run();
     console_puts("[kmain] KERNEL-OK all subsystems up, guest ran clean\n");
     cpu_halt();

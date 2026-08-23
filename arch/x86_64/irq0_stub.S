@@ -1,11 +1,13 @@
+/* Minimal IRQ0 stub: skip red zone, EOI, return. */
 .section .text
 .code64
 .globl irq0_stub
 irq0_stub:
-    /* minimal: EOI + return (no preemption in cooperative mode) */
+    subq $128, %rsp          /* skip red zone */
     pushq %rax
     movq $0x20, %rdx
     movb $0x20, %al
-    outb %al, %dx
+    outb %al, %dx            /* EOI */
     popq %rax
+    addq $128, %rsp
     iretq

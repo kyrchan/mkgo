@@ -42,7 +42,7 @@ func readArgs() {
 func main() {
 	readArgs()
 	os.Stdout.WriteString("[" + argv0 + "] start\n")
-	if argv0 == "busy" {
+	if argv0 == "ppb" || argv0 == "busy" {
 		busy()
 	} else {
 		polite()
@@ -53,9 +53,12 @@ func main() {
 func busy() {
 	x := uint64(1469598103934665603)
 	marks := 0
-	for i := uint64(0); i < 4000000000; i++ {
+	for i := uint64(0); i < 200000000; i++ {
 		x = x*6364136223846793005 + 1442695040888963407
-		if i%600000000 == 0 && i > 0 {
+		if i%1000 == 0 {
+			sched_yield()
+		}
+		if i%200000 == 0 && i > 0 {
 			marks++
 			os.Stdout.WriteString("[busy] progress " + itoa(int(marks)) +
 				" x=" + itoa(int(x&0xFFFF)) + "\n")

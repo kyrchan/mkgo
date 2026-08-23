@@ -141,6 +141,11 @@ build/test_p5b.raw: guests/test_p5b.go
 build/test_p5b.wasm: build/test_p5b.raw
 	python3 scripts/add_abiver.py $< $@ 1
 
+build/test_p8.raw: guests/test_p8.go
+	cd guests && GOOS=wasip1 GOARCH=wasm go build -o ../$@ test_p8.go
+build/test_p8.wasm: build/test_p8.raw
+	python3 scripts/add_abiver.py $< $@ 1
+
 
 $(BUILD)/BOOTX64.EFI: $(BUILD)/kernel.so scripts/mkpefi.py
 	python3 scripts/mkpefi.py $(BUILD)/kernel.so $@
@@ -296,6 +301,35 @@ test-p7: $(BUILD)/disk-p7.img $(BUILD)/VARS.fd
 		&& grep -q 'Welcome to the capability microkernel' $(BUILD)/serial.log \
 		&& echo "TEST PASS (p7)" \
 		|| { echo "TEST FAIL (p7)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -40; exit 1; }
+
+
+# Phase 8: cooperative multitasking — both sessions make progress
+define MKDISKP8
+dd if=/dev/zero of=$(1) bs=1M count=0 seek=64 status=none
+$(MFORMAT) -i $(1) ::
+$(MMD) -i $(1) ::/EFI ::/EFI/BOOT ::/vm ::/boot ::/boot/modules
+$(MCOPY) -i $(1) $(BUILD)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
+$(MCOPY) -i $(1) services/fs/fs.wasm ::/boot/modules/fs.wasm
+$(MCOPY) -i $(1) services/console/console.wasm ::/boot/modules/console.wasm
+$(MCOPY) -i $(1) services/login/login.wasm ::/boot/modules/login.wasm
+endef
+
+$(BUILD)/disk-p8.img: $(BUILD)/BOOTX64.EFI build/test_p8.wasm | $(BUILD)
+	dd if=/dev/zero of=$@ bs=1M count=0 seek=64 status=none
+	$(MFORMAT) -i $@ ::
+	$(MMD) -i $@ ::/EFI ::/EFI/BOOT ::/vm
+	$(MCOPY) -i $@ $(BUILD)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
+	$(MCOPY) -i $@ build/test_p8.wasm ::/vm/app
+	$(MCOPY) -i $@ build/test_p8.wasm ::/vm/app2
+
+test-p8a: $(BUILD)/disk-p8.img $(BUILD)/VARS.fd
+	$(call RUN_QEMU,$(BUILD)/disk-p8.img)
+	@grep -q 'KERNEL-OK' $(BUILD)/serial.log \
+		&& grep -q 'busy. done marks=' $(BUILD)/serial.log \
+		&& grep -q 'polite. done ticks=' $(BUILD)/serial.log \
+		&& echo "TEST PASS (p8a no-starvation)" \
+		|| { echo "TEST FAIL (p8a)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -30; exit 1; }
+
 
 test-all: test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7
 
