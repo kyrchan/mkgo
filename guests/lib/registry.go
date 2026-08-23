@@ -246,6 +246,9 @@ const (
 	ClassInput   uint32 = 3
 	ClassTimer   uint32 = 4
 	ClassConsole uint32 = 5
+
+	// ClassFramebuffer is the v1.2 §9.FB device class (ABI.md §9.FB).
+	ClassFramebuffer uint32 = 9
 )
 
 func BindDevman(k Kernel) (*DevmanClient, error) {

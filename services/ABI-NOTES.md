@@ -164,3 +164,25 @@ instance — [0]=RX ring, [1]=TX ring; each mapped into the session's own
 linear memory at win_off (same unsafe-slice rationale as pre-v1.1 block;
 a managed-runtime-safe import pair is proposed for §11/v2 alongside the
 reply-cap work). Address assignment via argv[1]="<mac> <ip>".
+
+## 11. Display face (extended mandate)
+
+services/display implements the §9.FB consumer: an 8×16-glyph text-mode
+terminal (80×25 default grid) over the framebuffer window — public-domain
+8×8 font doubled vertically, ANSI-lite SGR (0 reset, 1 bright,
+30-37/40-47 colors), scroll-on-overflow, tab stops, backspace, and
+damage-tracked Flush() issuing one UPDATE_RECT (FLIP only when
+double-buffering is negotiated). Headless boots (width==0) degrade every
+op to a silent no-op.
+
+Two consumers share the terminal package
+(kernel.lane/services/display/terminal):
+- display.wasm — standalone: binds the "console" relay and renders.
+- console.wasm — when devman ENUM reports a §9.FB device, every relayed
+  line is mirrored into a Terminal via Options.Mirror (the "display"
+  output face); headless boots skip it entirely.
+
+Host harness: terminal.NewFake(w,h,caps) completes the §9.FB mailbox in
+a goroutine exactly like the kernel shim, so go test -race exercises
+identical window semantics; pixel-level assertions verify glyph bits,
+EGA palette values and UPDATE_RECT arguments.

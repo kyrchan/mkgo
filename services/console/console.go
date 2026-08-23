@@ -23,6 +23,10 @@ type Options struct {
 	Name string
 	// Stop closes to end the relay loop (tests); nil runs forever.
 	Stop <-chan struct{}
+	// Mirror receives every rendered line a second time — the
+	// "display" face (services/display terminal on the §9.FB window).
+	// May be nil. Writes never block the relay path on error.
+	Mirror io.Writer
 }
 
 const defaultTag = "[console] "
@@ -52,7 +56,11 @@ func Serve(k kern.Kernel, out io.Writer, opts Options) {
 	for {
 		n := k.PortRecv(h, buf)
 		if n > 0 {
-			out.Write(render(line[:0], buf[:int(n)]))
+			rendered := render(line[:0], buf[:int(n)])
+			out.Write(rendered)
+			if opts.Mirror != nil {
+				opts.Mirror.Write(rendered)
+			}
 		}
 		if opts.Stop != nil && stopped(opts.Stop) {
 			return

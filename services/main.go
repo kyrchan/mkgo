@@ -14,20 +14,20 @@ import (
 	"io"
 	"os"
 
-	kern "kernel.lane/guests/lib"
+	"kernel.lane/guests/lib"
 	"kernel.lane/services/display/terminal"
 )
 
 func main() {
 	os.Stdout.WriteString("[console] up\n")
-	Serve(kern.Real(), os.Stdout, Options{Mirror: displayFace()})
+	Serve(lib.Real(), os.Stdout, Options{Mirror: displayFace()})
 }
 
 // displayFace returns a writer that renders lines into the framebuffer
 // terminal, or nil when no §9.FB device is attached (headless boot).
 func displayFace() io.Writer {
-	k := kern.Real()
-	dm, err := kern.BindDevman(k)
+	k := lib.Real()
+	dm, err := lib.BindDevman(k)
 	if err != nil {
 		return nil
 	}
@@ -36,7 +36,7 @@ func displayFace() io.Writer {
 		return nil
 	}
 	for _, r := range recs {
-		if r.Class != kern.ClassFramebuffer {
+		if r.Class != lib.ClassFramebuffer {
 			continue
 		}
 		mem := fbMemAt(r.WinOff, terminal.FBWindowMin)
@@ -53,7 +53,7 @@ func displayFace() io.Writer {
 }
 
 // terminalWriter adapts the Terminal to io.Writer (one Write == one line).
-type terminalWriter struct{ tr *terminal.Terminal }
+type terminalWriter struct{ tr *Terminal }
 
 func (tw *terminalWriter) Write(p []byte) (int, error) {
 	tw.tr.WriteString(string(p))
