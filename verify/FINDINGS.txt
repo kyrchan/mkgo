@@ -224,3 +224,5 @@ services/fs/kfs.go + kfs_test.go (uncommitted working tree) reviewed clean — t
 ===== FINDING 54 2026-08-22 SVC@85ba7bf =====
 severity: NOTE
 services/fs/kfs.go + kfs_test.go (working tree) reviewed clean — the kfs log-structured replacement (mission per FS FORMAT DECISION): superblock 'KFS1', CRC32'd append-only segments {INODE|DIRENT|DATA|CHECKPOINT}, replay with torn-tail drop, INODE.uid native ownership, SetUID/UID management, port protocol unchanged. Crash-injection suite delivered as REQUIRED: tear-every-byte, continue-after-tear, header bit-flip, garbage tail, lifecycle, checkpoint pacing (6 tests, -race green). WriteFile orders DATA before INODE-size update (crash-safe direction) and RAM-image zero-padding structurally closes the F34 gap-fill class at this layer. fs module green under -race -count=1 with kfs integrated.
+===== LEDGER DEDUP NOTE =====
+Two FINDING 54 blocks exist (first @SVC@working-tree, second @SVC@85ba7bf). Content equivalent — kfs.go + crash-injection suite reviewed clean. The SECOND is canonical; treat the first as void.
