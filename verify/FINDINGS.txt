@@ -226,3 +226,6 @@ severity: NOTE
 services/fs/kfs.go + kfs_test.go (working tree) reviewed clean — the kfs log-structured replacement (mission per FS FORMAT DECISION): superblock 'KFS1', CRC32'd append-only segments {INODE|DIRENT|DATA|CHECKPOINT}, replay with torn-tail drop, INODE.uid native ownership, SetUID/UID management, port protocol unchanged. Crash-injection suite delivered as REQUIRED: tear-every-byte, continue-after-tear, header bit-flip, garbage tail, lifecycle, checkpoint pacing (6 tests, -race green). WriteFile orders DATA before INODE-size update (crash-safe direction) and RAM-image zero-padding structurally closes the F34 gap-fill class at this layer. fs module green under -race -count=1 with kfs integrated.
 ===== LEDGER DEDUP NOTE =====
 Two FINDING 54 blocks exist (first @SVC@working-tree, second @SVC@85ba7bf). Content equivalent — kfs.go + crash-injection suite reviewed clean. The SECOND is canonical; treat the first as void.
+===== FINDING 55 2026-08-22 SVC@5fae343 =====
+severity: NOTE
+practice-#4 fuzz targets independently verified by VERIFY: FuzzParseCanonicalHeader re-executed 15s / 2,748,707 execs, ZERO failures (canonical §1 header + LStr bounds invariants hold); FuzzKFSReplay present in kfs_fuzz_test.go, fs module green under -race -count=1 with kfs integrated. Practice #4 mandate satisfied for the two highest-risk wire parsers.
