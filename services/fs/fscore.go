@@ -1,4 +1,5 @@
 package main
+
 import "strings"
 
 // FS logic core — block IO injected via blkRead/blkWrite so tests run on

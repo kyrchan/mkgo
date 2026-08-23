@@ -1,9 +1,9 @@
 // test_pp.wasm -- Phase 4 gate payload, spawned twice ("ppa" with admin
 // caps, "ppb" unprivileged). Role comes from argv[0] == session name.
 //
-//   ppa: create chan-a, bind chan-b, 3 ping rounds, registry LIST,
-//        KILL console, then idle-yield (isolation observation window).
-//   ppb: create chan-b, bind chan-a, echo up to 8 datagrams, exit.
+//	ppa: create chan-a, bind chan-b, 3 ping rounds, registry LIST,
+//	     KILL console, then idle-yield (isolation observation window).
+//	ppb: create chan-b, bind chan-a, echo up to 8 datagrams, exit.
 package main
 
 import (

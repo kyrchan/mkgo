@@ -1,7 +1,9 @@
 // test_p8.go -- Phase 8 gates. Spawned twice by the kernel:
-//   "busy" (admin caps): tight compute loop, NEVER yields voluntarily;
-//     prints [busy] progress every ~200M iterations.
-//   "polite": yields constantly; prints [polite] tick every ~1M yields.
+//
+//	"busy" (admin caps): tight compute loop, NEVER yields voluntarily;
+//	  prints [busy] progress every ~200M iterations.
+//	"polite": yields constantly; prints [polite] tick every ~1M yields.
+//
 // Gate: with preemption ON, busy's presence must NOT stop polite's
 // progress — both markers interleave on serial.
 package main
