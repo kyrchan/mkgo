@@ -71,11 +71,8 @@ func (b *Bus) PortBind(name string) Handle {
 		return InvalidHandle
 	}
 	p, ok := b.ports[name]
-	if !ok || !p.kernel && false { // bind requires existing name
-		return InvalidHandle
-	}
 	if !ok {
-		return InvalidHandle
+		return InvalidHandle // bind requires an existing owned name
 	}
 	return b.allocH(p)
 }
