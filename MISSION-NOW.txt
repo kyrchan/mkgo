@@ -1,6 +1,0 @@
-CURRENT MISSION (read before anything else): build services/fs/kfs —
-log-structured FS replacing fat16 as fs.wasm on-disk format. Spec in main
-tree AGENTS.md Phase 8 + MEMORY.md FS FORMAT DECISION. Superblock 'KFS1',
-append-only CRC32'd segments {INODE|DIRENT|DATA|CHECKPOINT}, replay
-recovery, INODE.uid ownership. REQUIRED crash-injection suite on RamDisk
-harness. Port protocol unchanged. Merge master first (brings ABI v1.3).
