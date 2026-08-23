@@ -351,6 +351,38 @@ two-level scheduling exists anyway (Go runtime schedules within sessions),
 workload is I/O-shaped servers, and substrate-freeze rule 3. Scheduler
 total budget: ≤400 lines including queues and timer hookup.
 
+## Engineering practices (binding, added 2026-08-23)
+
+1. **Compatibility contract tests**: gate matrix MUST include
+   {committed kernel} × {each shipped *.wasm artifact}, not just
+   current-tree builds. A green `test-all` on freshly built modules says
+   nothing about already-shipped ones.
+2. **No fix without a failing test**: closing any VERIFY finding requires
+   attaching a regression test that fails on the pre-fix code.
+3. **Artifact freshness ledger**: VERIFY records sha256 of every shipped
+   .wasm plus the ABI commit it was built from; drift between artifact
+   and latest ratified ABI = automatic MAJOR finding.
+4. **Fuzzing**: native `go test -fuzz` targets for every wire-format
+   parser (port header, LOGIN/AUTH payloads, input records, kfs record
+   stream). Minimum soak: 30 s per target per QA sweep.
+5. **Chaos gate**: integration runs include randomized service KILLs;
+   assert respawn/isolation each time (extends the p4 harness).
+6. **Threat model before Phase 10**: STRIDE-lite pass over registry +
+   port routing + fs rooting, produced by VERIFY, consumed by MAINLINE.
+7. Blameless post-mortem notes per incident land in MEMORY.md (existing
+   practice, now formalized).
+8. **Anti-thrash / commit discipline**: if ALL current gates pass on
+   your tree after two consecutive sweeps, you MUST commit before running
+   any gate again. Re-running a green gate more than twice without an
+   intervening commit is a defect (observed: 127 g1 reruns, zero fails,
+   zero commits). Security-negative-path work lands INCREMENTALLY — each
+   hardened surface commits with its own regression test; waiting for
+   "everything safe" means committing never.
+9. **Escape-hatch honesty**: emitting ALL PHASES COMPLETE while fixes
+   exist only as uncommitted working-tree state is forbidden (see Gate
+   audit 2026-08-23). If blocked from committing, say so in MEMORY.md
+   and continue other work instead of declaring victory.
+
 ## OS server inventory
 
 | server | phase | role |

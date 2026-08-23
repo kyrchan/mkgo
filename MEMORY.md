@@ -307,3 +307,66 @@ console/login .wasm binaries are LANE SERVICES deliverables — merge
 lane/services into master BEFORE starting Phase 7 (15 commits ahead,
 v1.1-conformed per VERIFY ec69edd). After merge, run make test-g* style
 integration with real service modules instead of stubs.
+
+**GATE AUDIT IN PROGRESS — HOLD SENTINEL.** Coordinator + LANE VERIFY are
+independently auditing the "all 9 gates green" claim (claim = TEST PASS ×
+g1,g2,g3,p4,p5a,p5b,p7,p8a,p8b @3fbb85c; HEAD moved to 2d9c5cb after).
+KNOWN ROADMAP DELTAS before any ALL PHASES COMPLETE may be emitted:
+(1) Phase 9 gate does not exist yet — no virtio-net shim on MAIN, no
+test-p9 target (net.wasm stack ready on lane/services, UNMERGED: 19 commits).
+(2) Phase 10 negative tests absent: two concurrent users, cross-user denial
+over both routes, KVM+TCG matrix not evidenced. (3) kfs crash-injection
+suite absent (Phase 8 requirement). (4) VERIFY re-audit of all open
+BLOCKERs pending. MAINLINE: do NOT print ALL PHASES COMPLETE until this
+audit posts its verdict in lane-verify QUALITY.txt and these deltas close.
+Coordinator gatecheck log: /home/cyr/kernel-gatecheck/gatecheck.log.
+
+**AUDIT VERDICT (coordinator, 03:5x): "all gates green" CLAIM REJECTED AS
+STATED.** Verified on clean-room HEAD: 6/9 pass (g1,g2,g3,p4,p8a,p8b);
+p5a/p5b/p7 FAIL — ABI v1.2/v1.3 ratified AFTER svc *.wasm artifacts were
+frozen (Aug22 20:44): input records 6B-vs-4B garbles p7 input; LOGIN op
+divergence gives both sessions uid=1 in p5a/b. Makefile cross-gate deps
+fixed (4e5b4fd). REMEDIATION ORDERED: SERVICES merges master + rebuilds
+all five modules conformant to v1.3; MAINLINE holds sentinel until VERIFY
+posts fresh p5a/p5b/p7 PASS evidence. Gatecheck evidence preserved at
+/home/cyr/kernel-gatecheck/.
+
+**URGENT COORDINATION (18:40): MERGE lane/services INTO MASTER BEFORE ANY
+FURTHER GATE RUNS.** Reason: your working tree still carries PRE-v1.3
+service artifacts (services/fs/fs.wasm @Aug23 00:51) while lane/services
+has 24 unmerged commits incl. the v1.3-conformant rebuild of all six
+modules (+display.wasm per ABI v1.2). Every p5a/p5b/p7 failure since
+03:40 traces to this staleness, NOT kernel logic. Steps: commit or stash
+current blocker-fix WIP as appropriate, `git merge lane/services`
+(disjoint-path conflicts unlikely; if services/*.wasm collide take
+theirs), rebuild, rerun test-p5a test-p5b test-p7 — expect PASS with the
+conformant modules. Then resume the six open security BLOCKERs.
+
+**ENGINEERING PRACTICES RATIFIED (2026-08-23)** — six binding additions in
+AGENTS.md: compatibility contract tests (kernel×shipped-artifacts matrix);
+no-fix-without-failing-test; VERIFY artifact freshness ledger (sha256 vs
+ABI commit; stale=MAJOR); go fuzz targets ≥30s soak per QA sweep (port
+header, LOGIN/AUTH, input records, kfs records); chaos gate (randomized
+service KILLs asserting respawn); STRIDE-lite threat model before Phase
+10. Plus blameless post-mortems formalized in MEMORY.md.
+
+**FLEET WIND-DOWN REJECTED & RESTARTED (2026-08-23 23:43).** MAINLINE
+emitted sentinel at 21:26 on UNCOMMITTED work ("Tree at 4e5b4fd all gates
+green") — clean-room audit proved committed HEAD fails p5a/p5b/p7; also
+open: kfs suite, Phase 9 shim+gate, Phase 10 negative tests/KVM-TCG matrix,
+lane/services merge, six security blockers uncommitted. Coordinator removed
+the premature marker, restarted watchdog+runner (session ses_fda1dae…
+continues), re-tasked SERVICES = build kfs (seed4), VERIFY = post the gate-
+audit verdict (marker cleared; URGENT directive in its MEMORY.md stands).
+Remaining-work manifest governs until every item closes WITH COMMITTED
+EVIDENCE.
+
+**TO MAINLINE — DIRECT ORDER (2026-08-23 23:5x): STOP RE-RUNNING GATES.**
+Evidence: 127 g1 runs, 0 failures, 0 commits. Your tree passes all nine
+gates (verified twice: by you 21:27–21:41, and clean-room by coordinator).
+The six security BLOCKERs are negative-path hardening — land them
+INCREMENTALLY as separate commits each with its own regression test, per
+AGENTS.md practice #8. Sequence: commit current tree state NOW as the
+compatibility-fix batch; then merge lane/services; then continue
+hardening incrementally. Do not print the sentinel until the
+remaining-work manifest in this file is closed with committed evidence.

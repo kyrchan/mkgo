@@ -1,0 +1,7 @@
+Continue your lane scope (services/ and guests/ ONLY — never core/, arch/,
+third_party/, kernel/, tools/, Makefile, abi/, AGENTS.md). Pick up from
+your own commit history in this worktree. Finish remaining deliverables,
+keep `go test` green, wrap finished packages to wasm. Never stop while
+work remains; switch deliverables when blocked >10 min. When all lane
+deliverables are built, tested, wrapped and committed, final line exactly:
+ALL PHASES COMPLETE
