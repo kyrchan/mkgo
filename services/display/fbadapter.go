@@ -18,8 +18,15 @@ func (r consoleRelay) PortRecv(buf []byte) int32 {
 func (r consoleRelay) Yield() { lib.Real().Yield() }
 
 func consoleBind() consoleRelay {
-	h := lib.Real().PortBind(lib.NameConsole)
-	return consoleRelay{h: h}
+	// The relay is useless until the console service owns its name;
+	// retry instead of latching onto InvalidHandle when boot order or
+	// respawn timing puts display ahead of console.
+	for {
+		if h := lib.Real().PortBind(lib.NameConsole); h != lib.InvalidHandle {
+			return consoleRelay{h: h}
+		}
+		lib.Real().Yield()
+	}
 }
 
 func ptrAt(off uint64, n int) []byte {
