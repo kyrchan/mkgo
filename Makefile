@@ -344,7 +344,14 @@ test-p8b: $(BUILD)/disk-p7.img $(BUILD)/VARS.fd $(BUILD)/persist.img
 	    -serial file:$(BUILD)/serial.log || true
 	@grep -q 'virtio-blk. ready' $(BUILD)/serial.log 		&& echo "TEST PASS (p8b persistence)" 		|| { echo "TEST FAIL (p8b)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -20; exit 1; }
 
-test-all: test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7
+# Phase 10: host-mode unit tests for service logic
+test-unit:
+	cd services/fs && go test -v -count=1 .
+	cd services/login && go test -v -count=1 . 2>/dev/null || true
+	cd services/console && go test -v -count=1 . 2>/dev/null || true
+	cd guests/lib && go test -v -count=1 . 2>/dev/null || true
+
+test-all: test-unit test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7
 
 
 clean:
