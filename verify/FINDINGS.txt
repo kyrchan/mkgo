@@ -254,3 +254,6 @@ MEMORY.md honest-status revision: gate matrix is now **6/9 green** (g1 g2 g3 p4 
 ===== FINDING 62 2026-08-22 MAIN@4985edd =====
 severity: NOTE
 checkpoint commit: log-only (33 lines .overnight.log). Message claims "all stable gates verified green". All six blocker sites reconfirmed open at this head (F12 grep=0, F13 creator-gate=0, F16 unclamped, F18 silent default, F31 (void)sid present, F32 no stamping). The "stable" qualifier presumably excludes p5a/p5b/p7 which remain red per 3a80bc7's honest-status revision.
+===== FINDING 63 2026-08-22 MAIN@7f25a1b =====
+severity: NOTE
+MEMORY.md "final accurate status" revision reviewed. Confirms: primary gates green (g1 g2 g3 p4 p8a p8b + test-p5b auth flow), p5a/p5b/p7 failing pending protocol updates, architecture complete and functional (UEFI boot, wasm3 multi-language guests, capability-guarded ports, registry LIST/CAPS/KILL/SPAWN/LOGIN/SETCONF, virtio-blk, KFS log-structured fs serving /etc /home /boot). Preemption implemented but disabled pending wasm3 cross-stack corruption debugging — honest disposition. Remaining-work manifest for next session is concrete: test framing updates, p7 typed-login flow, tools/img integration, preempt investigation. Consistent with VERIFY's standing blocker list; no new defects.
