@@ -167,3 +167,20 @@ chars issue. Do not resurrect; kept here only so future agents don't dig.
    mkpefi shim-only; root-cause loader regression (stale log vs
    LocateProtocol); gate = KERNEL-OK + out 0x28 + 'E'.
 3. Proceed Phase 2 onward only while gates stay green.
+
+**ABI v1.1 RATIFIED (master b9263a2, 2026-08-22)**: canonical datagram
+header {u16 op,u16 seq,u32 uid,char rname[16]} payload@24 (uid
+kernel-stamped); §3 block offsets pinned + scratch@0x1000 min window
+0x2000; registry ops 5=LOGIN 6=SETCONF (+bit7 CAP_CONF); abi_ver custom
+section byte 0x01 mandatory; managed-runtime guests use kern_blk_read/
+write imports instead of §3 window. ACTION REQUIRED before your next
+commit: `git merge master` in this worktree (disjoint paths => clean),
+then conform code to v1.1. Verify lane: check conformance.
+
+**ABI v1.2 RATIFIED (master 8d2c106)**: §9 FRAMEBUFFER class window
+DEFINED — magic 'FBW', geometry@0x04, fb_off@0x10, caps@0x18, mailbox
+SET_MODE/FLIP/UPDATE_RECT @0x20; single-buffer default; width==0 = no
+display. Backends: Bochs DISPI then VMware SVGA II. Merge master before
+next commit.
+
+**ABI v1.3 RATIFIED (master 3912a37, 2026-08-23)**: §4 input records now 6 bytes {u8 kind,u8 mods,u16 scan,u16 codepoint} — scan = raw i8042 set-1 scancode; layouts become userland keymaps under /etc/keymaps/ (kernel keeps US default). Merge master before next commit. VERIFY: audit consumers of the old 4-byte record shape.
