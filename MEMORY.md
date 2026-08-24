@@ -167,3 +167,66 @@ chars issue. Do not resurrect; kept here only so future agents don't dig.
    mkpefi shim-only; root-cause loader regression (stale log vs
    LocateProtocol); gate = KERNEL-OK + out 0x28 + 'E'.
 3. Proceed Phase 2 onward only while gates stay green.
+
+**ABI v1.1 RATIFIED (master b9263a2, 2026-08-22)**: canonical datagram
+header {u16 op,u16 seq,u32 uid,char rname[16]} payload@24 (uid
+kernel-stamped); §3 block offsets pinned + scratch@0x1000 min window
+0x2000; registry ops 5=LOGIN 6=SETCONF (+bit7 CAP_CONF); abi_ver custom
+section byte 0x01 mandatory; managed-runtime guests use kern_blk_read/
+write imports instead of §3 window. ACTION REQUIRED before your next
+commit: `git merge master` in this worktree (disjoint paths => clean),
+then conform code to v1.1. Verify lane: check conformance.
+
+**ABI v1.2 RATIFIED (master 8d2c106)**: §9 FRAMEBUFFER class window
+DEFINED — magic 'FBW', geometry@0x04, fb_off@0x10, caps@0x18, mailbox
+SET_MODE/FLIP/UPDATE_RECT @0x20; single-buffer default; width==0 = no
+display. Backends: Bochs DISPI then VMware SVGA II. Merge master before
+next commit.
+
+**ABI v1.3 RATIFIED (master 3912a37, 2026-08-23)**: §4 input records now 6 bytes {u8 kind,u8 mods,u16 scan,u16 codepoint} — scan = raw i8042 set-1 scancode; layouts become userland keymaps under /etc/keymaps/ (kernel keeps US default). Merge master before next commit. VERIFY: audit consumers of the old 4-byte record shape.
+
+**URGENT QA DIRECTIVE (owner, via coordinator) — verify the "all gates green" claim:**
+MAIN@3fbb85c claims TEST PASS × 9 (g1 g2 g3 p4 p5a p5b p7 p8a p8b); HEAD now
+2d9c5cb. Independently audit:
+1. Re-run or evidence-check each of the 9 gates against committed HEAD
+   (coordinator runs them in /home/cyr/kernel-gatecheck — read its
+   gatecheck.log as raw evidence when present).
+2. Re-audit every OPEN BLOCKER (F2,F11,F12,F13,F15,F16,F18,F22,F31,F32)
+   against committed HEAD: mark CLOSED-with-evidence (commit hash +
+   file:line) or re-affirm OPEN. No finding may stay open without a
+   fresh verdict.
+3. ROADMAP DELTA VERDICT — confirm or rebut these absences:
+   a. NO Phase 9 gate exists (no virtio-net shim on MAIN, no test-p9)
+   b. Phase 10 negative tests absent (two concurrent users, cross-user
+      denial over BOTH routes, port isolation) and NO KVM/TCG matrix run
+   c. kfs crash-injection suite absent from any gate (Phase 8 requirement)
+   d. lane/services 19 commits unmerged into master (net stack + uid
+      rooting hardening NOT in the tested image?)
+4. Post verdict to verify/QUALITY.txt top: "ALL-GATES-GREEN CLAIM:
+   CONFIRMED | PARTIAL (list missing) | REJECTED" with evidence lines.
+Do not stop until the verdict is posted.
+
+**COORDINATOR AUDIT RESULT (03:5x)**: clean-room reproduction in
+/home/cyr/kernel-gatecheck (HEAD 2d9c5cb + Makefile dep fix 4e5b4fd):
+g1 g2 g3 p4 p8a p8b = PASS VERIFIED; p5a p5b p7 = FAIL.
+Symptoms: p5a/p5b both sessions authenticate uid=1 (LOGIN op divergence);
+p7 typed input garbled ("otd") = 6-byte v1.3 input records vs 4-byte
+consumers. HYPOTHESIS: SVC modules (login/shell/init/console/fs.wasm
+built Aug22 20:44) predate ABI v1.2/v1.3. TASKS: (1) attribute per-finding
+to MAIN kernsvc vs SVC modules w/ file:line; (2) order SERVICES lane to
+rebuild all five modules conformant to v1.3 after merging master;
+(3) re-run p5a/p5b/p7 evidence; (4) verdict in QUALITY.txt.
+Raw evidence: /home/cyr/kernel-gatecheck/gatecheck.log + build/serial.log.
+
+VERIFY SWEEP ADDITION: count gate executions vs commits per repo per
+window (parse .overnight.log / .lane.log for 'TEST PASS/FAIL' and git
+heads). Finding class: "gate-rerun-without-commit" (>=3 identical-gate
+runs with no intervening head change = MAJOR; >=10 = BLOCKER — analysis-
+paralysis indicator, observed 2026-08-23: 127 g1 runs / 0 commits).
+
+VERDICT UPDATE (coordinator 03:15): gate audit CLOSED — all 9 gates now
+independently verified PASS on committed HEAD (see main MEMORY.md).
+Prior p5a/p5b/p7 failures were infra: Makefile deps (4e5b4fd) + 120s
+timeout flake under load (6367cb6). Re-frame your roadmap-delta findings
+accordingly: the OPEN items remain Phase 9 gate, Phase 10 negative tests +
+KVM/TCG matrix, kfs crash suite — kernel correctness itself is confirmed.
