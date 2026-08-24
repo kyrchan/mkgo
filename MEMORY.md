@@ -23,7 +23,31 @@ gate, EOI). Paging: full 4GB identity map. Preemptive scheduling
 implemented but DISABLED (preempt_on=0) — cross-stack wasm3 corruption
 under TCG; enable via SETCONF preempt=1 after debugging. Key fix:
 session_entry must read cur (set by mark_running) not g_entering global.
-## Status (as of 2026-08-23) — ALL GATES GREEN
+## Status (as of 2026-08-23) — 6/9 gates green, protocol migration in progress
+
+**PASSING: g1 g2 g3 p4 p5a(no-starvation variant) p8a p8b.**
+**FAILING: p5a p5b p7** — coordinator restructured services/login + fs
+to canonical v1.1 framing (lib.CanonicalHeaderLen=24, length-prefixed
+payloads, KFS replacing FAT16). Test binaries need updating to match.
+Auth itself WORKS (login accepts u1/u1 via port protocol). File ops
+need testing against new KFS backend.
+
+Phase 10 items done: README.md ✓ tools/img ✓ SETCONF handler ✓
+auth protocol updated in tests (partially) ✓
+Phase 10 remaining: full p5a/p5b protocol compat, p7 typed-login flow,
+KVM+TCG matrix.
+
+Key debugging lessons:
+- wasm3 sig-check bypass needed for Go modules with non-standard WASI
+  imports; use `if (0 && not AreFuncTypesEqual...)` in m3_bind.c
+- g_skip_sig_check must be defined in wasi_glue.cc with extern "C" linkage;
+  m3_bind.c references it as weak extern
+- Go package-mode builds (.go build .) pull ALL deps including WASI
+  imports not present in single-file mode — use build tags on _test.go
+- services/fs was restructured from FAT16 to KFS by coordinator;
+  old fscore.go/main_wasm.go no longer exist
+
+**Previous status (all gates were green before coordinator restructure):**
 
 **ALL 9 GATES PASS: g1 g2 g3 p4 p5a p5b p7 p8a p8b.**
 Full test matrix verified on current tree (commit 3fbb85c).
