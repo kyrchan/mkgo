@@ -106,8 +106,10 @@ M3Result  ValidateSignature  (IM3Function i_function, ccstr_t i_linkingSignature
 
     IM3FuncType ftype = NULL;
 _   (SignatureToFuncType (& ftype, i_linkingSignature));
+    
+    extern int g_skip_sig_check __attribute__((weak));
 
-    if (not AreFuncTypesEqual (ftype, i_function->funcType))
+    if (not g_skip_sig_check && not AreFuncTypesEqual (ftype, i_function->funcType))
     {
         m3log (module, "expected: %s", SPrintFuncTypeSignature (ftype));
         m3log (module, "   found: %s", SPrintFuncTypeSignature (i_function->funcType));

@@ -186,6 +186,36 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
             kernsvc_reply(rbuf, 8);
             return;
         }
+        case 6: { /* SETCONF {char key[16], u64 value} -- CAP_CONF only */
+            if (!(sched_capmask_of(from_sid) & SCHED_CAP_CONF)) {
+                console_puts("[audit] sid=");
+                console_hex64(from_sid);
+                console_puts(" op=SETCONF reason=cap target=registry\n");
+                put16(rbuf, 6);
+                put16(rbuf + 2, seq);
+                put32(rbuf + 4, 0xFFFFFFFFu);
+                kernsvc_reply(rbuf, 8);
+                return;
+            }
+            char cfgkey[17];
+            int q3 = 0;
+            for (; q3 < 16 && payload[q3]; q3++)
+                cfgkey[q3] = (char)payload[q3];
+            cfgkey[q3] = 0;
+            uint64_t val = 0;
+            for (int b = 7; b >= 0; b--)
+                val = (val << 8) | payload[16 + b];
+            console_puts("[conf] ");
+            console_puts(cfgkey);
+            console_puts("=");
+            console_hex64(val);
+            console_puts("\n");
+            put16(rbuf, 6);
+            put16(rbuf + 2, seq);
+            put32(rbuf + 4, 0);
+            kernsvc_reply(rbuf, 8);
+            return;
+        }
         default:
             break;
         }

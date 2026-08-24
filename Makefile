@@ -103,14 +103,14 @@ build/test_pp.wasm: build/test_pp.raw
 	python3 scripts/add_abiver.py $< $@ 1
 
 # service modules: build raw then stamp abi_ver=1 custom section (v1.1)
-services/console/console.wasm.raw: services/console/main.go
-	cd services/console && GOOS=wasip1 GOARCH=wasm go build -o console.wasm.raw main.go
+services/console/console.wasm.raw: $(wildcard services/console/*.go)
+	cd services/console && GOOS=wasip1 GOARCH=wasm go build -o console.wasm.raw .
 
-services/login/login.wasm.raw: services/login/main.go
-	cd services/login && GOOS=wasip1 GOARCH=wasm go build -o login.wasm.raw main.go
+services/login/login.wasm.raw: $(wildcard services/login/*.go)
+	cd services/login && GOOS=wasip1 GOARCH=wasm go build -o login.wasm.raw .
 
 services/fs/fs.wasm.raw: $(wildcard services/fs/*.go)
-	cd services/fs && GOOS=wasip1 GOARCH=wasm go build -o fs.wasm.raw main_wasm.go fscore.go
+	cd services/fs && GOOS=wasip1 GOARCH=wasm go build -o fs.wasm.raw .
 
 services/console/console.wasm: services/console/console.wasm.raw
 	python3 scripts/add_abiver.py $< $@ 1

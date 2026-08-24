@@ -50,7 +50,9 @@ void wasi_calibrate_clock(uint64_t tsc_khz) {
         g_tsc_khz = tsc_khz;
 }
 uint64_t wasi_now_ns(void) {
-    return cpu_cycles() / (g_tsc_khz / 1000000ULL + 1);
+    /* TSC ticks → nanoseconds: ns = cycles * 1e6 / kHz */
+    if (!g_tsc_khz) return 0;
+    return cpu_cycles() * 1000000ULL / g_tsc_khz;
 }
 
 /* ---- PRNG (xorshift64* over cycles entropy) ---- */
@@ -702,8 +704,14 @@ const char *wasi_link_module(IM3Module mod) {
             M3Result r = m3_LinkRawFunction(mod, f->import.moduleUtf8,
                                             f->import.fieldUtf8,
                                             sig_of(f->funcType), fn);
-            if (r)
+            if (r) {
+                console_puts("[link] SIGFAIL ");
+                console_puts(f->import.fieldUtf8);
+                console_puts(" sig=");
+                console_puts(sig_of(f->funcType));
+                console_puts("\n");
                 return r;
+            }
             continue;
         }
         if (!strcmp(f->import.moduleUtf8, "wasi_snapshot_preview1")) {
@@ -737,8 +745,20 @@ const char *wasi_link_module(IM3Module mod) {
             M3Result r = m3_LinkRawFunction(mod, f->import.moduleUtf8,
                                             f->import.fieldUtf8,
                                             sig_of(f->funcType), fn);
-            if (r)
+            if (r) {
+                console_puts("[link] ERR wasi:");
+                console_puts(f->import.fieldUtf8);
+                console_puts(" err=");
+                console_puts(r);
+                console_puts(" sig=");
+                console_puts(sig_of(f->funcType));
+                console_puts(" rets=");
+                console_hex64(GetFuncTypeNumResults(f->funcType));
+                console_puts(" args=");
+                console_hex64(GetFuncTypeNumParams(f->funcType));
+                console_puts("\n");
                 return r;
+            }
         }
     }
     return m3Err_none;
