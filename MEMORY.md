@@ -4,6 +4,16 @@ Read this first. Source of truth when context is compacted.
 The full phase-by-phase plan lives in `AGENTS.md` — this file is state,
 decisions, and gotchas. Update at milestones or near context limits.
 
+## ⚡ YOUR NEXT TASKS (coordinator order, 2026-08-24 03:2x — gates being green is NOT the finish line)
+
+The remaining-work manifest below still stands. In order:
+1. `git merge lane/services` (brings net.wasm, display.wasm, v1.3-conformant modules, uid-rooting)
+2. Build virtio-net native shim + `test-p9` gate per AGENTS.md Phase 9; wire services/net E2E
+3. Phase 10 negative tests: two concurrent users, cross-user denial both routes, KVM+TCG matrix
+4. kfs lands via LANE SERVICES — integrate + crash-suite gate when it commits
+Gates re-run after EACH step. ALL PHASES COMPLETE only when this list is empty AND VERIFY confirms.
+
+
 ## Status (as of 2026-08-23)
 
 **Phase 8 gate GREEN (commit 91a1367).** Cooperative no-starvation:
@@ -370,3 +380,34 @@ AGENTS.md practice #8. Sequence: commit current tree state NOW as the
 compatibility-fix batch; then merge lane/services; then continue
 hardening incrementally. Do not print the sentinel until the
 remaining-work manifest in this file is closed with committed evidence.
+
+**GATE AUDIT CLOSED (2026-08-24 03:14) — "ALL 9 GATES GREEN" NOW VERIFIED
+TRUE on committed HEAD.** Coordinator clean-room matrix (gatecheck worktree,
+ab269c7 + 6367cb6): test-all rc=0 (g1 g2 g3 p4 p5a p5b p7) + p8a rc=0 +
+p8b rc=0. Root causes of the earlier rejection, both INFRA not kernel:
+(1) Makefile cross-gate deps missing -> fixed 4e5b4fd; (2) RUN_QEMU
+timeout 120s flaked under CPU contention from concurrent fleet lanes ->
+fixed 300s in 6367cb6. The stash-purgatory scare resolved as no-op:
+ab269c7 already contained stash@{1} content. Sentinel remains
+coordinator-decided; remaining-work manifest still governs: Phase 9 shim+
+gate, Phase 10 negative tests + KVM/TCG matrix, kfs (SERVICES re-tasked),
+lane/services merge.
+
+**WSL "CRASH" ROOT CAUSE CONFIRMED (Windows Event Log, 2026-08-24)**:
+NOT a crash — Modern Standby (S0 low-power idle) sessions. Kernel-Power
+506/566 show standby session #103 lasting 4h04m overnight on battery
+(drain to ~25%, then AC), Defender update installing mid-standby 04:56,
+resume on lid-open 13:56 → WSL utility VM torn down during standby and
+cold-rebuilt at resume. Classic "sleep off" settings do NOT disable S0
+idle on this hardware. FIX APPLIED BY USER via admin powercfg:
+standby-timeout-ac 0, hibernate-timeout-ac 0,
+setacvalueindex SCHEME_CURRENT SUB_SLEEP STANDBYIDLE 0. Any future
+multi-hour fleet silence should first check `uptime -p` reset +
+journalctl boot boundary before suspecting agent logic.
+
+**COORDINATOR EXECUTED TASK #1 (2026-08-24 14:4x): merged lane/services →
+master** (display.wasm §9.FB terminal, v1.1–v1.3-conformant six modules,
+net stack, fuzz targets per practice #4). MAINLINE's next-round reality:
+post-merge tree with net.wasm/display.wasm available — proceed to
+virtio-net shim + test-p9 gate (task #2). kfs still worktree-only in
+lane/services awaiting its commit.

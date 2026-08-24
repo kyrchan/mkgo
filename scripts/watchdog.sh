@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+export PATH="/usr/local/bin:$PATH"
 # Watchdog/supervisor for scripts/overnight.sh.
 #   - restarts the runner if its process dies (max once per 5 min)
 #   - unsticks hung rounds (log frozen > STALL_SECS while an opencode run

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+export PATH="/usr/local/bin:$PATH"
 # Parameterized single-lane runner for the parallel fleet.
 # Env (all relative paths resolve inside LANE_DIR):
 #   LANE_DIR        worktree root; agent's cwd            [required]
@@ -49,7 +50,7 @@ run_round() { # $1 = prompt ; records child pid for precise supervision
     if [ -f "$LANE_SID" ]; then
         opencode run --auto --session "$(cat "$LANE_SID")" --format json "$1" &
     else
-        opencode run --auto --format json "$1" &
+        opencode run --auto --format json "$1" 2>&1 &
     fi
     local cp=$!
     echo "$cp" >"$LANE_DIR/.opencode.pid"

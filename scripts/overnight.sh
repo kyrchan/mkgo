@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+export PATH="/usr/local/bin:$PATH"
 # Overnight autonomous runner for the kernel phase plan.
 #
 # Launch fully detached:
@@ -52,9 +53,9 @@ PYEOF
 
 run_round() { # $1 = prompt ; streams JSON events to stdout
     if [ -f .overnight.sid ]; then
-        opencode run --auto --session "$(cat .overnight.sid)" --format json "$1"
+        opencode run --auto --session "$(cat .overnight.sid)" --format json "$1" 2>&1
     else
-        opencode run --auto --format json "$1"
+        opencode run --auto --format json "$1" 2>&1
     fi
 }
 

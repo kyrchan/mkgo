@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+export PATH="/usr/local/bin:$PATH"
 # Cron safety net (every minute): revive fleet supervisor and the MAINLINE
 # watchdog if either is gone. They in turn revive their runners.
 cd "$(dirname "$0")/.." || exit 0

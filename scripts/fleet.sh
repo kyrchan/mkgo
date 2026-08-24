@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+export PATH="/usr/local/bin:$PATH"
 # Fleet supervisor: watches every lane declared in scripts/lanes.conf
 # (format: name|dir|log|sidfile|seedfile|contfile), revives dead runners,
 # unsticks hung rounds by killing exactly that lane's recorded child PID.

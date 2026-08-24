@@ -1,3 +1,4 @@
+FIRST read MISSION-NOW.txt in your worktree root — that is your active deliverable (kfs).
 Continue your lane scope (services/ and guests/ ONLY — never core/, arch/,
 third_party/, kernel/, tools/, Makefile, abi/, AGENTS.md). Pick up from
 your own commit history in this worktree. Finish remaining deliverables,
