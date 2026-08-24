@@ -67,11 +67,15 @@ func authAs(user, pw string) bool {
 	if q < 0 {
 		q = port_bind(&cstr(argv0)[0], uint32(len(argv0)))
 	}
-	req := make([]byte, 50)
-	req[0] = 1
-	copy(req[2:18], user)
-	copy(req[18:34], pw)
-	copy(req[34:50], argv0)
+	// canonical v1.1 frame: {op u16, seq u16, uid u32, rname[16], payload}
+	req := make([]byte, 24)
+	req[0] = 1 // opAuth
+	req[3] = 1 // seq
+	copy(req[8:24], argv0) // rname
+	req = append(req, byte(len(user)))
+	req = append(req, user...)
+	req = append(req, byte(len(pw)))
+	req = append(req, pw...)
 	os.Stdout.WriteString("[authA] creds len=")
 	os.Stdout.WriteString(itoa(len(req)))
 	os.Stdout.WriteString("\n")
@@ -79,8 +83,8 @@ func authAs(user, pw string) bool {
 	out := make([]byte, 64)
 	for i := 0; i < 200000; i++ {
 		n := port_recv(q, &out[0], uint32(len(out)))
-		if n >= 2 {
-			return out[0] == 0 && out[1] == 0
+		if n >= 28 {
+			return out[24] == 0 && out[25] == 0
 		}
 		sched_yield()
 	}

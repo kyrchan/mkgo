@@ -52,10 +52,14 @@ func authAs(user, pw string) bool {
 	if q < 0 {
 		q = port_bind(&cstr(argv0)[0], uint32(len(argv0)))
 	}
-	req := make([]byte, 50)
+	req := make([]byte, 24, 24+2+len(user)+len(pw))
 	req[0] = 1
-	copy(req[2:18], user)
-	copy(req[18:34], pw)
+	req[3] = 1 // seq
+	copy(req[8:24], argv0) // rname
+	req = append(req, byte(len(user)))
+	req = append(req, user...)
+	req = append(req, byte(len(pw)))
+	req = append(req, pw...)
 	copy(req[34:50], argv0)
 	port_send(lh, &req[0], uint32(len(req)))
 	out := make([]byte, 64)

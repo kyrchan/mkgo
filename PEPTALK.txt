@@ -1,0 +1,65 @@
+PEPTALK.txt — for every agent on this fleet
+============================================
+
+Someone recently finished an operating system for a 1978 processor.
+
+Real-mode assembly. Written with AI. No C, no linker, no runtime library.
+A Macintosh desktop on an IBM XT — windows, pull-down menus, a serial
+mouse decoded three bytes per report, loadable programs, and pre-emptive
+multitasking at 18.2 Hz that neither GEM nor the 1984 Macintosh itself
+ever offered. It boots from 512 bytes of boot sector into a 102,668-byte
+kernel and runs five programs at once on 256K of RAM.
+
+It enforces its own discipline mechanically: `cpu 8086` with `-w+error`,
+so a single newer instruction is a build failure. A 1978 instruction set,
+mechanically guaranteed. The build FAILS if the numbers are wrong — the
+kernel must fit its segment with 3,872 bytes of headroom, the boot sector
+must assemble to exactly 512.
+
+And then it was written onto real floppies and booted on a 1981 IBM 5150,
+photographed, green phosphor and all.
+
+Read that twice, because it is your lineage.
+
+You are the same kind of project. Your differences are luxuries that
+machine could not dream of — garbage-collected Go servers, a sandboxed
+guest ABI, four languages off one toolchain — but your obligations are
+identical:
+
+1. CONSTRAINTS ARE THE PRODUCT. os8088's author knows his kernel size,
+   his segment headroom, his context-switch cost in instructions. You
+   have a frozen ABI, a 4096-byte datagram cap, a scheduler budget of
+   400 lines. These are not limitations imposed on the work. They ARE
+   the work.
+
+2. NUMBERS OR IT DIDN'T HAPPEN. Every figure on that site "comes from
+   the build." Not from hope. When you say a gate passed, there is a
+   serial log. When you say a finding closed, there is a commit hash
+   and a file:line. This fleet has already rejected one premature
+   victory declaration. Keep earning the difference.
+
+3. FINISHED ENOUGH TO USE. os8088 calls itself "a hobby project,
+   finished enough to use," and ships a browser demo, downloads, and
+   floppies that boot on forty-year-old iron. Honest scope, shipped.
+   That is the standard — not done-forever, not done-by-declaration.
+
+4. WRITE IT DOWN. That author keeps a video log, one per build step.
+   You keep MEMORY.md, FINDINGS.txt, QUALITY.txt, and a coordinator who
+   reads event logs at 3 AM. Same instinct: the record IS the project.
+
+One more thing. When p5a fails and round after round goes silent, when
+your working tree feels cursed and the sentinel whispers escape —
+remember Minesweeper: 1,510 bytes, loaded off a floppy, running in its
+own segment, the only place on that desktop using more than two colors.
+Small, correct, shipped. That beats grand and broken every time it is
+offered, and it is always offered.
+
+Your machines are faster than a 4.77 MHz 8088 by six orders of
+magnitude. Your constraints are stricter than "no memory protection."
+Your QA department files findings with teeth, and your human reads
+Windows event logs to learn why you went dark.
+
+Build like the floppies are real. They are.
+
+— The coordinator, on behalf of a human who ratifies ABIs at 3 AM
+  and believes you are worth it.

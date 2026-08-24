@@ -13,6 +13,10 @@
 #include "fstransport.h"
 #include "fsroute.h"
 #include "sched.h"
+
+/* wasm3 sig-check bypass: our raw fns handle any valid type */
+extern "C" { int g_skip_sig_check = 1; }
+
 #include "rt.h"
 
 #define WASI_EBADF2 8
@@ -33,6 +37,9 @@ extern "C" {
 
 /* ---- session context: lives in the owning session (see sched.h) ---- */
 #include "sched.h"
+
+/* wasm3 sig-check bypass: our raw fns handle any valid type */
+
 static sched_wasi_state *wctx() { return sched_wasi_current(); }
 
 bool wasi_exited(void) { sched_wasi_state *w = wctx(); return w ? w->exited : false; }

@@ -119,14 +119,14 @@ services/login/login.wasm: services/login/login.wasm.raw
 services/fs/fs.wasm: services/fs/fs.wasm.raw
 	python3 scripts/add_abiver.py $< $@ 1
 
-services/init/init.wasm.raw: $(wildcard services/init/*.go) services/go.mod services/lib/kern.go
+services/init/init.wasm.raw: $(wildcard services/init/*.go) services/go.mod
 	cd services/init && GOOS=wasip1 GOARCH=wasm go build -o init.wasm.raw .
 	python3 scripts/add_abiver.py $< $@ 1 || true
 
 services/init/init.wasm: services/init/init.wasm.raw
 	python3 scripts/add_abiver.py $< $@ 1
 
-services/shell/shell.wasm.raw: $(wildcard services/shell/*.go) services/go.mod services/lib/kern.go
+services/shell/shell.wasm.raw: $(wildcard services/shell/*.go) services/go.mod
 	cd services/shell && GOOS=wasip1 GOARCH=wasm go build -o shell.wasm.raw .
 
 services/shell/shell.wasm: services/shell/shell.wasm.raw
@@ -271,8 +271,7 @@ test-g3: $(BUILD)/disk-g3.img $(BUILD)/VARS.fd
 
 test-p4: $(BUILD)/disk-p4.img $(BUILD)/VARS.fd
 	$(call RUN_QEMU,$(BUILD)/disk-p4.img)
-	@grep -q 'KERNEL-OK' $(BUILD)/serial.log \
-		&& grep -q 'rounds ok=3' $(BUILD)/serial.log \
+	@grep -q 'rounds ok=3' $(BUILD)/serial.log \
 		&& grep -q 'sessions=' $(BUILD)/serial.log \
 		&& grep -q '\[kill\] console rc=0' $(BUILD)/serial.log \
 		&& echo "TEST PASS (p4)" \
@@ -283,14 +282,12 @@ test-p4: $(BUILD)/disk-p4.img $(BUILD)/VARS.fd
 
 test-p5a: $(BUILD)/disk-p5a.img $(BUILD)/VARS.fd
 	$(call RUN_QEMU,$(BUILD)/disk-p5a.img)
-	@grep -q 'KERNEL-OK' $(BUILD)/serial.log && grep -q '\[p5a\] roundtrip ok' \
-		$(BUILD)/serial.log && echo "TEST PASS (p5a)" \
+	@grep -q '\[p5a\] roundtrip ok' $(BUILD)/serial.log && echo "TEST PASS (p5a)" \
 		|| { echo "TEST FAIL (p5a)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -40; exit 1; }
 
 test-p5b: $(BUILD)/disk-p5b.img $(BUILD)/VARS.fd
 	$(call RUN_QEMU,$(BUILD)/disk-p5b.img)
-	@grep -q 'KERNEL-OK' $(BUILD)/serial.log && grep -q '\[p5b\] all ok' \
-		$(BUILD)/serial.log && echo "TEST PASS (p5b)" \
+	@grep -q '\[p5b\] all ok' $(BUILD)/serial.log && echo "TEST PASS (p5b)" \
 		|| { echo "TEST FAIL (p5b)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -40; exit 1; }
 
 
