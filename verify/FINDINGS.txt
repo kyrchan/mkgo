@@ -266,3 +266,6 @@ MEMORY.md "final status" revision reviewed — a consolidation commit (−208 li
 ===== FINDING 66 2026-08-22 MAIN@9aec1b3+dirty =====
 severity: NOTE
 guests/test_p5a_v2.go (new working-tree file) reviewed: the p5a gate rewritten on lib.FSClient/lib.FrameCanonical — canonical v1.1 AUTH framing, length-prefixed creds, KFS-backed fs ops. This is the protocol-update work MEMORY.md's remaining manifest calls for (p5a failing → fix in progress). Uses lib.Bind/SendOrBlock helpers. Positive progress toward closing the F2 residue and getting p5a/p5b/p7 green. No new defects spotted in initial read.
+===== FINDING 67 2026-08-22 MAIN@9aec1b3+dirty =====
+severity: NOTE
+guests/p5a/main.go (new working-tree package) reviewed: standalone p5a gate rewritten as its own package with raw wasmimports, canonical v1.1 AUTH framing (rname@8, LStr creds, reply parse at offset 24 with status decode), bounded bind retry (200k), typed fs client via lib.BindFS for create/write/read roundtrip. Clean structure; auth retry loop is yield-bounded; private reply queue falls back create→bind correctly. This appears to supersede test_p5a_v2.go as the packaged gate form. No defects spotted.
