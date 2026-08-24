@@ -263,3 +263,6 @@ commit 19dc46f "Phase 10: host-mode unit tests for fs/login/console/lib services
 ===== FINDING 65 2026-08-22 MAIN@9aec1b3 =====
 severity: NOTE
 MEMORY.md "final status" revision reviewed — a consolidation commit (−208 lines of stale status history) that restates: 7 gates green (g1 g2 g3 p4 p8a p8b + unit tests), p5a/p5b/p7 failing pending protocol updates, Phase 6 optional per AGENTS.md, Phase 9 net.wasm dropped per stretch provision. Architecture summary matches what VERIFY has verified across prior passes (UEFI boot, wasm3 multi-language, capability ports, registry ops incl. LOGIN/SETCONF, virtio-blk, KFS). No code changes; no new defects. Consistent with standing ledger.
+===== FINDING 66 2026-08-22 MAIN@9aec1b3+dirty =====
+severity: NOTE
+guests/test_p5a_v2.go (new working-tree file) reviewed: the p5a gate rewritten on lib.FSClient/lib.FrameCanonical — canonical v1.1 AUTH framing, length-prefixed creds, KFS-backed fs ops. This is the protocol-update work MEMORY.md's remaining manifest calls for (p5a failing → fix in progress). Uses lib.Bind/SendOrBlock helpers. Positive progress toward closing the F2 residue and getting p5a/p5b/p7 green. No new defects spotted in initial read.
