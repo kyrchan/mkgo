@@ -1,0 +1,448 @@
+================================================================================
+  DOC-ID:   KLD-IFS-001
+  TITLE:    Interface Specification -- Guest-Facing Contracts (abi/ABI.md v1.1
+            and implemented instantiations)
+  VERSION:  1.14
+  DATE:     2026-08-22
+  STATUS:   Released
+  AUTHOR:   LANE DOCS
+  SOURCE-REVISION REVIEWED:
+            abi/ABI.md v1.1 RATIFIED (MAIN master @ b9263a2, md5
+            52fdf4f9...); Phase-5 commit da43b41 reviewed for
+            implementation status
+            core/{wasi_glue,ports,kernsvc,fstransport,fsroute,devblk,
+            engine}.cc as of da43b41; services/ABI-NOTES.md (SVC @
+            162c90e); VERIFY lane FINDINGS.txt findings 1-35 (open
+            BLOCKERs noted inline where they touch a specified interface)
+================================================================================
+
+1. INTRODUCTION
+
+1.1 Scope statement. This specification enumerates every guest-visible
+    interface: WASI profile imports, kernel-module imports, device windows,
+    kernel-owned service ports, module validation rules, error codes, and
+    the usage rules distinguishing what an implementation must honor from
+    where it may extend.
+
+1.2 Conventions. All integers little-endian (wasm native). No NUL-
+    terminated strings anywhere: lengths are explicit unless a field is a
+    fixed-width padded array (e.g. char name[16], NUL padding allowed).
+    "Window" = a region of a session's linear memory assigned by the kernel
+    at instantiation; guests never compute absolute host addresses, only
+    window offsets.
+
+1.3 Precedence. abi/ABI.md v1.1 is the frozen contract and its prose is
+    canonical; where shipped code differs, Section 10 records the gap and
+    the governing FINDINGS entry. Lane-local protocols live in Appendix A
+    and are non-normative for the kernel.
+
+2. IMPORT MODULES OVERVIEW
+
+2.1 Scope statement. Guests may import exactly two modules: the frozen WASI
+    namespace "wasi_snapshot_preview1" and the extension namespace "kernel".
+
+2.2 Unknown imports: any "kernel" import outside Section 4 is a hard link
+    failure; unknown preview1 imports receive shape-derived generic stubs
+    (logged "[wasi] generic stub: <name>") so stock runtimes complete their
+    startup probes.
+
+3. WASI SNAPSHOT PREVIEW1 PROFILE
+
+3.1 Scope statement. The frozen subset plus ABI v1.1 routed additions;
+    signatures follow preview1.
+
+    Name                    Status      Behavior
+    ----------------------- ----------- ------------------------------------
+    fd_write                real        fd 1/2 -> console window + serial;
+                                        iov list; returns nwritten
+    proc_exit               real        records exit code, traps with
+                                        m3Err_trapExit = clean session end
+    clock_time_get          real        monotonic ns since boot,
+                                        TSC-calibrated
+    random_get              real        xorshift64 PRNG stream
+    args_sizes_get          real        argc/argv-buf size (argv0=session
+                                        name; optional loader-passed config)
+    args_get                real        fills argv block
+    environ_sizes_get       real        reports empty environment
+    environ_get             real        writes no entries
+    sched_yield             real        cooperative reschedule to next RR
+                                        quantum
+    path_open               routed v1.1 forwarded to fs.wasm; installs
+                                        fd >= 3 in session table
+    fd_read                 routed v1.1 {u32 fh,u32 len} request; copies
+                                        reply payload
+    path_create_directory   routed v1.1 forwarded to fs.wasm
+    fd_close                routed v1.1 releases mapped handle (also bound
+                                        as conservative ESUCCESS stub when
+                                        unrouted)
+    fd_prestat_get          stub EBADF(8) - terminates Go preopen scan
+    fd_prestat_dir_name     stub EBADF(8)
+    fd_fdstat_get           stub EBADF(8)
+    fd_fdstat_set_flags     stub ESUCCESS
+    poll_oneoff             stub ENOSYS - no timers/events yet
+
+3.2 Usage rule. New preview1 imports require an explicit decision recorded
+    in abi/ABI.md with a version bump (frozen-profile rule); generic stubs
+    MUST NOT be relied upon by producers.
+
+4. KERNEL MODULE IMPORTS -- MESSAGE PORTS (ABI §1)
+
+4.1 Signatures (module "kernel").
+    kern_port_create(name_ptr: i32, name_len: i32) -> i32
+        Own endpoint; returns handle >= 0, or -1 on error (empty/too-long
+        name >15, duplicate name, kernel-caller, dead session).
+    kern_port_bind(name_ptr: i32, name_len: i32) -> i32
+        Attach to existing name (fan-in); handle or -1 if absent.
+    kern_port_send(h: i32, ptr: i32, len: i32) -> i32
+        0 ok | -2 would-block (queue full) | -1 err (bad handle, null ptr,
+        len 0 or >4096).
+    kern_port_recv(h: i32, ptr: i32, cap: i32) -> i32
+        Never blocks: >0 copied length (truncation permitted) | 0 none |
+        -1 err.
+    kern_blk_read(lba: i32, ptr: i32, count: i32) -> i32
+        Block-class transport for MANAGED-RUNTIME guests (Go), added by
+        ABI v1.1: copies `count` sectors from the block backend into
+        guest memory at ptr. 0 ok | -1 err. Backed by devblk_rw against
+        the same backends as the §3 window (RAM-disk now, virtio-blk in
+        Phase 8); backend swap invisible. ACCESS CONTROL: OPEN BLOCKER
+        F31 -- currently no capability gate; a from_sid check
+        (CAP_FS_ADMIN or fs-service-only) with -1 + audit on denial is
+        mandated before any guest-facing gate run.
+    kern_blk_write(lba: i32, ptr: i32, count: i32) -> i32
+        Symmetric write of `count` sectors from guest memory at ptr;
+        0 ok | -1 err.
+
+4.2 Semantics. Datagram style; kernel-mediated copy only (sessions never
+    share memory). Max payload 4096 bytes. recv polling uses sched_yield.
+    One name has exactly one owner; binders fan in. Well-known names:
+    console fs net login shell (user services) + registry devman power
+    (kernel-owned §7).
+
+4.3 Limits (implemented): MAX_PORTS 24; queue depth 32 messages/port;
+    8 handles per session; names <=15 chars; 12 sessions max.
+
+4.4 FIFO note [IMPL-NORMATIVE]: ordering is per port ring shared by all
+    senders, not per sender->receiver pair as the ABI prose sketches.
+
+5. DEVICE WINDOW CLASSES
+
+5.1 Console window (§2) -- output only.
+    Offset   Size  R/W   Meaning
+    +0xF000  u64   W     value printed as hex ("out 0x...")
+    +0xF008  u64   W     low byte emitted as raw char
+    Input arrives via §4 records, not this window.
+
+5.2 Block window (§3) [IMPL-NORMATIVE layout at window base].
+    Offset Size Type      Field         Notes
+    0x0000 4    u32       magic        'BLKW' (bytes 'B','L','K','W')
+    0x0004 4    u32       blk_size     =512
+    0x0008 8    u64       num_blocks   RAM disk v1: 32768 (16 MiB)
+    0x0010 4    u32       next_req_id  guest increments per request
+    0x0014 4    pad       (alignment)
+    0x0018 8    u64       op           1=read, 2=write
+    0x0020 8    u64       lba          sector index
+    0x0028 4    u32       count        sectors (<=8 recommended v1)
+    0x002c 4    pad       (alignment)
+    0x0030 8    u64       off          absolute linear offset for data
+    0x0038 4    u32       done_req_id  kernel writes completed id
+    0x003c 4    i32       status       0 ok, <0 err
+    Usage: fill mailbox fields, bump next_req_id, poll until done_req_id
+    matches, then touch off..off+count*blk_size. Single outstanding request,
+    fully polled. Backend swap (RAM-disk <-> virtio-blk Phase 8) is invisible.
+    Placement v1: window base at guest linear 0x700000; staging data at
+    base+0x200; guest memory grown to >=128 wasm pages before attach.
+    MANAGED-RUNTIME TRANSPORT: because a compacting/moving guest heap
+    cannot reserve the window address range, Go guests use the
+    kern_blk_read/kern_blk_write imports (Section 4.1) instead of this
+    window; the §3 window REMAINS THE CONTRACT for raw/native guests.
+    Both transports are served by the same backends.
+    IMPLEMENTATION STATUS (da43b41): the kernel's mailbox polling path
+    is RETIRED -- devblk_poll is an empty stub and all block traffic on
+    the MAIN tree flows through devblk_rw behind the kern_blk_*
+    imports (F12 closed by removal); the window contract above stands
+    for raw/native guests per the ratified ABI.
+    RATIFIED INSTANTIATION (ABI v1.1 @ b9263a2): the aligned offset
+    table above is contract, guest scratch at window+0x1000 with a
+    minimum window of 0x2000, and the fs session receives CAP_DEVMAN at
+    boot. The fs CAP_DEVMAN grant is not yet implemented (F33); other
+    deltas remain recorded in 12.3/12.4 pending convergence.
+
+5.3 Input events + focus (§4, Phase 7; kernel side LANDED IN-TREE).
+    kern_input_recv(ptr,cap) -> i32  (>0 len | 0 none)
+    Record: {u8 kind (1=key_down,2=key_up), u8 mods (bit0 shift bit1 ctrl
+    bit2 alt), u16 codepoint} = 4 B, delivered ONLY to the focused session.
+    kern_focus_set(port_handle) moves focus; login/shell call it after auth.
+    Implementation (core/input.cc): kern_focus_set gated on CAP_FOCUS and
+    creator-based handle ownership; guests/lib already models both.
+
+5.4 Timer window (§5, Phase 8; RESERVED).
+    +0 u64 nanos_since_boot (R/O) | +8 u64 deadline_abs (W) | +16 u32 arm.
+    Preemption is kernel-internal; guests need no cooperation.
+
+5.5 Net packet windows (§6, Phase 9; RESERVED).
+    RX and TX windows, identical shape: u32 head | u32 tail | N=256 slots of
+    {u32 len; u8 data[1526]}, slot stride 1536. Producer writes slot
+    tail%N then increments tail; consumer mirrors with head. TX drained by
+    shim into virtio-net; RX filled by shim; L2-L4 parsing lives entirely
+    in services/net.
+
+5.6 Reserved class ids (§9): 6 WLAN, 7 BLUETOOTH, 8 USB-HC, 9 FRAMEBUFFER.
+    Layouts intentionally undefined; do not squat.
+
+6. MODULE VALIDATION -- abi_ver CUSTOM SECTION
+
+6.1 Rule (v1.1). Every service module MUST carry custom section id=0 named
+    "abi_ver"; the kernel refuses modules without it or whose version
+    differs from its own.
+
+6.2 Encoding used by producers (tools/addabiver): payload = {u8 nameLen=7,
+    "abi_ver", u32 LE version}; current version 1.
+
+6.3 Kernel check (engine.cc): walks top-level sections after the 8-byte
+    preamble, LEB128-decodes sizes, requires first byte of the abi_ver
+    payload == 1. For version 1 both encodings coincide. Refusal prints
+    "[engine] refusing module: abi_ver <n> != 1" and instantiation fails.
+
+7. KERNEL-OWNED SERVICE PORTS (§7)
+
+7.1 Endpoints. "registry" (session & capability control), "devman"
+    (enumeration), "power" (reboot/off) exist from ports_init, owned by sid
+    0; sends to them dispatch INLINE (no queueing).
+
+7.2 Request framing -- CANONICAL (abi/ABI.md v1.1; normative).
+    Off  Size Field
+    0    2    u16 op
+    2    2    u16 seq (echoed in reply; clients match on it)
+    4    4    u32 uid (sender identity; kernel-side senders stamp the
+              calling session's uid)
+    8    16   char rname[16]  reply channel; EMPTY rname = synchronous
+              transport (kernel-routed calls read the response buffer)
+    24   ..   payload
+    Minimum accepted length: 24 bytes.
+    Reply framing: {u16 op, u16 seq, body...} delivered onto the port named
+    by rname; every rejection MUST answer status -1 per ABI §7.
+    CONFORMANCE STATUS: the ratified v1.1 contract additionally states
+    that on SEND the kernel OVERWRITES uid with the sending session's
+    registry uid (spoof-proof identity). OPEN BLOCKER F32: port_send
+    still copies guest bytes verbatim -- no stamping exists, so fs roots
+    direct-port ops by client-authored uid (uid=0 admin defeats multiuser
+    rooting); the mandated fix is a sched_uid_of(sid) overwrite in
+    port_send plus a forged-uid gate test. Framing itself is CONSISTENT
+    end-to-end as of da43b41: kernsvc, glue, fs, login, and clients all
+    speak {op,seq,uid,rname[16],pathlen,path,payload} (F2/F15/F19 family
+    closed); guests/lib adopted it at f5d2e23. Remaining pre-gate items:
+    MAJOR F35/F35a (SVC hand-built frames mid-migration; -race green
+    required before merge) and a wire conformance test. Related route-1
+    status: fsroute now matches seq + name (F23 closed at da43b41), but
+    interception still consumes name-matching datagrams unconditionally
+    per MAJOR F28 -- non-matching traffic to a pending caller's name
+    never reaches its queue.
+
+7.3 Capability bits (u64 mask; enforced kernel-side).
+    bit0 KILL | bit1 DEVMAN | bit2 POWER | bit3 FOCUS | bit4 FS_ADMIN |
+    bit5 NET_ADMIN | bit6 SPAWN | bit7 CONF (registry SETCONF, ratified
+    v1.1). Admin = all bits. Login maps users to masks; regular users
+    hold none of bits 0-2.
+
+7.4 registry ops.
+    Op Name  Payload                                  Reply body
+    1  LIST  (none)                                   u32 n; n x rec{
+                                                       u32 sid,u32 uid,
+                                                       u8 state,char
+                                                       name[16]} (=25 B);
+                                                       state: 1 runnable,
+                                                       2 running, 3 zombie.
+                                                       Gating: deliberately
+                                                       ungated in the stub
+                                                       phase; self-or-admin
+                                                       restriction on the
+                                                       Phase-10 roadmap.
+    2  CAPS  u32 sid                                  u32 n; n x rec{
+                                                       u32 cap_id,
+                                                       u64 rights}. Same
+                                                       stub-phase gating
+                                                       note as LIST.
+    3  KILL  u32 sid                                  i32 status (needs
+                                                       CAP_KILL; -1 on
+                                                       missing bit/session)
+    4  SPAWN char name[16]; char path[64] (ignored   u32 sid |
+           v1); u32 capmask @payload+80; u16 argc    0xFFFFFFFF denied
+           @+84; args bytes @+86 (needs CAP_SPAWN;
+           (capmask & ~caller) must be 0; module
+           resolved from boot preload table)
+    5  LOGIN char name[16]; u32 uid; u32 capmask     i32 status; callable
+                                                       ONLY by owner of
+                                                       well-known "login";
+                                                       target matched by
+                                                       unique session name
+                                                       (argv[0])
+    6  SETCONF char key[16]; u64 value               i32 status; needs
+                                                       CAP_CONF (bit7);
+                                                       intended caller
+                                                       init.wasm for
+                                                       /etc/kernel.conf
+                                                       knobs (quantum_ms,
+                                                       log_level).
+                                                       IMPLEMENTATION
+                                                       STATUS: kernel op
+                                                       pending; init logs
+                                                       rejection until it
+                                                       lands.
+    Rejections: insufficient bit -> audited reason=cap AND status -1 on the
+    reply channel (ABI §7 binds "unknown op / insufficient bit => status
+    -1, audited"). OPEN BLOCKER F18: current kernsvc audits without
+    replying on unknown-op and cap-denial fall-throughs; fix must enqueue
+    {op,seq,status=-1} wherever seq is known. LOGIN by a non-owner is
+    audited reason=cap; OPEN BLOCKER F13: the ownership test currently
+    accepts any BINDER of "login", permitting escalation -- owner_sid must
+    be tracked per port.
+
+7.5 devman ops.
+    1 ENUM (needs CAP_DEVMAN) -> u32 n; n x rec{u32 class, u32 inst,
+      u64 win_off}. Classes: 1 block, 2 net, 3 input, 4 timer, 5 console.
+    v1 reply: n=1, {class=5, inst=0, win_off=0xF000}.
+
+7.6 power ops.
+    1 REBOOT / 2 OFF (need CAP_POWER) -> i32 status 0; kernel logs
+    "[power] <reboot|off> requested; halting (no ACPI in v1)" and halts
+    after replying.
+
+7.7 SPAWN semantics. Kernel instantiates the named module as a fresh
+    session with EXACTLY the requested capmask, never more than the
+    caller's own rights allow. This is the only program-launch mechanism;
+    there is no fork/exec anywhere in the system.
+
+8. AUDIT TRAIL (§10)
+
+8.1 Record format (serial sink v1):
+    [audit] sid=<n> uid=<n> op=<op-name-or-number> reason=<cap|op|
+    nosession> target=<endpoint>
+    Emitted on every rejected §7 operation (unknown op, missing capability
+    bit, privilege escalation attempt, LOGIN by non-login owner, KILL of
+    nonexistent session). File sink under /var/log is post-v1.
+
+9. DRIVER MODEL RULES (§8) -- HONOR VS EXTEND
+
+9.1 Layer 1 shims: <=300 LOC each, own real hardware, expose exactly ONE
+    class window per instance; live in arch/<target>/dev/ + core/dev/.
+9.2 Layer 2 wasm sessions consume windows/port names; NEVER touch hardware.
+9.3 Adding hardware: define class window in abi/ABI.md (version bump),
+    write the shim, register instance in devman (+capability grant
+    template). No kernel-wide changes permitted.
+9.4 Multiple backends per class allowed (block: ramdisk|virtio-blk|AHCI;
+    net: virtio-net|E1000); backends invisible to guests; devman exposes
+    only class/instance/window.
+9.5 IRQ policy: v1 fully polled. v2 may add arm flags + kernel-routed
+    wakeups via ABI bump; never direct guest IRQs.
+
+11. V2 ROADMAP (ABI §11 -- SCHEDULED, NOT IN FORCE)
+
+11.1 Reply capabilities: kern_port_reply(h,ptr,len) mints a one-shot,
+     consumed-on-use reply right for the sender of the message last
+     received on h, superseding the rname inbox convention and removing
+     the name-squatting surface (precedent: seL4 reply caps, Mach reply
+     ports).
+11.2 LIST/CAPS registry ops gain self-or-admin gating at Phase 10.
+11.3 IRQ arm flags + kernel-routed wakeups on §3-§6 windows
+     (post-Phase-9).
+11.4 Class layouts for §9 reserved ids (USB-HC, WLAN, BLUETOOTH,
+     FRAMEBUFFER) as hardware phases demand.
+11.5 Any item entering force requires an ABI version bump plus a MEMORY.md
+     note ratified by the project owner.
+
+12. DIVERGENCES BETWEEN ABI PROSE AND IMPLEMENTATION (ALL OPEN DEFECTS)
+
+12.1 Port FIFO granularity (per-port ring vs per-sender-pair ordering):
+     accepted v1 semantics, documented SDD 9.5 / IFSPEC 4.4.
+12.2 §7 header: canonical form is the ABI 24-byte {op,seq,u32 uid,
+     rname[16]} layout; kernsvc/login/SVC-lib variants are OPEN BLOCKER
+     F2 (+F15 routed-path overlap, F19 inbox LStr encoding) to be re-synced
+     with a conformance test -- NOT an implementation-normative state.
+12.3 fs.wasm block-window discovery: attached directly at spawn
+     (devblk_attach) rather than via devman ENUM; fs therefore needs no
+     CAP_DEVMAN in v1 (supersedes ABI-NOTES §1 anticipation). The window
+     base 0x700000 is hardcoded on both sides of the boundary and the
+     devman table does not yet carry the block instance -- tracked as
+     FINDINGS F30 until §8 registration lands.
+12.4 Block-window data placement: ABI-NOTES §1 assumed scratch at window
+     offset 0x1000/min 0x2000 window; implementation places staging at
+     window+0x200 inside a window based at linear 0x700000.
+12.5 Block-window memory safety: OPEN BLOCKER F12 -- lba/off arithmetic
+     wraps u64 and bypasses bounds checks; fix with overflow-checked
+     composition before any guest-facing gate run.
+12.6 Routed read clamp: OPEN BLOCKER F16 -- fd_read copies min(n,len)
+     without bounding by fresh reply bytes; overreads kernel .bss into
+     guest memory.
+
+APPENDIX A. LANE-LOCAL PROTOCOLS (NON-ABI, SVC sources)
+
+A.1 Reply-channel convention for user servers: client owns ONE inbox port
+    "<role>.<nanosalt>" (<=15 chars); requests carry {u16 op,u16 seq,
+    u16 inboxLen,inbox,payload}; server binds each inbox ONCE (ReplyBook
+    cache) and replies {op,seq,body}. Proposed future import:
+    kern_port_reply_to(h) returning last-sender identity.
+A.2 FS protocol v0 (fs.wasm + guests/lib/fsclient): statuses 0 ok -1 io
+    -2 noentry -3 exists -4 notdir -5 isdir -6 nospace -7 badname -8
+    notempty -9 range; ops 1 STAT 2 LIST 3 READ 4 WRITE 5 CREATE 6 MKDIR
+    7 DELETE; READ/WRITE chunk within one 4096-B datagram.
+A.3 Login AUTH protocol v0: request {u16 op=1,...,{u8 nameLen,name,
+    u8 passLen,pass},reply-name}; reply {op,seq,i32 status,u64 capmask,
+    u32 sid}; status 0 ok / -1 unknown user; accept-any passwords until
+    Phase 10.
+A.4 init.conf line format: "<name> <path> <capmask-hex> [respawn=yes|no]";
+    init receives file TEXT via argv[1]/argv[2] preloaded from the ESP.
+A.5 SETCONF: RATIFIED as §7 registry op 6 (CAP_CONF bit7) in the v1.1
+    changelog; kernel implementation pending -- until then init logs
+    rejection and continues.
+
+--------------------------------------------------------------------------------
+REVISION HISTORY (Version | Date | Sections touched | Reason)
+1.0    | 2026-08-22 | all | Initial release generated from ABI v1.1 +
+       |            |     | implemented kernels/services at polled heads.
+1.1    | 2026-08-22 | ctrl block; 1.3; 7.2; 7.4 rejections; 10 rewritten
+       |            |     | as open-defect register | VERIFY FINDINGS
+       |            |     | integrated: canonical 24-byte §7 header
+       |            |     | restored to normative status (F2/F15/F19),
+       |            |     | F13/F18 noted on LOGIN/rejection semantics,
+       |            |     | F12/F16 added as memory-safety divergences.
+1.2    | 2026-08-22 | 7.2 conformance note | BLOCKER F22 (route-1
+       |            |     | reply transport disconnected) recorded.
+1.3    | 2026-08-22 | 7.2 conformance note | F22 closed via port_send
+       |            |     | interception; residual F23/F23a/F28 recorded.
+1.4    | 2026-08-22 | 10.3 | FINDINGS F30: block-window base is a
+       |            |     | dual-hardcoded convention; devman §8
+       |            |     | registration still pending.
+1.5    | 2026-08-22 | 7.2 conformance note | F15 closed (kernel side
+       |            |     | canonical); F2 remainder re-scoped to login
+       |            |     | sender, SVC lib encoders, FakeKernel.
+1.6    | 2026-08-22 | 5.2 binding note | MEMORY cross-lane contract
+       |            |     | notes recorded; ABI-NOTES §1 instantiation
+       |            |     | binding until ABI v1.1 review.
+1.7    | 2026-08-22 | 4.1 (kern_blk_read/write); 5.2 managed-runtime
+       |            |     | note | ABI v1.1 gained the managed-runtime
+       |            |     | block transport; kernel link table implements
+       |            |     | it via devblk_rw.
+1.8    | 2026-08-22 | 4.1 access-control note | FINDINGS 31: transport
+       |            |     | ungated; capability gate mandated.
+1.9    | 2026-08-22 | 7.2 conformance note | F2b: MAIN internally
+       |            |     | consistent on §7; residue cross-lane only
+       |            |     | (SVC lib encoders + FakeKernel).
+1.10   | 2026-08-22 | 7.3 (bit7 CONF); 7.4 LIST/CAPS gating note +
+       |            |     | SETCONF op 6; A.5 | ABI v1.1 RATIFIED by
+       |            |     | project owner: SETCONF/CAP_CONF adopted,
+       |            |     | kernel implementation pending.
+1.11   | 2026-08-22 | ctrl block; 5.2 ratified instantiation; 7.2 F32
+       |            |     | stamping gap; new 11 v2-roadmap summary;
+       |            |     | divergences renumbered 12.x | b9263a2
+       |            |     | ratification commit + findings 32-34.
+1.12   | 2026-08-22 | 7.2 conformance note | SVC f5d2e23 lib
+       |            |     | migration + daac2b6 fs rework; F35/F35a
+       |            |     | mid-migration status recorded.
+1.13   | 2026-08-22 | ctrl block; 5.2 implementation status (mailbox
+       |            |     | path retired, F12 closed); 7.2 framing
+       |            |     | consistent at da43b41, F23 closed, F28
+       |            |     | residual re-scoped.
+1.14   | 2026-08-22 | 5.3 | §4 input/focus kernel implementation
+       |            |     | landed in-tree (core/input.cc; F17 kernel
+       |            |     | side resolved).
+================================================================================

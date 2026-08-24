@@ -1,0 +1,193 @@
+================================================================================
+  DOC-ID:   KLD-TRC-001
+  TITLE:    Requirement Traceability Matrix
+  VERSION:  1.11
+  DATE:     2026-08-22
+  STATUS:   Released
+  AUTHOR:   LANE DOCS
+  SOURCE-REVISION REVIEWED: MAIN master @ 6a22fec (Phase-5 gate-green
+            declaration; gate commit da43b41 beneath), SVC lane/services
+            @ 162c90e, TLS lane/tools @ e0bfb11, VERIFY FINDINGS.txt
+            findings 1-36, abi/ABI.md v1.1 RATIFIED, AGENTS.md phase
+            plan, MEMORY.md @ md5 dc047b3...
+================================================================================
+
+STATES: VERIFIED = gate executed green at recorded commit; IMPL = code
+present, gate pending; PLAN = specified only. "Gate" names the make target
+whose procedure lives in KLD-TST-001.
+
+Req-ID   | Source                    | Design §     | Test/Gate      | Status
+---------+---------------------------+--------------+----------------+---------
+R-PH0-1  | AGENTS.md Phase 0         | SDD 18 (REL) | git snapshot   | VERIFIED
+         | verbatim snapshot         |              | (commit        |
+         |                           |              | 4ee8974)       |
+R-PH1-1  | Phase 1 native boot, no   | SDD 4        | test (P1 form; | VERIFIED
+         | Go; KERNEL-OK + out 0x28  |              | superseded by  |
+         | + 'E' on serial           |              | g1 ladder)     |
+         |                           |              | dcf6909        |
+R-PH2-1  | Phase 2 C++ substrate,    | SDD 3.7, 5   | make test      | VERIFIED
+         | core/arch split           |              | (3513bb4)      |
+R-PH3-1  | Phase 3 wasm engine +     | SDD 6        | test-g1        | VERIFIED
+         | mini-WASI + guest C       |              |                |
+R-PH3-2  | guest Rust                | SDD 6, 13    | test-g2        | VERIFIED
+R-PH3-3  | guest stock Go wasip1     | SDD 6, 13    | test-g3        | VERIFIED
+R-PH4-1  | ABI §1 ports create/bind/ | SDD 9        | test-p4        | VERIFIED
+         | send/recv                 |              |                |
+R-PH4-2  | §7 kernel endpoints       | SDD 10       | test-p4        | VERIFIED
+         | registry/devman/power     |              |                |
+R-PH4-3  | crash isolation: kill     | SDD 6.5      | test-p4 ('[kill]| VERIFIED
+         | console, login survives   |              | console rc=0') |
+R-PH4-4  | LIST shows sessions       | SDD 10.3     | test-p4        | VERIFIED
+         |                           |              | ('sessions=')  |
+R-PH5-1  | fs.wasm FAT16 over block  | SDD 12.3,    | test-p5a/b     | IMPL*
+         | window, RAM-disk backend  | 13.4         | (gates in tree)| (gates GREEN
+         |                           |              |                | at da43b41;
+         |                           |              |                | TST 1.8
+         |                           |              |                | admissibility
+         |                           |              |                | pending)
+R-PH5-2  | dual FS routing: kernel-  | SDD 11.3-11.5| test-p5a       | IMPL*
+         | routed preview1 AND       | IFSPEC 3     | '[p5a]         |
+         | guests/lib direct ports   |              | roundtrip ok'  |
+         |                           |              | (*GREEN at     |
+         |                           |              | da43b41; F28   |
+         |            |              | interception residual; TST 1.8)|
+R-PH5-3  | multiuser stubs /home/<u> | SDD 8.6      | test-p5b       | IMPL*
+         | roots, u2 denied u1 file  | ABI-NOTES §4 | '[p5b] all ok' |
+         |                           |              | (*GREEN at     |
+         |                           |              | da43b41; F32   |
+         |                           |              | stamping gap;  |
+         |                           |              | TST 1.8)       |
+R-PH5-4  | abi_ver check at          | SDD 6.2      | instantiation  | IMPL
+         | instantiation             | IFSPEC 6     | refusal line   |
+R-AB1-x  | ABI §1 port imports,      | SDD 9        | test-p4 + host | VERIFIED
+         | 4096 cap, nonblocking     | IFSPEC 4     | kern.Bus tests | core;
+         | recv, fan-in bind         |              |                | limits
+         |                           |              |                | IMPL-noted
+R-AB2-x  | ABI §2 console window     | SDD 12.2     | every gate     | VERIFIED
+         |                           |              | (all markers)  |
+R-AB3-x  | ABI §3 block window layout| SDD 12.3     | mtools cross-  | IMPL
+         | + backend invisibility    | IFSPEC 5.2   | validation +   |
+         |                           |              | test-p5a/b     |
+R-AB3b   | ABI v1.1 managed-runtime  | SDD 6.4,     | test-p5 route  | IMPL*
+         | block transport kern_blk_ | 12.3;        | (Go fs client) | (*F31:
+         | read/write via devblk_rw  | IFSPEC 4.1   |                | ungated)
+R-AB4-x  | ABI §4 input records +    | SDD 12.4/13.3| shell unit     | IMPL*
+         | focus (kernel side landed | IFSPEC 5.3   | (lib); gates   |
+         | in-tree: core/input.cc)   |              | pending        |
+         |                           |              | (*kernel-side  |
+         |                           |              | F17 resolved;  |
+         |                           |              | F13 open)      |
+R-AB5-x  | ABI §5 timer window       | SDD 12.4     | --             | PLAN (P8)
+R-AB6-x  | ABI §6 net windows        | SDD 12.4     | --             | PLAN (P9)
+R-AB7-1  | §7 registry LIST/CAPS     | SDD 10.3     | test-p4; lib   | VERIFIED
+         |                           | IFSPEC 7.4   | host tests     |
+R-AB7-2  | §7 SPAWN containment      | SDD 8.4      | lib host tests | IMPL
+         | (never > caller)          | IFSPEC 7.7   | (FakeKernel)   |
+R-AB7-3  | §7 LOGIN login-owner-only  | SDD 8.3      | login host     | IMPL*
+         |                           | IFSPEC 7.4   | tests          |
+         |                           |              | (*open BLOCKER |
+         |                           |              | F13: binder/   |
+         |                           |              | owner conflation) |
+R-AB8-x  | ABI §8 two-layer driver   | SDD 12, 12.5 | devblk LOC +   | VERIFIED
+         | model, <=300 LOC shims,   | IFSPEC 9     | structure      |
+         | backend multiplicity      |              |                |
+R-AB9-x  | ABI §9 reserved class ids | SDD 12.4     | --             | PLAN
+R-AB10-x | ABI §10 audit trail on    | SDD 8.5      | test-p4 audit  | VERIFIED
+         | rejected §7 ops           | IFSPEC 8     | lines observed |
+R-RUL1   | Hard rule 1: arch-blind   | SDD 3.1      | source audit   | VERIFIED
+         | core/, shims in arch/     |              | (no #ifdef/asm)|
+R-RUL2   | rule 2: no per-arch page  | SDD 3.2      | paging.cc      | VERIFIED
+         | tables, identity map      |              | identity-only  |
+R-RUL3   | rule 3: substrate freeze  | SDD 3.3      | LOC budget     | VERIFIED
+         | mechanism only            |              | (~4.1 kLOC)    |
+R-RUL4   | rule 4: frozen WASI       | SDD 3.4      | IFSPEC 3 table | VERIFIED
+         | profile subset            |              | vs link table  |
+R-RUL5   | rule 5: guest ABI         | SDD 3.5      | same .wasm     | VERIFIED
+         | stability across builds   |              | across p4/p5   |
+         |                           |              | disks          |
+R-RUL6   | rule 6: language split    | SDD 3.7      | Makefile flags | VERIFIED
+         | freestanding C++20        |              | (-fno-*)       |
+R-RUL7   | rule 7: contracts only in | SDD 3.5, 16  | ABI versioning | VERIFIED
+         | abi/ABI.md via bump       |              | discipline     |
+R-SCHED  | scheduler policy binding: | SDD 3.6, 7.4 | code review    | VERIFIED
+         | RR forever, <=400 LOC     |              | sched.cc ~300  |
+         |                           |              | LOC            |
+R-ADM1   | admin identity admin=all  | SDD 8.2      | login table    | IMPL
+         | bits; no su/sudo          |              | (caps 0x7F)    |
+R-ADM2   | config under /etc via     | SDD 13.6     | init host      | IMPL
+         | fs.wasm; init.conf via    | IFSPEC 7.4/  | tests; SETCONF |
+         | argv; SETCONF ratified as | A.4/A.5      | op 6 kernel    |
+         | §7 op 6 (CAP_CONF bit7)   |              | impl pending   |
+R-MU1    | multiuser namespace       | SDD 8.6      | test-p5b       | IMPL*
+         | rooting; kernel-stamped   |              |                | (*BLOCKER
+         | {sid,uid} stamps on every |              |                | F32:
+         | forwarded FS op           |              |                | no stamping)|
+R-PH5-5  | retire kernel/vm vasm     | SDD 16.6     | commit b9263a2 | VERIFIED
+         | demo artifacts            |              | (deletions in  |
+         |                           |              | ratification   |
+         |                           |              | commit)        |
+R-AB11   | ABI §11 v2 roadmap: reply | IFSPEC 11    | --             | PLAN
+         | caps, LIST/CAPS gating,   |              |                |
+         | IRQ arms, §9 layouts      |              |                |
+R-TLS1   | tools/img replaces mtools | SDD 15.5     | go test (TLS)  | IMPL
+         | (Phase 10 retirement)     |              | BPB parity     |
+R-P7..10 | Phases 7-10 gates         | SDD 12.4,    | planned        | PLAN
+         | (shell/init, preemption+  | 13.3-13.6    | test-p7..p10   |
+         | virtio-blk, net stack,    |              |                |
+         | hardening)                |              |                |
+
+COVERAGE NOTES.
+N1. Every ABI section (§1..§10) maps to at least one row above.
+N2. Phase gates P0..P4 are VERIFIED at the commits recorded in RELHIST;
+    P5 rows flip to VERIFIED when test-p5a/p5b execute green at a tagged
+    commit; this matrix must be updated in the same cycle. NOTE: while
+    MAIN BLOCKER F1 (freestanding build break) is open, NO gate can run
+    against the dirty tree -- fix-first is a hard precondition of any
+    status flip.
+N3. Lane-local protocols (IFSPEC Appendix A) trace through R-PH5-*,
+    R-ADM2 and SVC-lane host tests, not through kernel gates.
+N4. Rows marked IMPL* carry an open FINDINGS blocker that must close in
+    the same cycle the row flips to VERIFIED; see SDD 16.7 for the list.
+
+--------------------------------------------------------------------------------
+REVISION HISTORY (Version | Date | Sections touched | Reason)
+1.0    | 2026-08-22 | all | Initial matrix against polled heads; P5 marked
+       |            |     | IMPL pending first green gate runs.
+1.1    | 2026-08-22 | ctrl block; R-AB7-3; R-MU1; notes N2/N4 |
+       |            |     | VERIFY findings integrated: LOGIN ownership
+       |            |     | and multiuser-rooting rows annotated with
+       |            |     | open blockers F13/F15; gate precondition
+       |            |     | on build-break blocker F1 recorded.
+1.2    | 2026-08-22 | R-PH5-2 | routed-FS row annotated with BLOCKER
+       |            |     | F22 (reply transport disconnected);
+       |            |     | design ref updated to SDD 11.3-11.5.
+1.3    | 2026-08-22 | R-PH5-2 | F22 closed; blocking annotation
+       |            |     | moved to open interception defects
+       |            |     | F23/F28 (seq/op validation missing).
+1.4    | 2026-08-22 | R-MU1 | F15 closed (uid overlap resolved);
+       |            |     | row unmarked, SVC-head rooting gap now
+       |            |     | tracked via F26 instead.
+1.5    | 2026-08-22 | new R-AB3b | ABI v1.1 managed-runtime block
+       |            |     | transport (kern_blk_*) traced to SDD
+       |            |     | 6.4/12.3 and IFSPEC 4.1.
+1.6    | 2026-08-22 | R-AB3b | annotated with BLOCKER F31 (transport
+       |            |     | ungated until capability check lands).
+1.7    | 2026-08-22 | R-ADM2 | SETCONF ratified as §7 op 6 (CAP_CONF
+       |            |     | bit7) per ABI v1.1 ratification; kernel
+       |            |     | implementation pending.
+1.8    | 2026-08-22 | ctrl block; R-MU1; R-PH5-5 moved+flipped;
+       |            |     | new R-AB11 | Ratification commit b9263a2:
+       |            |     | R-MU1 annotated with F32 stamping gap,
+       |            |     | vm-retirement row VERIFIED via commit,
+       |            |     | §11 roadmap traced as PLAN.
+1.9    | 2026-08-22 | ctrl block; R-PH5-1/2/3 annotated GREEN-at-
+       |            |     | da43b41 with TST-1.8 admissibility caveat;
+       |            |     | R-PH5-2 residual re-scoped to F28 (F23
+       |            |     | closed in the Phase-5 commit).
+1.10   | 2026-08-22 | ctrl block | MEMORY @ 6a22fec declares
+       |            |     | Phases 0-5 ALL GREEN; IMPL* caveats stand
+       |            |     | per the ledger recheck; FINDINGS count
+       |            |     | updated to 36.
+1.11   | 2026-08-22 | R-AB4-x | §4 kernel side landed in-tree
+       |            |     | (core/input.cc; F17 resolved); F13 noted.
+================================================================================
