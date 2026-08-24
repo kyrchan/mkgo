@@ -229,3 +229,6 @@ Two FINDING 54 blocks exist (first @SVC@working-tree, second @SVC@85ba7bf). Cont
 ===== FINDING 55 2026-08-22 SVC@5fae343 =====
 severity: NOTE
 practice-#4 fuzz targets independently verified by VERIFY: FuzzParseCanonicalHeader re-executed 15s / 2,748,707 execs, ZERO failures (canonical §1 header + LStr bounds invariants hold); FuzzKFSReplay present in kfs_fuzz_test.go, fs module green under -race -count=1 with kfs integrated. Practice #4 mandate satisfied for the two highest-risk wire parsers.
+===== FINDING 56 2026-08-22 SVC@78af0ce =====
+severity: NOTE
+kfs.go landed in SVC at 78af0ce (committed after my working-tree review F54): KFS1 log-structured FS replaces FAT16 as fs.wasm on-disk format. The commit message discloses two bugs found+fixed during hardening that I had not yet flagged: (1) writer/replay device-offset mismatch, (2) DATA dlen field overlap (14B vs 16B header). Additionally ReadFile now clamps to committed inode size — torn size-update cannot expose uncommitted tail bytes (a torn-write disclosure class I would have flagged on the next pass). Crash-injection suite committed as required. fs.wasm rebuilt. My F54 review conclusions stand; the two self-caught fixes are sound additions. FAT16 retained as import/export filter per design.
