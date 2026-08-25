@@ -16,10 +16,16 @@ void fsroute_init(void);
 /* Register expectation; returns 0 ok. */
 int  fsroute_expect(uint16_t seq, const char *session_name);
 int  fsroute_pending_for(const char *session_name);
-/* Feed a possibly-matching reply (called from ports_enqueue_by_name). */
+/* Consume a datagram only when name AND seq match a pending expectation
+ * (F23/F28); returns 1 when consumed, 0 when it must fall through. */
+bool fsroute_intercept(const char *name, const uint8_t *data, uint32_t len);
+/* Legacy feed wrapper (consume-if-match, ignore otherwise). */
 void fsroute_feed(const char *name, const uint8_t *data, uint32_t len);
 /* Block (yielding) until done; fills resp. Returns reply len or -1. */
 int  fsroute_wait(uint16_t seq, uint8_t *resp, uint32_t cap);
+/* fsroute_wait with an explicit spin budget (host unit tests). */
+int  fsroute_wait_budget(uint16_t seq, uint8_t *resp, uint32_t cap,
+                         uint64_t spins);
 
 #ifdef __cplusplus
 }

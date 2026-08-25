@@ -56,42 +56,43 @@ int fsroute_pending_for(const char *name) {
     return 0;
 }
 
-void fsroute_feed(const char *name, const uint8_t *data, uint32_t len) {
-#ifdef HOST_BUILD
-    fprintf(stderr, "[fsr] feed name=%s len=%u tab=%p\n", name, len,
-            (void *)tab);
-#endif
+/* F23/F28: consume a datagram ONLY when it is THE awaited reply --
+ * addressed to the waiting session's name AND echoing that call's seq
+ * (canonical header bytes [2:4]). Anything else falls through untouched
+ * so legitimate queue traffic survives a pending routed call. */
+bool fsroute_intercept(const char *name, const uint8_t *data, uint32_t len) {
+    if (!name || !data || len < 4)
+        return false;
+    uint16_t seq = (uint16_t)(data[2] | (data[3] << 8));
     for (int i = 0; i < MAXPENDING; i++) {
         if (!tab[i].used || tab[i].done)
             continue;
-        /* match by session-name queue + reply op echo */
         const char *n = name;
         int k = 0;
         while (tab[i].name[k] && n[k] && tab[i].name[k] == n[k])
             k++;
         if (tab[i].name[k] != 0 || n[k] != 0)
-            continue;
-#ifdef HOST_BUILD
-        fprintf(stderr, "[fsr] feed match i=%d seq=%u len=%u\n", i,
-                tab[i].seq, len);
-#endif
-        if (len < 2)
-            continue;
+            continue; /* not addressed to this waiter */
+        if (tab[i].seq != seq)
+            continue; /* not THIS call's reply (F23) */
         uint32_t cp = len < RESP_MAX ? len : RESP_MAX;
         for (uint32_t b = 0; b < cp; b++)
             tab[i].resp[b] = data[b];
         tab[i].len = (int)cp;
         tab[i].done = true;
-        return;
+        return true;
     }
+    return false;
 }
 
-int fsroute_wait(uint16_t seq, uint8_t *resp, uint32_t cap) {
+void fsroute_feed(const char *name, const uint8_t *data, uint32_t len) {
+    (void)fsroute_intercept(name, data, len);
+}
+
+int fsroute_wait_budget(uint16_t seq, uint8_t *resp, uint32_t cap,
+                        uint64_t spins) {
     extern void sched_yield_current(void);
-#ifdef HOST_BUILD
-    fprintf(stderr, "[fsw] waiting seq=%u tab=%p\n", seq, (void *)tab);
-#endif
-    for (uint64_t spins = 0; spins < 100000000ULL; spins++) {
+    for (uint64_t s = 0; s < spins; s++) {
         for (int i = 0; i < MAXPENDING; i++) {
             if (tab[i].used && tab[i].done && tab[i].seq == seq) {
                 int n = tab[i].len;
@@ -103,14 +104,18 @@ int fsroute_wait(uint16_t seq, uint8_t *resp, uint32_t cap) {
                 return n;
             }
         }
-        if (spins < 8 || spins % 100000ULL == 0) {
+        if (s < 8 || s % 100000ULL == 0) {
 #ifdef HOST_BUILD
             fprintf(stderr, "[fsw] spin=%llu e0(u=%d d=%d seq=%u mine=%d)\n",
-                    (unsigned long long)spins, tab[0].used, tab[0].done,
+                    (unsigned long long)s, tab[0].used, tab[0].done,
                     tab[0].seq, tab[0].seq == seq);
 #endif
         }
         sched_yield_current();
     }
     return -1;
+}
+
+int fsroute_wait(uint16_t seq, uint8_t *resp, uint32_t cap) {
+    return fsroute_wait_budget(seq, resp, cap, 100000000ULL);
 }

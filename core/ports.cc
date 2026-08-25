@@ -158,11 +158,11 @@ int port_send(uint32_t sid, int h, const void *data, const uint32_t len) {
         kernsvc_dispatch(p->name, sid, h, (const uint8_t *)data, len);
         return 0;
     }
-    /* kernel-routed preview1 callers wait via fsroute, not their queue */
-    if (fsroute_pending_for(p->name)) {
-        fsroute_feed(p->name, (const uint8_t *)data, len);
+    /* F28: intercept ONLY the awaited reply (name+seq match); anything
+     * else -- console relays, §7 sync replies, unrelated traffic -- keeps
+     * flowing to its queue. */
+    if (fsroute_intercept(p->name, (const uint8_t *)data, len))
         return 0;
-    }
     if (p->qn >= MAX_Q)
         return -2; /* would-block */
     msg *m = (msg *)rt_malloc(sizeof(msg));
@@ -206,10 +206,10 @@ extern "C" bool ports_name_owned_by(uint32_t sid, const char *name) {
 
 extern "C" bool ports_enqueue_by_name(const char *name, const void *data,
                                       uint32_t len) {
-    {
-        if (fsroute_pending_for(name))
-            fsroute_feed(name, (const uint8_t *)data, len);
-    }
+    /* F28: same conditional interception as port_send -- a pending routed
+     * call must not swallow unrelated kernel-side traffic. */
+    if (fsroute_intercept(name, (const uint8_t *)data, len))
+        return true;
     for (int p = 0; p < MAX_PORTS; p++) {
         if (ports[p].used && !strcmp(ports[p].name, name)) {
             if (ports[p].qn >= MAX_Q)
