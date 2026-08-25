@@ -533,3 +533,6 @@ F84 CLOSED: strconv import added to netport.go:5 — module now builds; go vet r
 2026-08-26 delta review: virtio_net.cc 109df4d4 -> 26126fe6 — no functional change visible; F83's unconditional [netdbg] periodic dump REMAINS (still not gated). No new defects. Open: F79(blk+probe) / F81 / F82 / F83 MINORs; zero open BLOCKERs.
 ===== POLL-LOG =====
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN 3c93eff/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open: F79(blk+probe) / F81 / F82 / F83 MINORs; zero open BLOCKERs.
+===== FINDING 85 =====
+severity: NOTE
+MAIN@3c93eff+dirty guests/p9/main.go (new, 185 lines) reviewed clean — Phase-9 gate driver per AGENTS.md: UDP echo round-trip vs host 10.0.2.2:5599 (5×3 retry ladder tolerates ARP-resolution race), TCP HTTP GET /hello.txt vs :8000 accepting "200 OK" or body marker, all failures print [p9] FAIL … + exit(1) for gate grep; bind retries yield until net service answers. Uses lib.NetClient canonical framing only — no ABI deviation, no capability surface. Hand-rolled itoa keeps the wasm guest dependency-free. Completes the P9 driver review flagged pending in F82a.
