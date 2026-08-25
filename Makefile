@@ -132,17 +132,17 @@ services/shell/shell.wasm.raw: $(wildcard services/shell/*.go) services/go.mod
 services/shell/shell.wasm: services/shell/shell.wasm.raw
 	python3 scripts/add_abiver.py $< $@ 1
 
-build/test_p5a.raw: guests/test_p5a.go
-	cd guests && GOOS=wasip1 GOARCH=wasm go build -o ../$@ test_p5a.go
+build/test_p5a.raw: guests/p5a/main.go $(wildcard guests/lib/*.go)
+	cd guests/p5a && GOOS=wasip1 GOARCH=wasm go build -o ../../$@ .
 build/test_p5a.wasm: build/test_p5a.raw
 	python3 scripts/add_abiver.py $< $@ 1
-build/test_p5b.raw: guests/test_p5b.go
-	cd guests && GOOS=wasip1 GOARCH=wasm go build -o ../$@ test_p5b.go
+build/test_p5b.raw: guests/p5b/main.go
+	cd guests/p5b && GOOS=wasip1 GOARCH=wasm go build -o ../../$@ .
 build/test_p5b.wasm: build/test_p5b.raw
 	python3 scripts/add_abiver.py $< $@ 1
 
-build/test_p8.raw: guests/test_p8.go
-	cd guests && GOOS=wasip1 GOARCH=wasm go build -o ../$@ test_p8.go
+build/test_p8.raw: guests/p8/main.go
+	cd guests/p8 && GOOS=wasip1 GOARCH=wasm go build -o ../../$@ .
 build/test_p8.wasm: build/test_p8.raw
 	python3 scripts/add_abiver.py $< $@ 1
 

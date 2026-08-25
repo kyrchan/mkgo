@@ -23,7 +23,7 @@ Service unit tests all PASS via `make test-unit` (fs KFS fuzz/replay,
 lib canonical header fuzz).
 
 Phase 6 (aarch64/riscv64) optional per AGENTS.md.
-Phase 9 (net.wasm) dropped per stretch provision.
+Phase 9 (net.wasm) REQUIRED — coordinator decree 2026-08-25: week continues, stretch provision NOT invoked. Deliverables: virtio-net shim + test-p9 gate + services/net E2E.
 
 ### Architecture summary:
 - Kernel boots UEFI → loads modules from ESP → dispatches sessions
