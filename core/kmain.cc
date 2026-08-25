@@ -106,8 +106,10 @@ void kmain(const struct boot_info *bi) {
             console_puts("[kmain] no init and no payloads; halting\n");
             cpu_halt();
         }
-        const uint64_t ADMIN = SCHED_CAP_KILL | SCHED_CAP_DEVMAN |
-                               SCHED_CAP_POWER | SCHED_CAP_SPAWN;
+        /* F37: payload slots are gate conveniences, not admins. ppa holds
+         * only what legacy gates exercise (KILL for the crash-isolation
+         * step); POWER/DEVMAN/SPAWN/CONF stay kernel+init-only. */
+        const uint64_t GATE = SCHED_CAP_KILL;
         /* boot services from ESP when present (Phase-4 style) */
         const uint8_t *c_ = (const uint8_t *)(uintptr_t)bi->mod_console;
         const uint8_t *l_ = (const uint8_t *)(uintptr_t)bi->mod_login;
@@ -126,7 +128,7 @@ void kmain(const struct boot_info *bi) {
                                    ? (const uint8_t *)(uintptr_t)bi->prog2
                                    : prog;
         uint64_t progB_len = bi->prog2 ? bi->prog2_len : prog_len;
-        int sa = sched_spawn_named("ppa", prog, prog_len, 0, ADMIN);
+        int sa = sched_spawn_named("ppa", prog, prog_len, 0, GATE);
         int sb = sched_spawn_named("ppb", progB, progB_len, 0, 0);
         (void)sa;
         (void)sb;

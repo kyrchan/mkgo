@@ -17,20 +17,25 @@ static int check_abiver(const uint8_t *b, uint64_t len) {
         uint8_t id = b[i++];
         uint64_t sz = 0;
         int sh = 0;
-        while (i < len) {
+        /* F21: LEB hardening -- cap shift width and byte count so hostile
+         * blobs cannot drive sh past 64 (UB) or loop wild. */
+        while (i < len && sh < 64) {
             uint8_t byte = b[i++];
             sz |= (uint64_t)(byte & 0x7F) << sh;
             sh += 7;
             if (!(byte & 0x80))
                 break;
         }
-        if (i + sz > len)
+        if (sh >= 64)
+            return -1; /* unterminated / oversized LEB */
+        uint64_t end;
+        if (__builtin_add_overflow(i, sz, &end) || end > len)
             return -1;
         if (id == 0) { /* custom */
             uint64_t nl = 0;
             if (i < len && !(b[i] & 0x80))
                 nl = b[i];
-            else if (i < len)
+            else if (i + 1 < len) /* F21: bounds-check continuation byte */
                 nl = ((b[i] & 0x7F) | ((uint64_t)b[i + 1] << 7)) & 0xFFFFFFFF;
             if (nl == 7 && i + 1 + nl <= len &&
                 b[i + 1] == 'a' && b[i + 2] == 'b' && b[i + 3] == 'i' &&

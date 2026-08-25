@@ -261,15 +261,8 @@ m3ApiRawFunction(wasi_environ_get) {
     m3ApiReturn(WASI_ESUCCESS);
 }
 
-uint8_t *g_last_mem[12]; // DEBUG: _mem seen by most recent raw call per sid
-
 m3ApiRawFunction(wasi_sched_yield) {
     m3ApiReturnType(int32_t)
-    {
-        uint32_t sid = sched_current_sid();
-        if (sid < 12)
-            g_last_mem[sid] = (uint8_t *)_mem;
-    }
     extern void sched_yield_current(void);
     sched_yield_current(); /* coroutine switch; resumes here next quantum */
     m3ApiReturn(WASI_ESUCCESS);
