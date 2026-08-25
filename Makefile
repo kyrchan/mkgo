@@ -223,7 +223,7 @@ $(BUILD)/disk-p7.img: $(BUILD)/BOOTX64.EFI services/fs/fs.wasm \
 	$(MCOPY) -i $@ services/login/login.wasm ::/boot/modules/login.wasm
 	$(MCOPY) -i $@ services/init/init.wasm ::/boot/modules/init.wasm
 	$(MCOPY) -i $@ services/shell/shell.wasm ::/boot/modules/shell.wasm
-	printf 'console console.wasm 0\nfs fs.wasm 0\nlogin login.wasm 8\nshell shell.wasm 8\n' > $(BUILD)/init.conf.tmp
+	printf 'console console.wasm 0\nfs fs.wasm 10\nlogin login.wasm 8\nshell shell.wasm 8\n' > $(BUILD)/init.conf.tmp
 	$(MCOPY) -i $@ $(BUILD)/init.conf.tmp ::/etc/init.conf
 
 $(BUILD)/VARS.fd:

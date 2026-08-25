@@ -110,6 +110,13 @@ invisible to guests — same window, same semantics. Managed-runtime guests
 (Go) do NOT use this window: they call `kern_blk_read/write` imports
 (see changelog); the same backends serve both transports.
 
+**Capability gate (F31, binding):** `kern_blk_read/write` are whole-disk
+raw access and therefore require the caller's session to hold
+`CAP_FS_ADMIN` (§7 bit 4). The kernel audits and rejects (`-1`) any other
+caller; fs.wasm is spawned holding the bit via its init.conf capmask.
+This is the substrate-side complement to fs.wasm's uid rooting: neither
+route to the disk is capability-free.
+
 ## 4. Input events (Phase 7)
 
     kern_input_recv(ptr, cap) -> i32   // >0 len | 0 none

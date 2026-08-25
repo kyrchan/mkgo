@@ -67,13 +67,28 @@ extern "C" int virtio_blk_available(void);
 
 int devblk_rw(uint32_t sid, int write, uint64_t lba, void *buf,
               uint32_t count_sectors) {
-    (void)sid;
+    /* F31: raw block access is a capability, not an implicit right. The
+     * whole-disk R/W surface would otherwise bypass fs.wasm's uid rooting
+     * entirely. CAP_FSADM (bit 4) gates it; fs.wasm is spawned holding it
+     * (services/init spawn table). Documented in abi/ABI.md §7. */
+    if (!(sched_capmask_of(sid) & SCHED_CAP_FSADM)) {
+        console_puts("[audit] sid=");
+        console_hex64(sid);
+        console_puts(" op=blk reason=cap target=devblk\n");
+        return -1;
+    }
+    /* F12: bounds are checked with wraparound-safe math BEFORE any address
+     * arithmetic; applies to both backends (virtio and RAM disk). */
+    if (count_sectors == 0 || count_sectors > 128)
+        return -1;
+    uint64_t end_lba;
+    if (__builtin_add_overflow(lba, (uint64_t)count_sectors, &end_lba))
+        return -1;
     /* virtio-blk backend: real persistent storage */
     if (virtio_blk_available())
         return virtio_blk_rw(write, lba, buf, count_sectors);
     /* RAM disk fallback */
-    if (!dev.disk || count_sectors == 0 || count_sectors > 128 ||
-        lba + count_sectors > dev.nblocks)
+    if (!dev.disk || end_lba > dev.nblocks)
         return -1;
     uint8_t *b = (uint8_t *)buf;
     if (write) {

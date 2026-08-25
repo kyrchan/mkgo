@@ -113,7 +113,10 @@ void virtio_blk_init(void) {
 int virtio_blk_rw(int write, uint64_t lba, void *buf, uint32_t count) {
     if (!vblk_ready)
         return -1;
-    if (lba + count > vblk_sectors)
+    /* F12: wraparound-safe device bounds */
+    uint64_t end_lba;
+    if (count == 0 || __builtin_add_overflow(lba, (uint64_t)count, &end_lba) ||
+        end_lba > vblk_sectors)
         return -1;
 
     /* For simplicity: one sector at a time using the fixed sector_data buf */

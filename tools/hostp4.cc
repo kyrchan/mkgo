@@ -102,7 +102,7 @@ int main(int argc, char **argv) {
         sched_preload_image("shell", b, bl); /* b=shell blob */
         static char confz[4096];
         snprintf(confz, sizeof(confz),
-                 "console console.wasm 0\nfs fs.wasm 0\n"
+                 "console console.wasm 0\nfs fs.wasm 10\n"
                  "login login.wasm 8\nshell shell.wasm 8\n");
         const char *iargv[3] = {"init", confz, 0};
         sched_spawn_named_argv("init", a, al, 0,
