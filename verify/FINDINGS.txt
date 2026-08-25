@@ -431,3 +431,12 @@ F78 partial progress: virtio_blk.cc md5 2ed5e516 moves the FIRST page-table walk
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN e38caac/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); zero source files newer than FINDINGS.txt; full md5 sweep identical. No new findings; no closures pending.
 ===== POLL-LOG =====
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN e38caac/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); zero source files newer than FINDINGS.txt; full md5 sweep identical. No new findings; no closures pending.
+===== FINDING 80 2026-08-26 MAIN@e38caac+dirty (virtio legacy revert) =====
+severity: MAJOR
+core/virtio_blk.cc:40,199-206 · vring buffer UNDERSIZED for the measured-offset workaround: vring_buf is DESC_TABLE_SIZE(4096)+AVAIL_RING_SIZE(518)+USED_RING_ALIGN(4096)+2048 = 10,758 bytes, but the qsize==256 workaround points used_off at the MEASURED 10760, so (a) the driver reads *used_idx / used_ring[] out of bounds (vring_buf+10762 .. +12811 — past its own array), and (b) the device DMA-writes the full used ring up to byte 12,812 — a ~2,054-byte overrun past vring_buf that silently clobbers whatever statics the linker places after it in .bss. Confirmed by arithmetic (10758 < 12812). The comment documents WHY (QEMU 10 q35 legacy places used.idx at +10762) but not the buffer implication.
+why: silent kernel-static memory corruption class; reads/writes outside the declared object are UB and layout-dependent — may work today, corrupt console/sched state tomorrow.
+fix: enlarge vring_buf to cover 10760+4+8*256 (=12,812 → pad to 16 KiB) while the anomaly persists, or pin queue size away from 256 so the spec-layout fallback applies, with a compile-time static assert that buf >= used_end for every branch.
+
+===== FINDING 80a =====
+severity: NOTE
+Same file/revert context: virtio_blk.cc is back on LEGACY transport (working tree now ≈ HEAD plus the measured-offset block); virtio_modern.cc/h remain linked (Makefile:37) but now have ZERO callers — dead code candidate. Either retire them or keep explicitly as the Phase-6-port fallback with a note. Also F79 status split: net side now BOUNDED (virtio_net.cc:312 tx wait, 20M-spin timeout with isr/status diagnostics — good); blk side completion poll (:211) still unbounded → F79 stays open for blk only.
