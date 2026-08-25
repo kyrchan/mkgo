@@ -151,9 +151,17 @@ build/test_p8.raw: guests/p8/main.go
 	cd guests/p8 && GOOS=wasip1 GOARCH=wasm go build -o ../../$@ .
 build/test_p9.raw: guests/p9/main.go $(wildcard guests/lib/*.go)
 	cd guests/p9 && GOOS=wasip1 GOARCH=wasm go build -o ../../$@ .
+build/test_p10a.raw: guests/p10a/main.go $(wildcard guests/lib/*.go)
+	cd guests/p10a && GOOS=wasip1 GOARCH=wasm go build -o ../../$@ .
+build/test_p10b.raw: guests/p10b/main.go $(wildcard guests/lib/*.go)
+	cd guests/p10b && GOOS=wasip1 GOARCH=wasm go build -o ../../$@ .
 build/test_p8.wasm: build/test_p8.raw
 	python3 scripts/add_abiver.py $< $@ 1
 build/test_p9.wasm: build/test_p9.raw
+	python3 scripts/add_abiver.py $< $@ 1
+build/test_p10a.wasm: build/test_p10a.raw
+	python3 scripts/add_abiver.py $< $@ 1
+build/test_p10b.wasm: build/test_p10b.raw
 	python3 scripts/add_abiver.py $< $@ 1
 
 
@@ -255,6 +263,20 @@ $(BUILD)/disk-p9.img: $(BUILD)/BOOTX64.EFI build/test_p9.wasm \
 	printf 'console console.wasm 0\nfs fs.wasm 10\nlogin login.wasm 8\nshell shell.wasm 8\nnet net.wasm 22\np9 p9.wasm 0 respawn=no\n' > $(BUILD)/init-p9.conf.tmp
 	$(MCOPY) -i $@ $(BUILD)/init-p9.conf.tmp ::/etc/init.conf
 
+# Phase 10 disk: legacy slots carry the two user drivers
+$(BUILD)/disk-p10.img: $(BUILD)/BOOTX64.EFI build/test_p10a.wasm \
+                       build/test_p10b.wasm services/fs/fs.wasm \
+                       services/console/console.wasm services/login/login.wasm | $(BUILD)
+	dd if=/dev/zero of=$@ bs=1M count=0 seek=64 status=none
+	$(MFORMAT) -i $@ ::
+	$(MMD) -i $@ ::/EFI ::/EFI/BOOT ::/vm ::/boot ::/boot/modules
+	$(MCOPY) -i $@ $(BUILD)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
+	$(MCOPY) -i $@ services/fs/fs.wasm ::/boot/modules/fs.wasm
+	$(MCOPY) -i $@ services/console/console.wasm ::/boot/modules/console.wasm
+	$(MCOPY) -i $@ services/login/login.wasm ::/boot/modules/login.wasm
+	$(MCOPY) -i $@ build/test_p10a.wasm ::/vm/app
+	$(MCOPY) -i $@ build/test_p10b.wasm ::/vm/app2
+
 $(BUILD)/VARS.fd:
 	cp $(OVMF_VARS) $@
 
@@ -330,6 +352,14 @@ test-p7: $(BUILD)/disk-p7.img $(BUILD)/VARS.fd
 		&& echo "TEST PASS (p7)" \
 		|| { echo "TEST FAIL (p7)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -40; exit 1; }
 
+
+.PHONY: test-p10
+test-p10: $(BUILD)/disk-p10.img $(BUILD)/VARS.fd
+	$(call RUN_QEMU,$(BUILD)/disk-p10.img)
+	@grep -q 'p10a. all ok' $(BUILD)/serial.log \
+	    && grep -q 'p10b. all ok' $(BUILD)/serial.log \
+	    && echo "TEST PASS (p10 multiuser negatives)" \
+	    || { echo "TEST FAIL (p10)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -30; exit 1; }
 
 .PHONY: test-p9
 test-p9: $(BUILD)/disk-p9.img $(BUILD)/VARS.fd

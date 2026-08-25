@@ -275,6 +275,10 @@ m3ApiRawFunction(wasi_sched_yield_v) {
     m3ApiSuccess();
 }
 
+/* ---- root preopen (fd 3): lets stock runtimes path_open "/" files ---- */
+#define WASI_PREOPEN_FD 3
+#define FD_PREOPEN_ROOT 0x7FFFFFFEu
+
 /* ---------------- routed path ops (Phase 5, ABI v1.1) ----------------
  * preview1 path_open/fd_read/fd_write(>=3)/fd_close/path_create_directory
  * forward to fs.wasm over its §1 port using the SAME op encoding as
@@ -311,6 +315,7 @@ m3ApiRawFunction(wasi_sched_yield_v) {
 #define WASI_ENOENT 44
 #define WASI_ENOTDIR 54
 #define WASI_ENOTEMPTY 55
+#define WASI_ENAMETOOLONG_WASI 37
 
 static int32_t fserr_to_wasi(int32_t st) {
     switch (st) {
@@ -427,7 +432,9 @@ static int alloc_fd(void) {
     sched_wasi_state *w = sched_wasi_current();
     if (!w)
         return -1;
-    for (int fd = 3; fd < SCHED_MAX_FDS; fd++)
+    if (w->fds[WASI_PREOPEN_FD] == SCHED_FD_EMPTY)
+        w->fds[WASI_PREOPEN_FD] = FD_PREOPEN_ROOT; /* lazy root preopen */
+    for (int fd = WASI_PREOPEN_FD + 1; fd < SCHED_MAX_FDS; fd++)
         if (w->fds[fd] == SCHED_FD_EMPTY) {
             w->fds[fd] = 0x7FFFFFFF; /* reserve */
             return fd;
@@ -466,6 +473,18 @@ m3ApiRawFunction(wasi_path_open) {
     char kpath[RFD_PATH_MAX];
     if (!fetch_path(runtime, kpath, sizeof(kpath), path, path_len))
         m3ApiReturn(WASI_EINVAL);
+    /* Stock runtimes strip the preopen prefix ("-> relative remnant").
+     * The kernel-routed transport is absolute-path based, so a relative
+     * path opened against the ROOT preopen is rebased to "/" here. */
+    if (kpath[0] != '/' && kpath[0] != 0 &&
+        (dirfd == WASI_PREOPEN_FD)) {
+        uint32_t L = (uint32_t)__builtin_strlen(kpath);
+        if (L + 2 > RFD_PATH_MAX)
+            m3ApiReturn(WASI_ENAMETOOLONG_WASI);
+        for (uint32_t i = L + 1; i > 0; i--)
+            kpath[i] = kpath[i - 1];
+        kpath[0] = '/';
+    }
     uint32_t plen = (uint32_t)__builtin_strlen(kpath);
 
     int fd = alloc_fd();
@@ -749,6 +768,41 @@ m3ApiRawFunction(wasi_poll_oneoff) {
     m3ApiReturn(WASI_ESUCCESS);
 }
 
+m3ApiRawFunction(wasi_fd_prestat_get) {
+    m3ApiReturnType(int32_t)
+    m3ApiGetArg(int32_t, fd)
+    m3ApiGetArgMem(uint8_t *, buf)
+    sched_wasi_state *w = wctx();
+    if (!w || fd != WASI_PREOPEN_FD)
+        m3ApiReturn(WASI_EBADF);
+    if (w->fds[fd] == SCHED_FD_EMPTY)
+        w->fds[fd] = FD_PREOPEN_ROOT; /* auto-provision root preopen */
+    if (buf && mem_ok(runtime, buf, 8)) {
+        buf[0] = 0; /* preopentype_dir */
+        for (int i = 1; i < 8; i++)
+            buf[i] = 0;
+        buf[4] = 1; buf[5] = 0; buf[6] = 0; buf[7] = 0; /* name len 1 */
+    }
+    m3ApiReturn(WASI_ESUCCESS);
+}
+
+m3ApiRawFunction(wasi_fd_prestat_dir_name) {
+    m3ApiReturnType(int32_t)
+    m3ApiGetArg(int32_t, fd)
+    m3ApiGetArgMem(char *, buf)
+    m3ApiGetArg(int32_t, len)
+    sched_wasi_state *w = wctx();
+    if (!w || fd != WASI_PREOPEN_FD)
+        m3ApiReturn(WASI_EBADF);
+    if (w->fds[fd] == SCHED_FD_EMPTY)
+        w->fds[fd] = FD_PREOPEN_ROOT;
+    if (len < 1)
+        m3ApiReturn(WASI_EINVAL);
+    if (buf && mem_ok(runtime, buf, 1))
+        buf[0] = '/';
+    m3ApiReturn(WASI_ESUCCESS);
+}
+
 static const void *stub_ret_i32(IM3Runtime, IM3ImportContext, uint64_t *_sp,
                                 void *) {
     *((int32_t *)_sp++) = WASI_ENOSYS;
@@ -793,8 +847,8 @@ struct link_entry {
  * wrong-type import fails instantiation loudly instead of corrupting the
  * raw-call stack. wasm3 sig format: result chars, then (arg chars). */
 static const struct link_entry stubs[] = {
-    {"fd_prestat_get", "i(ii)", stub_ebadf, 0},       /* ends preopen scans */
-    {"fd_prestat_dir_name", "i(iii)", stub_ebadf, 0},
+    {"fd_prestat_get", "i(ii)", wasi_fd_prestat_get, 0},
+    {"fd_prestat_dir_name", "i(iii)", wasi_fd_prestat_dir_name, 0},
     {"fd_fdstat_get", "i(ii)", stub_ebadf, 0},
     {"fd_fdstat_set_flags", "i(ii)", stub_ok, 0},
     {"fd_close", "i(i)", stub_ok, 0},

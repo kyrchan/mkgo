@@ -59,6 +59,7 @@ extern "C" EFI_STATUS __attribute__((ms_abi)) efi_main(EFI_HANDLE image_handle,
     load_esp_file(image_handle, systab, psh, &shimg, &shlen);
     load_esp_file(image_handle, systab, pnet, &nimg, &nlen);
     load_esp_file(image_handle, systab, pp9, &p9img, &p9len);
+    load_esp_file(image_handle, systab, papp2, &a2img, &a2len);
     load_esp_file(image_handle, systab, pconf, &cfimg, &cflen);
     g_bi.mod_console = (uint64_t)(uintptr_t)cimg;
     g_bi.mod_console_len = clen;
