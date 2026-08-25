@@ -507,3 +507,11 @@ F81 recheck + paging rework review: working tree replaces the dense 64-GiB 2MiB 
 2026-08-26 full-protocol poll: heads and MEMORY.md hashes unchanged (MAIN 3c93eff/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. No deltas → Layer A/B not triggered. Open: F79(blk+probe) / F81 / F82 MINORs; zero open BLOCKERs.
 ===== POLL-LOG =====
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN 3c93eff/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open: F79(blk+probe) / F81 / F82 MINORs; zero open BLOCKERs.
+===== FINDING 83 2026-08-26 MAIN@3c93eff+dirty =====
+severity: MINOR
+core/virtio_net.cc virtio_net_poll (~line 258-276, working tree md5 714d9ebd) · periodic [netdbg] ring-state dump is UNCONDITIONAL: every 2,000,000th poll prints rused/ravail/tused/tavail to serial regardless of build flags — debug residue in the hot scheduler path (same class as F29/F78). Positive changes in the same edit: poll now re-fetches session memory each call and bails cleanly if it shrank (`!mem || sz < NET_MEM_MIN`), and virtio_net_poll gates on !vn_ready up front — both good.
+why: ongoing serial noise violates clean-output discipline; unbounded growth of dbg_n is benign but the print is not compile-time removable.
+fix: wrap the dbg_n block in #ifdef VMOD_TRACE (or a registry knob) before merge.
+
+===== POLL-LOG =====
+2026-08-26 also reviewed: netwin_attach_impl retains vn_ready early-out (clean); no other deltas.
