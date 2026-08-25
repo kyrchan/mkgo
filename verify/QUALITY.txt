@@ -23,6 +23,8 @@ All four sensitive-file md5s identical to last-verified values — no silent dri
 - F55 fuzz soaks — recurring sweep duty, currently passing.
 - F78 debug residue in virtio_blk.cc ([dbg] pml4e walk at :63) still in
   tree — must be stripped before merge; duplicated handshake noted.
+- F79 unbounded device-wait spins (virtio_modern.cc:169 reset-ack;
+  virtio_blk.cc completion poll) — bounded waits + diagnostics needed.
 - F77 residual nit: dead vmod_features_ok declaration at virtio_modern.h:20.
 
 ## Remaining scope work (not defects)
