@@ -361,3 +361,5 @@ F78 partial progress: virtio_blk.cc md5 2ed5e516 moves the FIRST page-table walk
 2026-08-26 null-delta poll: heads unchanged (MAIN e38caac / SVC ce7a13f / TLS 1ccd2bf); zero source files newer than FINDINGS.txt; full md5 sweep identical (modern 7cf06d48, blk 2ed5e516, net b8b1ae0d, kernsvc 1caeec60, ports a2f4bf1f, devblk e4508f84, wasi_glue e6b61e6e, fsroute 30a777bc). No new findings; no closures pending.
 ===== POLL-LOG =====
 2026-08-26 full-protocol poll: heads AND MEMORY.md hashes unchanged (MAIN e38caac/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); zero source files newer than FINDINGS.txt; md5 sweep identical across all eight tracked files. No deltas → Layer A/B not triggered; prior mechanical results stand. Multiple consecutive null-delta cycles; QUALITY shows zero open BLOCKERs.
+===== POLL-LOG =====
+2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN e38caac/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); zero source files newer than FINDINGS.txt; full md5 sweep identical. No new findings; no closures pending.
