@@ -14,9 +14,6 @@
 #include "fsroute.h"
 #include "sched.h"
 
-/* wasm3 sig-check bypass: our raw fns handle any valid type */
-extern "C" { int g_skip_sig_check = 1; }
-
 #include "rt.h"
 
 #define WASI_EBADF2 8
@@ -37,8 +34,6 @@ extern "C" {
 
 /* ---- session context: lives in the owning session (see sched.h) ---- */
 #include "sched.h"
-
-/* wasm3 sig-check bypass: our raw fns handle any valid type */
 
 static sched_wasi_state *wctx() { return sched_wasi_current(); }
 
@@ -697,17 +692,19 @@ m3ApiRawFunction(kern_focus_set) {
 
 struct link_entry2 {
     const char *name;
+    const char *sig;
     M3RawCall fn;
+    const char *alt;
 };
 static const link_entry2 kernlinks[] = {
-    {"kern_port_create", kern_port_create},
-    {"kern_port_bind", kern_port_bind},
-    {"kern_port_send", kern_port_send},
-    {"kern_port_recv", kern_port_recv},
-    {"kern_blk_read", kern_blk_read},
-    {"kern_blk_write", kern_blk_write},
-    {"kern_input_recv", kern_input_recv},
-    {"kern_focus_set", kern_focus_set},
+    {"kern_port_create", "i(ii)", kern_port_create, 0},
+    {"kern_port_bind", "i(ii)", kern_port_bind, 0},
+    {"kern_port_send", "i(iii)", kern_port_send, 0},
+    {"kern_port_recv", "i(iii)", kern_port_recv, 0},
+    {"kern_blk_read", "i(iii)", kern_blk_read, 0},
+    {"kern_blk_write", "i(iii)", kern_blk_write, 0},
+    {"kern_input_recv", "i(ii)", kern_input_recv, 0},
+    {"kern_focus_set", "i(i)", kern_focus_set, "v(i)"}, /* lib ships both */
 };
 #define NKERN (sizeof(kernlinks) / sizeof(kernlinks[0]))
 
@@ -719,11 +716,15 @@ static const link_entry2 kernlinks[] = {
 #define WASI_EBADF 8
 
 /* poll_oneoff: return 0 events immediately (no timers in v1). This keeps
- * Go runtimes alive through fatal paths that usleep via poll. */
+ * Go runtimes alive through fatal paths that usleep via poll.
+ * Full preview1 signature: (in, out, nsubscriptions, nevents) -> errno */
 m3ApiRawFunction(wasi_poll_oneoff) {
     m3ApiReturnType(int32_t)
+    m3ApiGetArg(int32_t, in)
+    m3ApiGetArgMem(uint32_t *, out)
     m3ApiGetArg(int32_t, subcount)
-    m3ApiGetArgMem(uint32_t *, events)
+    m3ApiGetArgMem(uint32_t *, nevents)
+    (void)in;
     (void)subcount;
     /* approximate a sleep: surrender several quanta so time passes and
      * other sessions run; v1 has no real timers */
@@ -732,8 +733,8 @@ m3ApiRawFunction(wasi_poll_oneoff) {
         for (int i = 0; i < 48; i++)
             sched_yield_current();
     }
-    if (events && mem_ok(runtime, events, 4))
-        *events = 0;
+    if (nevents && mem_ok(runtime, nevents, 4))
+        *nevents = 0;
     m3ApiReturn(WASI_ESUCCESS);
 }
 
@@ -764,34 +765,47 @@ static const void *stub_ok(IM3Runtime, IM3ImportContext, uint64_t *_sp,
 
 struct link_entry {
     const char *name;
+    const char *sig;
     M3RawCall fn;
+    /* F58: a few shipped artifacts declare a legacy alternate shape for
+     * the same import (Go runtime's sched_yield is i() while guests/lib
+     * declares v(); kern_focus_set ships as both i(i) and v(i)). The alt
+     * string is the ONLY other accepted declaration -- anything else
+     * still fails instantiation loudly. Guest ABI stability rule: shipped
+     * modules never recompile to suit the kernel. */
+    const char *alt;
 };
 
+/* F58: every NAMED import carries the canonical signature from its spec
+ * (abi/ABI.md §1/§3/§4 for kern_*, preview1 for wasi_*). Linking compares
+ * the module's declared type against THIS string, so a wrong-arity or
+ * wrong-type import fails instantiation loudly instead of corrupting the
+ * raw-call stack. wasm3 sig format: result chars, then (arg chars). */
 static const struct link_entry stubs[] = {
-    {"fd_prestat_get", stub_ebadf},       /* ends preopen scans */
-    {"fd_prestat_dir_name", stub_ebadf},
-    {"fd_fdstat_get", stub_ebadf},
-    {"fd_fdstat_set_flags", stub_ok},
-    {"fd_close", stub_ok},
-    {"poll_oneoff", wasi_poll_oneoff},    /* immediate: 0 events */
+    {"fd_prestat_get", "i(ii)", stub_ebadf, 0},       /* ends preopen scans */
+    {"fd_prestat_dir_name", "i(iii)", stub_ebadf, 0},
+    {"fd_fdstat_get", "i(ii)", stub_ebadf, 0},
+    {"fd_fdstat_set_flags", "i(ii)", stub_ok, 0},
+    {"fd_close", "i(i)", stub_ok, 0},
+    {"poll_oneoff", "i(iiii)", wasi_poll_oneoff, 0},  /* immediate: 0 events */
 };
 #define NSTUBS (sizeof(stubs) / sizeof(stubs[0]))
 
 static const struct link_entry profile[] = {
-    {"fd_write", wasi_fd_write},
-    {"proc_exit", wasi_proc_exit},
-    {"clock_time_get", wasi_clock_time_get},
-    {"random_get", wasi_random_get},
-    {"args_sizes_get", wasi_args_sizes_get},
-    {"args_get", wasi_args_get},
-    {"environ_sizes_get", wasi_environ_sizes_get},
-    {"environ_get", wasi_environ_get},
-    {"sched_yield", wasi_sched_yield},
+    {"fd_write", "i(iiii)", wasi_fd_write, 0},
+    {"proc_exit", "v(i)", wasi_proc_exit, 0},
+    {"clock_time_get", "i(iIi)", wasi_clock_time_get, 0},
+    {"random_get", "i(ii)", wasi_random_get, 0},
+    {"args_sizes_get", "i(ii)", wasi_args_sizes_get, 0},
+    {"args_get", "i(ii)", wasi_args_get, 0},
+    {"environ_sizes_get", "i(ii)", wasi_environ_sizes_get, 0},
+    {"environ_get", "i(ii)", wasi_environ_get, 0},
+    {"sched_yield", "i()", wasi_sched_yield, "v()"}, /* Go runtime i() vs lib v() */
     /* Phase 5 routed path ops (ABI v1.1) */
-    {"path_open", wasi_path_open},
-    {"fd_read", wasi_fd_read},
-    {"path_create_directory", wasi_path_create_directory},
-    {"fd_close", wasi_fd_close_routed},
+    {"path_open", "i(iiiiiIIii)", wasi_path_open, 0},
+    {"fd_read", "i(iiii)", wasi_fd_read, 0},
+    {"path_create_directory", "i(iii)", wasi_path_create_directory, 0},
+    {"fd_close", "i(i)", wasi_fd_close_routed, 0},
 };
 #define NPROFILE (sizeof(profile) / sizeof(profile[0]))
 
@@ -823,16 +837,31 @@ static const char *sig_of(IM3FuncType ft) {
     return sig_buf;
 }
 
+extern "C" {
+M3Result LinkRawFunction(IM3Module, IM3Function, ccstr_t, const void *,
+                         const void *);
+}
+
 const char *wasi_link_module(IM3Module mod) {
+    /* F58 adjunct: m3's public linker is BY-NAME and rebinds EVERY import
+     * sharing that name with one signature -- impossible when one module
+     * legitimately imports the same name under two shapes (Go runtime's
+     * i() sched_yield vs guests/lib's v()). Bind each FUNCTION record
+     * directly instead, with its own shape-checked signature. */
+
     for (u32 i = 0; i < mod->numFunctions; i++) {
         M3Function *f = &mod->functions[i];
         if (!f->import.moduleUtf8)
             continue;
         if (!strcmp(f->import.moduleUtf8, "kernel")) {
             M3RawCall fn = 0;
+            const char *ksig = 0, *kalt = 0, *kname = 0;
             for (unsigned e = 0; e < NKERN; e++) {
                 if (!strcmp(kernlinks[e].name, f->import.fieldUtf8)) {
                     fn = kernlinks[e].fn;
+                    ksig = kernlinks[e].sig;
+                    kalt = kernlinks[e].alt;
+                    kname = kernlinks[e].name;
                     break;
                 }
             }
@@ -842,25 +871,48 @@ const char *wasi_link_module(IM3Module mod) {
                 console_puts("\n");
                 return "unknown kernel import";
             }
-            (void)fn;
-            M3Result r = m3_LinkRawFunction(mod, f->import.moduleUtf8,
-                                            f->import.fieldUtf8,
-                                            sig_of(f->funcType), fn);
-            if (r) {
+            /* F58: enforce the canonical shape; accept only the documented
+             * legacy alt (see link_entry.alt). Link with the module's own
+             * declared signature when it matches an accepted shape so the
+             * raw-call slot layout always agrees with the caller. */
+            const char *modsig = sig_of(f->funcType);
+            const char *use;
+            if (!strcmp(modsig, ksig))
+                use = ksig;
+            else if (kalt && !strcmp(modsig, kalt)) {
+                use = modsig;
+                console_puts("[link] alt shape: ");
+                console_puts(kname);
+                console_puts(" as ");
+                console_puts(modsig);
+                console_puts("\n");
+            } else {
                 console_puts("[link] SIGFAIL ");
                 console_puts(f->import.fieldUtf8);
-                console_puts(" sig=");
-                console_puts(sig_of(f->funcType));
+                console_puts(" want=");
+                console_puts(ksig);
+                if (kalt) {
+                    console_puts(" or=");
+                    console_puts(kalt);
+                }
+                console_puts(" module-declared=");
+                console_puts(modsig);
                 console_puts("\n");
-                return r;
+                return "function signature mismatch";
             }
+            M3Result r = LinkRawFunction(mod, f, use, (const void *)fn, 0);
+            if (r)
+                return r;
             continue;
         }
         if (!strcmp(f->import.moduleUtf8, "wasi_snapshot_preview1")) {
             M3RawCall fn = 0;
+            const char *sig = 0, *alt = 0;
             for (unsigned e = 0; e < NPROFILE; e++) {
                 if (!strcmp(profile[e].name, f->import.fieldUtf8)) {
                     fn = profile[e].fn;
+                    sig = profile[e].sig;
+                    alt = profile[e].alt;
                     break;
                 }
             }
@@ -868,12 +920,17 @@ const char *wasi_link_module(IM3Module mod) {
                 for (unsigned t = 0; t < NSTUBS; t++) {
                     if (!strcmp(stubs[t].name, f->import.fieldUtf8)) {
                         fn = stubs[t].fn;
+                        sig = stubs[t].sig;
+                        alt = stubs[t].alt;
                         break;
                     }
                 }
             }
             if (!fn) {
-                /* generic linkage stub by result shape */
+                /* generic linkage stub by result shape. No kernel-side
+                 * contract exists for unknown names, so the module's own
+                 * declaration defines the ABI here (self-roundtrip only);
+                 * the audit line keeps these visible. */
                 if (GetFuncTypeNumResults(f->funcType) == 0)
                     fn = stub_ret_void;
                 else if (GetFuncTypeResultType(f->funcType, 0) == c_m3Type_i32)
@@ -884,15 +941,43 @@ const char *wasi_link_module(IM3Module mod) {
                 console_puts(f->import.fieldUtf8);
                 console_puts("\n");
             }
-            M3Result r = m3_LinkRawFunction(mod, f->import.moduleUtf8,
-                                            f->import.fieldUtf8,
-                                            sig_of(f->funcType), fn);
+            /* F58: same shape enforcement as the kernel-import branch */
+            const char *modsig = sig_of(f->funcType);
+            const char *use;
+            if (!sig)
+                use = modsig; /* generic stub: self-declared */
+            else if (!strcmp(modsig, sig))
+                use = sig;
+            else if (alt && !strcmp(modsig, alt)) {
+                use = modsig;
+                console_puts("[link] alt shape: ");
+                console_puts(f->import.fieldUtf8);
+                console_puts(" as ");
+                console_puts(modsig);
+                console_puts("\n");
+            } else {
+                console_puts("[link] SIGFAIL ");
+                console_puts(f->import.fieldUtf8);
+                console_puts(" want=");
+                console_puts(sig);
+                if (alt) {
+                    console_puts(" or=");
+                    console_puts(alt);
+                }
+                console_puts(" module-declared=");
+                console_puts(modsig);
+                console_puts("\n");
+                return "function signature mismatch";
+            }
+            M3Result r = LinkRawFunction(mod, f, use, (const void *)fn, 0);
             if (r) {
                 console_puts("[link] ERR wasi:");
                 console_puts(f->import.fieldUtf8);
                 console_puts(" err=");
                 console_puts(r);
-                console_puts(" sig=");
+                console_puts(" use=");
+                console_puts(use);
+                console_puts(" modsig=");
                 console_puts(sig_of(f->funcType));
                 console_puts(" rets=");
                 console_hex64(GetFuncTypeNumResults(f->funcType));
