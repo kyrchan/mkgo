@@ -1,32 +1,34 @@
 # QUALITY.txt — rolling summary (LANE=VERIFY) — regenerated each pass
-# Last pass: 2026-08-25 — BLOCKER-HARDENING BATCH VERIFIED at MAIN@b82f6ff
+# Last pass: 2026-08-26 — MAIN@e38caac+dirty (virtio churn reviewed), SVC@ce7a13f, TLS@1ccd2bf
 
 | repo | head reviewed | mechanical | open BLOCKERs | open MAJORs | trend |
 |---|---|---|---|---|---|
-| MAIN  | b82f6ff (fleet model-pin; blocker-hardening batch f6ba648..7f36fbf landed: all 7 BLOCKERs + F21/F29/F37/F59 closed with regression-test evidence per practice #2) | per-file C++ syntax sweep at HEAD: ZERO failures across core/*.cc incl. virtio_blk.cc/input.cc/preempt.cc (removed); wasm3 sig-check enforced unconditionally; per-function-record linking replaces by-name binding | **0** | 0 open from ledger (F4 hosteng stale, F45-class superseded by rewrite, F46 overclaim corrected by honest-status revisions) | STRONGEST position yet: multiuser E2E green, Phase-7 gate green, route-1 repaired end-to-end |
-| SVC   | ce7a13f (fleet model-pin on 128314a lineage: net E2E + race-hardening + multiuser rooting + display service + kfs + fuzz targets; fs/display split into own modules) | go vet clean; FULL suite -race -count=1 GREEN across parent module (console/init/login/net/shell) + sub-modules (fs, display/terminal) + guests/lib | 0 | 0 | healthiest lane ever; all prior findings closed or superseded by rewrites |
+| MAIN  | e38caac + working tree (virtio_modern.cc md5 1d8f93b8: unbounded vmod_features_ok DELETED → F77 CLOSED; virtio_blk.cc on modern transport with bounded inline FEATURES_OK check; virtio_net.cc reverted to legacy PCI transport — zero vmod_ refs; kernsvc/ports/devblk/fsroute md5s unchanged vs last-verified sweep) | F77/F78 filed and adjudicated this cycle; fresh blocker-site sweep green (see below) | **0** | F4 hosteng stale (dead tool); F46 overclaim (corrected by honest-status revisions) | Phase-9 integration maturing in-tree; substrate blocker sites stable |
+| SVC   | ce7a13f (fleet model-pin on 128314a lineage: net E2E + race-hardening + multiuser rooting + display service + kfs + fuzz targets; fs/display split into own modules) | go vet clean; FULL suite -race -count=1 GREEN across parent module (console/init/login/net/shell) + sub-modules (fs, display/terminal) + guests/lib | 0 | 0 | healthy; no deltas since last pass |
 | TLS   | 1ccd2bf (fleet model-pin on b75d0f5 lineage: hvtest scaffolding + golden-file converter tests + README fleet docs) | go vet clean; go test -race green (img + hvtest) | 0 | 0 | healthy; Phase-12 prep started |
+
+## Blocker-site sweep (fresh, this pass)
+- F13 creator-gate: `ports[g].creator == sid` present in ports.cc (×1).
+- F18 NACK: kernsvc_nack ×6 call sites active in kernsvc.cc.
+- F31 CAP_FSADM gate present in devblk.cc (×2 refs).
+- F32 uid stamping: sched_uid_of in ports.cc port_send path (×1).
+- F58 sig-check bypass: g_skip_sig_check = ZERO occurrences repo-wide.
+- F16 clamp: routed_rw len>8192 budget clamp at wasi_glue.cc:592 + fd validation.
+All four sensitive-file md5s identical to last-verified values — no silent drift.
 
 ## Open items (all MINOR/NOTE class)
 - F4 hosteng.cc stale vs current API (dead tool, not in build path).
 - F6 LIST/CAPS ungated — acknowledged in ABI §11 v2 roadmap.
-- F43 net parallel-flake — budgets raised to 30s @b8a9a74, no recurrence.
-- F44 quantum_us<1000 underflow in preempt.cc — file later removed
-  (superseded by cooperative model), moot unless preempt returns.
-- F52 12-session LIST ceiling + missing truncation flag — substrate limit,
-  init defers correctly; raise at Phase-10 hardening if >12 sessions needed.
+- F52 12-session LIST ceiling — substrate limit, init defers correctly.
 - F55 fuzz soaks — recurring sweep duty, currently passing.
-
-## Closed this cycle (committed evidence)
-F3(all sub-items) · F12 · F13 · F16 · F18 · F20 · F23 · F26 · F28 · F31 ·
-F32 · F33 · F34 · F35 · F43 · F58 · F59 (+F21/F29/F37/F46-class).
+- F78 debug residue in virtio_blk.cc ([dbg] pml4e walk at :63) still in
+  tree — must be stripped before merge; duplicated handshake noted.
+- F77 residual nit: dead vmod_features_ok declaration at virtio_modern.h:20.
 
 ## Remaining scope work (not defects)
-Per MEMORY.md manifest: Phase 10 negative tests (two concurrent users,
-cross-user denial both routes, KVM+TCG matrix) · kfs crash-suite gate ·
-P9 shim integration · test_p5a/p5b/p7 protocol updates to match
-restructured services. VERIFY's THREAT-MODEL.md priority list is fully
-addressed through item 6 (F18); items 7+ are hardening backlog.
+P9 vring runtime validation upstream (mainline lane, MODERN transport for
+blk; net back on legacy pending QEMU 10.x diagnosis) · kfs crash-suite
+gate cadence · THREAT-MODEL.md items 7+ hardening backlog.
 
 ## Process notes
 - fs + display are separate Go modules under services/ — parent ./...
@@ -35,3 +37,7 @@ addressed through item 6 (F18); items 7+ are hardening backlog.
   uncommitted by design).
 - Blocker-site md5 sweep is the reliable drift detector for silent
   working-tree edits between polls.
+- Correction: prior passes' "6 open BLOCKERs" refrain was stale session
+  memory — ledger blocks show F12/F13/F16/F18/F31/F32/F58 all carry
+  CLOSED status with committed evidence (b82f6ff batch + reconfirmations
+  at every subsequent sweep). True open-BLOCKER count is and remains 0.
