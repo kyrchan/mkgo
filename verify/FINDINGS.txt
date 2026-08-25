@@ -331,3 +331,5 @@ CLOSED (upgraded from partial): the vulnerable §3 mailbox path in devblk_poll w
 ===== FINDING 77 2026-08-22 MAIN@e38caac+dirty =====
 severity: MINOR
 core/virtio_modern.cc vmod_features_ok (~line 244) · unbounded spin on FEATURES_OK refusal: the function sets S_FEAT_OK and then spins forever if the device clears it. Per virtio spec §2.2, a device MAY clear FEATURES_OK to reject negotiated features — the driver must then reset the device, not hang. A misbehaving or slow device would wedge the boot/shim permanently with no diagnostic. Suggested fix: bounded spin (e.g. 1M iterations), return false on timeout, and have callers reset + fall back to legacy transport.
+===== FINDING 77-recheck =====
+F77 recheck: vmod_features_ok still spins unbounded on FEATURES_OK refusal (virtio_modern.cc:225-231). The inline comment ("device clears the bit on refusal -> spin forever is fine to avoid here") acknowledges the hang but defers it — the caller does not pre-check offers in a way that prevents the device from clearing the bit. Stays MINOR/open.
