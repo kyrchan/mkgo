@@ -527,3 +527,5 @@ fix: add "strconv" to imports; then run full go vet + go test -race for the modu
 severity: MINOR
 netport.go RECV TCP path (~line 246): on a listen socket each Accept() OVERWRITES sk.tcp — previously accepted connections are leaked (never Closed) and only the most recent client remains serviceable; one socket id cannot round-robin multiple children. Also errNoSuchSock is returned when max==0 && UDP where "status 0/got=0" semantics would fit better. nextID uint16 wraps after 65k sockets (theoretical). Functional limitation, not an ABI violation.
 fix: queue accepted conns (slice + index) or document one-connection-per-socket v1 policy in ABI-NOTES §10; use errState for degenerate RECV args.
+===== FINDING 84-CLOSED =====
+F84 CLOSED: strconv import added to netport.go:5 — module now builds; go vet rc=0 and `go test -race -count=1 .` passes (ok kernel.lane/services/net 3.471s). The earlier host-build note "function main is undeclared" is expected module design (main.go gated behind //go:build wasip1). F84a (accept-overwrite) remains open as MINOR.
