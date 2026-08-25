@@ -26,8 +26,8 @@ func libArgv() []string {
 	if argc < 1 || bl <= 0 {
 		return nil
 	}
-	vecs := make([]uint32, argc)
 	buf := make([]byte, bl)
+	var vecs [1]uint32
 	args_get(&vecs[0], &buf[0])
 	var out []string
 	start := 0

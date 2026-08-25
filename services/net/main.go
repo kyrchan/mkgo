@@ -37,15 +37,25 @@ func readAddrArg() (MAC, IP4) {
 	var argc, bl int32
 	args_sizes_get(&argc, &bl)
 	if argc >= 2 && bl > 0 {
-		vecs := make([]uint32, argc)
 		buf := make([]byte, bl)
+		var vecs [1]uint32
 		args_get(&vecs[0], &buf[0])
-		start, end := int(vecs[1]), int(vecs[1])
-		for end < len(buf) && buf[end] != 0 {
-			end++
+		// buf holds argc sequential NUL-terminated strings; entry 1 is the
+		// mac/ip config (entry 0 = program name). vecs[] are linear
+		// offsets, not slice indices -- split buf directly.
+		start := 0
+		arg := ""
+		for i := 0; i < int(argc) && start < len(buf); i++ {
+			end := start
+			for end < len(buf) && buf[end] != 0 {
+				end++
+			}
+			if i == 1 {
+				arg = string(buf[start:end])
+			}
+			start = end + 1
 		}
-		if start <= end && end <= len(buf) {
-			arg := string(buf[start:end])
+		if arg != "" {
 			if i := indexByteStr(arg, ' '); i > 0 {
 				if m, err := ParseMAC(arg[:i]); err == nil {
 					mac = m

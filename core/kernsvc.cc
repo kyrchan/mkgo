@@ -22,13 +22,22 @@ static void put32(uint8_t *p, uint32_t v) {
 namespace {
 /* single kernel thread: file-scope reply route is safe */
 char g_rname[17];
+uint32_t g_from_sid;
+int g_reply_h;
 }
 
 static void kernsvc_reply(const uint8_t *data, uint32_t len) {
     extern bool ports_enqueue_by_name(const char *, const void *, uint32_t);
-    if (!g_rname[0])
-        return; /* sync callers read via _fsreq buffer instead */
-    ports_enqueue_by_name(g_rname, data, len);
+    extern void ports_kernel_enqueue(uint32_t, int, const void *, uint32_t);
+    if (g_rname[0]) {
+        ports_enqueue_by_name(g_rname, data, len);
+        return;
+    }
+    /* Direct mode (rname empty): §7 endpoints reply INLINE on the
+     * sending handle -- mirrors abi/ABI.md §1 and the host model.
+     * Without this every direct-mode RPC burns its full recv budget. */
+    if (g_reply_h >= 0)
+        ports_kernel_enqueue(g_from_sid, g_reply_h, data, len);
 }
 
 /* F18 (ABI §7): "Unknown op / insufficient bit => status -1, audited."
@@ -44,12 +53,13 @@ static void kernsvc_nack(uint16_t op, uint16_t seq) {
 
 void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
                       const uint8_t *data, uint32_t len) {
-    (void)reply_h;
     /* framing: {u16 op,u16 seq,u32 uid,char rname[16],payload} */
     if (len < 24)
         return;
     uint16_t op = get16(data);
     uint16_t seq = get16(data + 2);
+    g_from_sid = from_sid;
+    g_reply_h = reply_h; /* direct-mode replies ride the sending handle */
     for (int i = 0; i < 16; i++) {
         g_rname[i] = (char)data[8 + i];
     }

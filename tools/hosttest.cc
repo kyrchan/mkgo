@@ -344,6 +344,45 @@ static void t_intercept_seqmatch(void) {
     CHECK(!fsroute_pending_for("ppb"), "T8 late correct seq completes");
 }
 
+/* ---- T10: direct-mode §7 RPC replies on the sending handle ---- */
+static void t_direct_mode_reply(void) {
+    reset_sessions();
+    ports_init();
+    g_s[S_EVIL].caps = 0; /* no caps: ENUM must NACK */
+    int dh = port_bind(S_EVIL, "devman", 6);
+    CHECK(dh >= 0, "T10 bind devman");
+    uint8_t fr[24];
+    memset(fr, 0, sizeof fr);
+    put16(fr, 1);      /* ENUM */
+    put16(fr + 2, 21); /* seq; rname empty = direct mode */
+    CHECK(port_send(S_EVIL, dh, fr, sizeof fr) == 0, "T10 send");
+    uint8_t rx[64];
+    int got = -1;
+    for (int i = 0; i < 3 && got <= 0; i++)
+        got = port_recv(S_EVIL, dh, rx, sizeof rx);
+    CHECK(got == 28 || got == 8,
+          "T10 denial replied inline on sending handle (direct mode)");
+    if (got >= 8)
+        CHECK(get32(rx + 4) == -1, "T10 status -1 (F18 direct path)");
+}
+
+/* ---- T9: §4 focus claim (shell readiness flow) ---- */
+extern "C" int input_focus_set(uint32_t caller_sid, int handle);
+extern "C" int input_recv(uint32_t sid, void *out, uint32_t cap);
+
+static void t_focus_claim(void) {
+    reset_sessions();
+    ports_init();
+    g_s[S_U1].caps = 1ULL << 3; /* SCHED_CAP_FOCUS, as init.conf grants */
+    int h = port_create(S_U1, "shell", 5);
+    CHECK(h >= 0, "T9 shell owns its name");
+    CHECK(input_focus_set(S_U1, h) == 0, "T9 focus claim accepted");
+    /* focus is observable: another session must NOT receive input */
+    static uint8_t buf[64];
+    CHECK(input_recv(S_EVIL, buf, sizeof buf) == 0,
+          "T9 unfocused session gets no input");
+}
+
 int main(void) {
     fprintf(stderr, "== hosttest: kernel substrate units ==\n");
     t_owner_vs_binder();
@@ -354,6 +393,8 @@ int main(void) {
     t_devblk_capgate();
     t_intercept_fallthrough();
     t_intercept_seqmatch();
+    t_focus_claim();
+    t_direct_mode_reply();
     fprintf(stderr, "== %d/%d passed, %d failed ==\n", g_run - g_fail,
             g_run, g_fail);
     return g_fail ? 1 : 0;

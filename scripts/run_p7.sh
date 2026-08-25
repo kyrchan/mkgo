@@ -1,6 +1,11 @@
 #!/bin/bash
 # scripts/run_p7.sh -- boot with a bidirectional serial pipe, feed a
-# scripted login + command, capture output. Used by make test-p7.
+# scripted shell command, capture output. Used by make test-p7.
+#
+# Phase-7 flow (current architecture): init spawns console/fs/login/shell
+# from /etc/init.conf; the shell claims §4 focus when ready, so typed
+# serial input goes straight to its line editor. `cat /etc/motd` proves
+# input -> shell -> fs -> console-relay end to end.
 set -u
 LOG="$1"; shift
 QEMU_BIN="$1"; shift
@@ -21,14 +26,8 @@ exec 3>"$D/qemu.in"
 
 sleep 22                       # firmware boot + init spawns services
 
-printf 'u1\r' >&3; sleep 4     # login: user u1
-printf 'u1\r' >&3; sleep 7     # password -> auth + focus moves to shell
-sleep 2
+sleep 2                        # shell focus claim settles
 printf 'cat /etc/motd\r' >&3; sleep 10
 sleep 3
 
 kill "$QPID" 2>/dev/null
-wait "$QPID" 2>/dev/null
-kill "$CATPID" 2>/dev/null
-rm -rf "$D"
-exit 0

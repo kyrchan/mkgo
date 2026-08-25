@@ -268,6 +268,13 @@ m3ApiRawFunction(wasi_sched_yield) {
     m3ApiReturn(WASI_ESUCCESS);
 }
 
+/* void-declared shape (guests/lib): no result slot exists */
+m3ApiRawFunction(wasi_sched_yield_v) {
+    extern void sched_yield_current(void);
+    sched_yield_current();
+    m3ApiSuccess();
+}
+
 /* ---------------- routed path ops (Phase 5, ABI v1.1) ----------------
  * preview1 path_open/fd_read/fd_write(>=3)/fd_close/path_create_directory
  * forward to fs.wasm over its §1 port using the SAME op encoding as
@@ -683,11 +690,22 @@ m3ApiRawFunction(kern_focus_set) {
     m3ApiReturn(input_focus_set(sched_current_sid(), h));
 }
 
+/* F58 adjunct: legacy void-declared shape. Raw-call layout is
+ * [rets..., args...] (m3ApiReturnType consumes a slot), so a v(i)-shaped
+ * caller must be served by a wrapper that reads its arg at slot0 -- the
+ * i(i)-returning implementation would read garbage. */
+m3ApiRawFunction(kern_focus_set_v) {
+    m3ApiGetArg(int32_t, h)
+    input_focus_set(sched_current_sid(), h);
+    m3ApiSuccess();
+}
+
 struct link_entry2 {
     const char *name;
     const char *sig;
     M3RawCall fn;
     const char *alt;
+    M3RawCall fn_alt;
 };
 static const link_entry2 kernlinks[] = {
     {"kern_port_create", "i(ii)", kern_port_create, 0},
@@ -697,7 +715,7 @@ static const link_entry2 kernlinks[] = {
     {"kern_blk_read", "i(iii)", kern_blk_read, 0},
     {"kern_blk_write", "i(iii)", kern_blk_write, 0},
     {"kern_input_recv", "i(ii)", kern_input_recv, 0},
-    {"kern_focus_set", "i(i)", kern_focus_set, "v(i)"}, /* lib ships both */
+    {"kern_focus_set", "i(i)", kern_focus_set, "v(i)", kern_focus_set_v}, /* lib ships both */
 };
 #define NKERN (sizeof(kernlinks) / sizeof(kernlinks[0]))
 
@@ -760,13 +778,13 @@ struct link_entry {
     const char *name;
     const char *sig;
     M3RawCall fn;
-    /* F58: a few shipped artifacts declare a legacy alternate shape for
-     * the same import (Go runtime's sched_yield is i() while guests/lib
-     * declares v(); kern_focus_set ships as both i(i) and v(i)). The alt
-     * string is the ONLY other accepted declaration -- anything else
-     * still fails instantiation loudly. Guest ABI stability rule: shipped
-     * modules never recompile to suit the kernel. */
+    /* F58 adjunct: some shipped artifacts declare a LEGACY VOID shape for
+     * the same import (guests/lib's sched_yield/focus_set). Raw-call slot
+     * layout is [rets..., args...], so each accepted shape needs its own
+     * implementation -- fn serves sig, fn_alt serves alt. Anything beyond
+     * these two shapes still fails instantiation loudly. */
     const char *alt;
+    M3RawCall fn_alt;
 };
 
 /* F58: every NAMED import carries the canonical signature from its spec
@@ -793,7 +811,7 @@ static const struct link_entry profile[] = {
     {"args_get", "i(ii)", wasi_args_get, 0},
     {"environ_sizes_get", "i(ii)", wasi_environ_sizes_get, 0},
     {"environ_get", "i(ii)", wasi_environ_get, 0},
-    {"sched_yield", "i()", wasi_sched_yield, "v()"}, /* Go runtime i() vs lib v() */
+    {"sched_yield", "i()", wasi_sched_yield, "v()", wasi_sched_yield_v}, /* Go runtime i() vs lib v() */
     /* Phase 5 routed path ops (ABI v1.1) */
     {"path_open", "i(iiiiiIIii)", wasi_path_open, 0},
     {"fd_read", "i(iiii)", wasi_fd_read, 0},
@@ -848,6 +866,7 @@ const char *wasi_link_module(IM3Module mod) {
             continue;
         if (!strcmp(f->import.moduleUtf8, "kernel")) {
             M3RawCall fn = 0;
+            unsigned kei = NKERN;
             const char *ksig = 0, *kalt = 0, *kname = 0;
             for (unsigned e = 0; e < NKERN; e++) {
                 if (!strcmp(kernlinks[e].name, f->import.fieldUtf8)) {
@@ -855,6 +874,7 @@ const char *wasi_link_module(IM3Module mod) {
                     ksig = kernlinks[e].sig;
                     kalt = kernlinks[e].alt;
                     kname = kernlinks[e].name;
+                    kei = e;
                     break;
                 }
             }
@@ -870,14 +890,14 @@ const char *wasi_link_module(IM3Module mod) {
              * raw-call slot layout always agrees with the caller. */
             const char *modsig = sig_of(f->funcType);
             const char *use;
+            M3RawCall ufn = fn;
             if (!strcmp(modsig, ksig))
                 use = ksig;
             else if (kalt && !strcmp(modsig, kalt)) {
                 use = modsig;
-                console_puts("[link] alt shape: ");
+                ufn = kernlinks[kei].fn_alt;
+                console_puts("[link] void-shape variant: ");
                 console_puts(kname);
-                console_puts(" as ");
-                console_puts(modsig);
                 console_puts("\n");
             } else {
                 console_puts("[link] SIGFAIL ");
@@ -893,19 +913,22 @@ const char *wasi_link_module(IM3Module mod) {
                 console_puts("\n");
                 return "function signature mismatch";
             }
-            M3Result r = LinkRawFunction(mod, f, use, (const void *)fn, 0);
+            M3Result r =
+                LinkRawFunction(mod, f, use, (const void *)ufn, 0);
             if (r)
                 return r;
             continue;
         }
         if (!strcmp(f->import.moduleUtf8, "wasi_snapshot_preview1")) {
             M3RawCall fn = 0;
+            unsigned pei = NPROFILE;
             const char *sig = 0, *alt = 0;
             for (unsigned e = 0; e < NPROFILE; e++) {
                 if (!strcmp(profile[e].name, f->import.fieldUtf8)) {
                     fn = profile[e].fn;
                     sig = profile[e].sig;
                     alt = profile[e].alt;
+                    pei = e;
                     break;
                 }
             }
@@ -937,16 +960,16 @@ const char *wasi_link_module(IM3Module mod) {
             /* F58: same shape enforcement as the kernel-import branch */
             const char *modsig = sig_of(f->funcType);
             const char *use;
+            M3RawCall ufn = fn;
             if (!sig)
                 use = modsig; /* generic stub: self-declared */
             else if (!strcmp(modsig, sig))
                 use = sig;
             else if (alt && !strcmp(modsig, alt)) {
                 use = modsig;
-                console_puts("[link] alt shape: ");
+                ufn = profile[pei].fn_alt;
+                console_puts("[link] void-shape variant: ");
                 console_puts(f->import.fieldUtf8);
-                console_puts(" as ");
-                console_puts(modsig);
                 console_puts("\n");
             } else {
                 console_puts("[link] SIGFAIL ");

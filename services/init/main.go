@@ -29,19 +29,23 @@ func readArgs() []string {
 	if argc < 2 || bl <= 0 {
 		return nil
 	}
-	vecs := make([]uint32, argc)
 	buf := make([]byte, bl)
+	var vecs [1]uint32
 	args_get(&vecs[0], &buf[0])
+	// The kernel fills buf sequentially as argc NUL-terminated strings in
+	// argv order; vecs[] holds linear-memory offsets (not slice indices),
+	// so split buf directly instead of dereferencing offsets.
 	out := make([]string, 0, argc-1)
-	for i := 1; i < int(argc); i++ {
-		start := int(vecs[i])
+	start := 0
+	for i := 0; i < int(argc) && start < len(buf); i++ {
 		end := start
 		for end < len(buf) && buf[end] != 0 {
 			end++
 		}
-		if start <= end && end <= len(buf) {
+		if i >= 1 {
 			out = append(out, string(buf[start:end]))
 		}
+		start = end + 1
 	}
 	return out
 }
@@ -65,3 +69,4 @@ func main() {
 	}
 	Run(lib.Real(), InitOptions{Services: svcs, Knobs: knobText})
 }
+

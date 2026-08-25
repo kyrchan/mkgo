@@ -41,8 +41,8 @@ func readArgs() {
 		argv0 = "x"
 		return
 	}
-	vecs := make([]uint32, argc)
 	buf := make([]byte, bl)
+	var vecs [1]uint32
 	args_get(&vecs[0], &buf[0])
 	// first arg: NUL-terminated at buf[vecs[0]-base]... base is 0 for us
 	end := 0

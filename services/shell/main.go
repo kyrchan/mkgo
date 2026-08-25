@@ -27,19 +27,24 @@ func readRoot() string {
 	if argc < 2 || bl <= 0 {
 		return ""
 	}
-	vecs := make([]uint32, argc)
 	buf := make([]byte, bl)
+	var vecs [1]uint32
 	args_get(&vecs[0], &buf[0])
-	end := int(vecs[1])
-	start := end
-	for start < len(buf) && buf[start] != 0 {
-		start++
+	// kernel fills buf as argc sequential NUL-terminated strings; entry 1
+	// is our config text (entry 0 = program name). Offsets in vecs[] are
+	// linear addresses, not slice indices -- never index buf with them.
+	start := 0
+	for i := 0; i < int(argc) && start < len(buf); i++ {
+		end := start
+		for end < len(buf) && buf[end] != 0 {
+			end++
+		}
+		if i == 1 {
+			return string(buf[start:end])
+		}
+		start = end + 1
 	}
-	_ = end
-	if start > len(buf) {
-		return ""
-	}
-	return string(buf[int(vecs[1]):start])
+	return ""
 }
 
 func main() {

@@ -99,11 +99,17 @@ var errMalformed = errors.New("fs: malformed request")
 
 // ensureStandardDirs provisions the AGENTS.md tree skeleton on a fresh
 // volume (/etc, /home, /tmp, /boot/modules); existing dirs are left as-is.
+// /etc/motd gets a default banner so first boot has one (Phase-7 demo file).
 func ensureStandardDirs(fat store) {
 	for _, d := range []string{"/etc", "/home", "/tmp", "/boot", "/boot/modules"} {
 		if _, err := fat.Stat(d); err == ErrNoEntry {
 			_ = fat.Mkdir(d) // best effort; log-free in v1
 		}
+	}
+	if _, err := fat.Stat("/etc/motd"); err == ErrNoEntry {
+		_ = fat.Create("/etc/motd") // WriteFile does not create implicitly
+		_ = fat.WriteFile("/etc/motd", 0,
+			[]byte("Welcome to the capability microkernel\n"))
 	}
 }
 

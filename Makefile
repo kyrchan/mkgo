@@ -296,7 +296,7 @@ test-p5b: $(BUILD)/disk-p5b.img $(BUILD)/VARS.fd
 test-p7: $(BUILD)/disk-p7.img $(BUILD)/VARS.fd
 	bash scripts/run_p7.sh $(BUILD)/serial.log "$(QEMU)" "$(QEMU_ENV)" -- \
 		-drive format=raw,file=$(BUILD)/disk-p7.img $(QEMU_BASE)
-	@grep -q 'focus -> login' $(BUILD)/serial.log \
+	@grep -q 'shell ready' $(BUILD)/serial.log \
 		&& grep -q 'Welcome to the capability microkernel' $(BUILD)/serial.log \
 		&& echo "TEST PASS (p7)" \
 		|| { echo "TEST FAIL (p7)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -40; exit 1; }

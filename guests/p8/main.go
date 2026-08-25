@@ -31,8 +31,8 @@ func readArgs() {
 		argv0 = "?"
 		return
 	}
-	vecs := make([]uint32, argc)
 	buf := make([]byte, bl)
+	var vecs [1]uint32
 	args_get(&vecs[0], &buf[0])
 	end := 0
 	for end < len(buf) && buf[end] != 0 {
