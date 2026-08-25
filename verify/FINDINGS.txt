@@ -531,3 +531,5 @@ fix: queue accepted conns (slice + index) or document one-connection-per-socket 
 F84 CLOSED: strconv import added to netport.go:5 — module now builds; go vet rc=0 and `go test -race -count=1 .` passes (ok kernel.lane/services/net 3.471s). The earlier host-build note "function main is undeclared" is expected module design (main.go gated behind //go:build wasip1). F84a (accept-overwrite) remains open as MINOR.
 ===== POLL-LOG =====
 2026-08-26 delta review: virtio_net.cc 109df4d4 -> 26126fe6 — no functional change visible; F83's unconditional [netdbg] periodic dump REMAINS (still not gated). No new defects. Open: F79(blk+probe) / F81 / F82 / F83 MINORs; zero open BLOCKERs.
+===== POLL-LOG =====
+2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN 3c93eff/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open: F79(blk+probe) / F81 / F82 / F83 MINORs; zero open BLOCKERs.
