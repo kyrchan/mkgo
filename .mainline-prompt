@@ -1,0 +1,9 @@
+SOLE MISSION (read /home/cyr/kernel/VRING-HANDOFF.md first): fix the
+Phase 9 virtio legacy-vring anomaly — device writes used-ring completions
+at buf+10762 instead of spec 8192; consumption stops after ~2 requests.
+Step 1: read HOST_FEATURES 32-bit before init and print it; test the
+VIRTIO_F_VERSION_1 negotiation hypothesis. Everything known lives in
+VRING-HANDOFF.md (symptoms, environment, ranked hypotheses, evidence).
+Success = [p9] udp ok AND http ok via make test-p9 on committed code.
+Commit fixes incrementally with regression evidence. Do not work on
+anything else; do not emit ALL PHASES COMPLETE (coordinator decides).

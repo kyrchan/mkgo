@@ -29,6 +29,12 @@ CONT="Continue the phase plan from where MEMORY.md says it stands, per AGENTS.md
 Never stop while work remains; switch tracks when blocked. \
 Completion is decided by the COORDINATOR, not by you: keep working until stopped."
 
+PROMPT_OVERRIDE=/home/cyr/kernel/.mainline-prompt
+if [ -f "$PROMPT_OVERRIDE" ]; then
+    SEED=$(cat "$PROMPT_OVERRIDE"); CONT=$(cat "$PROMPT_OVERRIDE")
+    echo "[overnight] MISSION OVERRIDE active ($PROMPT_OVERRIDE)" >>"$LOG"
+fi
+
 sentinel_in_chunk() { # $1 = chunk file ; true iff a text event's LAST
     python3 - "$1" <<'PYEOF'      # non-empty line is exactly the sentinel
 import json, sys
