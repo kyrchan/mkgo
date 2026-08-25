@@ -139,10 +139,21 @@ int port_bind(uint32_t sid, const char *name, uint32_t name_len) {
 extern void kernsvc_dispatch(const char *epname, uint32_t from_sid,
                              int reply_h, const uint8_t *data, uint32_t len);
 
-int port_send(uint32_t sid, int h, const void *data, uint32_t len) {
+int port_send(uint32_t sid, int h, const void *data, const uint32_t len) {
     port *p = port_of(sid, h);
     if (!p || !data || len == 0 || len > MSG_MAX)
         return -1;
+    /* F32 / ABI v1.1 §1: "On SEND the kernel OVERWRITES uid with the
+     * sending session's registry uid -- clients can never spoof identity."
+     * Stamped on every path: kernel-endpoint dispatch, fsroute feed and
+     * queue enqueue alike. Canonical header holds uid at bytes [4:8]. */
+    if (len >= 8 && sid != 0) {
+        uint32_t uid = sched_uid_of(sid);
+        ((uint8_t *)data)[4] = (uint8_t)uid;
+        ((uint8_t *)data)[5] = (uint8_t)(uid >> 8);
+        ((uint8_t *)data)[6] = (uint8_t)(uid >> 16);
+        ((uint8_t *)data)[7] = (uint8_t)(uid >> 24);
+    }
     if (p->kernel_endpoint && sid != 0) {
         kernsvc_dispatch(p->name, sid, h, (const uint8_t *)data, len);
         return 0;

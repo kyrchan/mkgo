@@ -193,8 +193,8 @@ static void t_uid_stamping(void) {
     int n = port_recv(S_U1, q, rx, sizeof rx);
     CHECK(n == (int)sizeof fr, "T2 datagram delivered intact");
     if (n == (int)sizeof fr) {
-        CHECK(get32(rx + 4) == 1001,
-              "T2 kernel stamped true uid over forged 0 (F32)");
+        CHECK(get32(rx + 4) == 1002,
+              "T2 kernel stamped TRUE sender uid over forged 0 (F32)");
         CHECK(get16(rx) == 5 && get16(rx + 2) == 9,
               "T2 op/seq untouched by stamping");
     }
