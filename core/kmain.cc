@@ -75,7 +75,13 @@ void kmain(const struct boot_info *bi) {
     }
 
     devblk_init();
-    { extern void virtio_blk_init(void); virtio_blk_init(); }
+    {
+        extern void virtio_blk_init(void);
+        virtio_blk_init();
+    }
+#ifndef VN_NO_NET_INIT
+    virtio_net_init();
+#endif
     devblk_attach();
 
     /* preload service modules so registry SPAWN can resolve them */
@@ -84,10 +90,14 @@ void kmain(const struct boot_info *bi) {
         const uint8_t *l_ = (const uint8_t *)(uintptr_t)bi->mod_login;
         const uint8_t *f_ = (const uint8_t *)(uintptr_t)bi->mod_fs;
         const uint8_t *s_ = (const uint8_t *)(uintptr_t)bi->mod_shell;
+        const uint8_t *n_ = (const uint8_t *)(uintptr_t)bi->mod_net;
+        const uint8_t *q_ = (const uint8_t *)(uintptr_t)bi->mod_p9;
         if (c_) sched_preload_image("console", c_, bi->mod_console_len);
         if (l_) sched_preload_image("login", l_, bi->mod_login_len);
         if (f_) sched_preload_image("fs", f_, bi->mod_fs_len);
         if (s_) sched_preload_image("shell", s_, bi->mod_shell_len);
+        if (n_) sched_preload_image("net", n_, bi->mod_net_len);
+        if (q_) sched_preload_image("p9", q_, bi->mod_p9_len);
     }
 
     const uint8_t *iimg = (const uint8_t *)(uintptr_t)bi->mod_init;
@@ -97,7 +107,7 @@ void kmain(const struct boot_info *bi) {
             "init", iimg, bi->mod_init_len, 0,
             SCHED_CAP_KILL | SCHED_CAP_DEVMAN | SCHED_CAP_POWER |
                 SCHED_CAP_SPAWN | SCHED_CAP_FOCUS | SCHED_CAP_FSADM |
-                SCHED_CAP_CONF,
+                SCHED_CAP_CONF | SCHED_CAP_NETADM,
             iargv, iargv[1] ? 2 : 1);
     } else {
         /* legacy gate mode: dual payload slots with admin caps */

@@ -23,7 +23,10 @@ extern "C" {
 bool ports_name_owned_by(uint32_t sid, const char *name);
 void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
                       const uint8_t *data, uint32_t len);
+int netwin_attach(void *runtime) { return -1; }
+int netwin_attached(void) { return 0; }
 }
+void *sched_runtime_of(uint32_t sid) { return 0; }
 
 
 /* ---------------- fake scheduler ---------------- */
@@ -223,10 +226,10 @@ static void t_unknown_op_replies(void) {
     for (int i = 0; i < 3 && got <= 0; i++) {
         got = port_recv(S_EVIL, q, rx, sizeof rx);
     }
-    CHECK(got == 8, "T3 exactly one 8-byte reply (F18)");
-    if (got == 8) {
+    CHECK(got == 28, "T3 exactly one canonical 28-byte reply (F18)");
+    if (got == 28) {
         CHECK(get16(rx) == 99 && get16(rx + 2) == 7, "T3 op/seq echoed");
-        CHECK(get32(rx + 4) == -1, "T3 status is -1 (F18)");
+        CHECK(get32(rx + 24) == -1, "T3 status@24 is -1 (canonical F18)");
     }
 }
 
@@ -250,10 +253,10 @@ static void t_spawn_cap_denial_replies(void) {
     int got = -1;
     for (int i = 0; i < 3 && got <= 0; i++)
         got = port_recv(S_EVIL, q, rx, sizeof rx);
-    CHECK(got == 8, "T4 denial replied (F18)");
-    if (got == 8)
-        CHECK(get32(rx + 4) == -1 || get32(rx + 4) == (int32_t)0xFFFFFFFFu,
-              "T4 status -1");
+    CHECK(got == 28, "T4 denial replied canonically (F18)");
+    if (got == 28)
+        CHECK(get32(rx + 24) == (int32_t)0xFFFFFFFFu,
+              "T4 status@24 = -1");
 }
 
 /* ---- T5 (F12): block bounds are wraparound-safe ---- */
@@ -360,10 +363,11 @@ static void t_direct_mode_reply(void) {
     int got = -1;
     for (int i = 0; i < 3 && got <= 0; i++)
         got = port_recv(S_EVIL, dh, rx, sizeof rx);
-    CHECK(got == 28 || got == 8,
-          "T10 denial replied inline on sending handle (direct mode)");
-    if (got >= 8)
-        CHECK(get32(rx + 4) == -1, "T10 status -1 (F18 direct path)");
+    CHECK(got == 28,
+          "T10 canonical denial inline on sending handle (direct mode)");
+    if (got == 28)
+        CHECK(get32(rx + 24) == -1,
+              "T10 status@24 -1 (F18 direct path)");
 }
 
 /* ---- T9: §4 focus claim (shell readiness flow) ---- */

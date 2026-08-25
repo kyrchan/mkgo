@@ -7,6 +7,11 @@
 #include "sched.h"
 #include "plat.h"
 
+extern "C" {
+int netwin_attach(void *runtime);
+int netwin_attached(void);
+}
+
 static void put16(uint8_t *p, uint16_t v) {
     p[0] = (uint8_t)v;
     p[1] = (uint8_t)(v >> 8);
@@ -42,13 +47,16 @@ static void kernsvc_reply(const uint8_t *data, uint32_t len) {
 
 /* F18 (ABI §7): "Unknown op / insufficient bit => status -1, audited."
  * Every fall-through MUST answer so clients fail fast instead of spinning
- * their full recv budget on a lost reply. */
+ * their full recv budget on a lost reply. Canonical form. */
 static void kernsvc_nack(uint16_t op, uint16_t seq) {
-    static uint8_t nb[8];
+    static uint8_t nb[28];
     put16(nb, op);
     put16(nb + 2, seq);
-    put32(nb + 4, 0xFFFFFFFFu);
-    kernsvc_reply(nb, 8);
+    put32(nb + 4, 0); /* kernel uid */
+    for (int i = 0; i < 16; i++)
+        nb[8 + i] = 0;
+    put32(nb + 24, 0xFFFFFFFFu);
+    kernsvc_reply(nb, 28);
 }
 
 void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
@@ -74,15 +82,29 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
     console_puts(g_rname);
     console_puts("\n");
 
+    /* All §7 replies are CANONICAL: {u16 op,u16 seq,u32 uid=0,
+     * char rname[16], body@24}. guests/lib Registry/Devman/Power clients
+     * parse status/body at 24 -- this is the ratified wire form. */
     static uint8_t rbuf[4096];
+    auto kbegin = [&](uint16_t rop) {
+        put16(rbuf, rop);
+        put16(rbuf + 2, seq);
+        put32(rbuf + 4, 0); /* kernel uid */
+        for (int i = 0; i < 16; i++)
+            rbuf[8 + i] = 0;
+        return 24u;
+    };
+    auto knack = [&]() {
+        uint32_t o = kbegin(op);
+        put32(rbuf + o, 0xFFFFFFFFu);
+        kernsvc_reply(rbuf, o + 4);
+    };
     uint32_t rn = 0;
 
     if (!strcmp(epname, "registry")) {
         switch (op) {
-        case 1: { /* LIST */
-            put16(rbuf, 1);
-            put16(rbuf + 2, seq);
-            rn = 4;
+        case 1: { /* LIST -> body {u32 n; rec[25]} at 24 */
+            rn = kbegin(1);
             char names[12][16];
             uint32_t recs[12 * 3];
             uint32_t n = sched_list(recs, names, 12);
@@ -104,9 +126,7 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
                                                   (payload[2] << 16) |
                                                   ((uint32_t)payload[3] << 24)) : 0xFFFFFFFFu;
             uint64_t mask = sid != 0xFFFFFFFFu ? sched_capmask_of(sid) : 0;
-            put16(rbuf, 2);
-            put16(rbuf + 2, seq);
-            rn = 4;
+            rn = kbegin(2);
             uint32_t n = 0;
             for (uint64_t b = 0; b < 7; b++)
                 if (mask & (1ULL << b))
@@ -128,10 +148,9 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
             uint32_t sid = payload[0] | (payload[1] << 8) | (payload[2] << 16) |
                            ((uint32_t)payload[3] << 24);
             int rc = sched_kill(sid); /* checks CAP_KILL itself */
-            put16(rbuf, 3);
-            put16(rbuf + 2, seq);
-            put32(rbuf + 4, (uint32_t)rc);
-            kernsvc_reply(rbuf, 8);
+            rn = kbegin(3);
+            put32(rbuf + rn, (uint32_t)rc);
+            kernsvc_reply(rbuf, rn + 4);
             return;
         }
         case 4: { /* SPAWN {char name[16], char path[64], u32 capmask,
@@ -146,10 +165,7 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
                 console_puts("[audit] sid=");
                 console_hex64(from_sid);
                 console_puts(" op=SPAWN reason=cap target=registry\n");
-                put16(rbuf, 4);
-                put16(rbuf + 2, seq);
-                put32(rbuf + 4, 0xFFFFFFFFu);
-                kernsvc_reply(rbuf, 8);
+                knack();
                 return;
             }
             char modname[17];
@@ -160,10 +176,13 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
             /* name of new session = module name (v1) */
             int nsid = sched_spawn_image(modname, sched_uid_of(from_sid), want,
                                          modname);
-            put16(rbuf, 4);
-            put16(rbuf + 2, seq);
-            put32(rbuf + 4, (uint32_t)nsid);
-            kernsvc_reply(rbuf, 8);
+            if (nsid > 0 && !strcmp(modname, "net")) {
+                /* §6 windows live in the net session's linear memory */
+                netwin_attach(sched_runtime_of((uint32_t)nsid));
+            }
+            rn = kbegin(4);
+            put32(rbuf + rn, (uint32_t)nsid);
+            kernsvc_reply(rbuf, rn + 4);
             return;
         }
         case 5: { /* LOGIN {char name[16], u32 uid, u32 capmask}
@@ -172,10 +191,7 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
                 console_puts("[audit] sid=");
                 console_hex64(from_sid);
                 console_puts(" op=LOGIN reason=cap target=registry\n");
-                put16(rbuf, 5);
-                put16(rbuf + 2, seq);
-                put32(rbuf + 4, 0xFFFFFFFFu);
-                kernsvc_reply(rbuf, 8);
+                knack();
                 return;
             }
             char tname[17];
@@ -194,17 +210,13 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
             console_hex64((uint64_t)(int64_t)tsid);
             console_puts("\n");
             if (tsid < 0) {
-                put16(rbuf, 5);
-                put16(rbuf + 2, seq);
-                put32(rbuf + 4, 0xFFFFFFFFu);
-                kernsvc_reply(rbuf, 8);
+                knack();
                 return;
             }
             sched_set_identity((uint32_t)tsid, nuid, nmask);
-            put16(rbuf, 5);
-            put16(rbuf + 2, seq);
-            put32(rbuf + 4, 0);
-            kernsvc_reply(rbuf, 8);
+            rn = kbegin(5);
+            put32(rbuf + rn, 0);
+            kernsvc_reply(rbuf, rn + 4);
             return;
         }
         case 6: { /* SETCONF {char key[16], u64 value} -- CAP_CONF only */
@@ -212,10 +224,7 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
                 console_puts("[audit] sid=");
                 console_hex64(from_sid);
                 console_puts(" op=SETCONF reason=cap target=registry\n");
-                put16(rbuf, 6);
-                put16(rbuf + 2, seq);
-                put32(rbuf + 4, 0xFFFFFFFFu);
-                kernsvc_reply(rbuf, 8);
+                knack();
                 return;
             }
             char cfgkey[17];
@@ -231,10 +240,9 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
             console_puts("=");
             console_hex64(val);
             console_puts("\n");
-            put16(rbuf, 6);
-            put16(rbuf + 2, seq);
-            put32(rbuf + 4, 0);
-            kernsvc_reply(rbuf, 8);
+            rn = kbegin(6);
+            put32(rbuf + rn, 0);
+            kernsvc_reply(rbuf, rn + 4);
             return;
         }
         default:
@@ -259,16 +267,35 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
             kernsvc_nack(op, seq); /* F18 */
             return;
         }
-        if (op == 1) { /* ENUM -> one record: console class window */
-            put16(rbuf, 1);
-            put16(rbuf + 2, seq);
-            put32(rbuf + 4, 1); /* one device */
-            put32(rbuf + 8, 5); /* class console */
-            put32(rbuf + 12, 0); /* inst */
-            put32(rbuf + 16, 0);
-            put32(rbuf + 20, 0xF000); /* win_off low */
-            put32(rbuf + 24, 0);
-            kernsvc_reply(rbuf, 28);
+        if (op == 1) { /* ENUM -> body {u32 n; rec{class,inst,u64 win}} @24 */
+            rn = kbegin(1);
+            uint32_t n = 1;
+            uint32_t o = rn + 4;
+            /* console class window (always present) */
+            put32(rbuf + o, 5);
+            put32(rbuf + o + 4, 0);
+            put32(rbuf + o + 8, 0xF000);
+            put32(rbuf + o + 12, 0);
+            o += 16;
+            /* the net session additionally sees its §6 RX/TX windows */
+            if (!strcmp(sched_name_of(from_sid), "net")) {
+
+                if (netwin_attached()) {
+                    put32(rbuf + o, 2); /* class net */
+                    put32(rbuf + o + 4, 0); /* inst 0 = RX */
+                    put32(rbuf + o + 8, 0x1000000);
+                    put32(rbuf + o + 12, 0);
+                    o += 16;
+                    put32(rbuf + o, 2);
+                    put32(rbuf + o + 4, 1); /* inst 1 = TX */
+                    put32(rbuf + o + 8, 0x1000000 + (393224));
+                    put32(rbuf + o + 12, 0);
+                    o += 16;
+                    n += 2;
+                }
+            }
+            put32(rbuf + rn, n);
+            kernsvc_reply(rbuf, o);
         } else {
             console_puts("[audit] sid=");
             console_hex64(from_sid);
@@ -292,10 +319,9 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
             console_puts("[power] ");
             console_puts(op == 1 ? "reboot" : "off");
             console_puts(" requested; halting (no ACPI in v1)\n");
-            put16(rbuf, op);
-            put16(rbuf + 2, seq);
-            put32(rbuf + 4, 0);
-            kernsvc_reply(rbuf, 8);
+            rn = kbegin(op);
+            put32(rbuf + rn, 0);
+            kernsvc_reply(rbuf, rn + 4);
             cpu_halt();
         }
         kernsvc_nack(op, seq); /* F18: unknown power op */

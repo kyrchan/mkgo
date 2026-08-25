@@ -42,17 +42,23 @@ extern "C" EFI_STATUS __attribute__((ms_abi)) efi_main(EFI_HANDLE image_handle,
                             'i','n','i','t','.','w','a','s','m',0};
     static CHAR16 psh[] = {'b','o','o','t','\\','m','o','d','u','l','e','s','\\',
                            's','h','e','l','l','.','w','a','s','m',0};
+    static CHAR16 pnet[] = {'b','o','o','t','\\','m','o','d','u','l','e','s','\\',
+                            'n','e','t','.','w','a','s','m',0};
+    static CHAR16 pp9[] = {'b','o','o','t','\\','m','o','d','u','l','e','s','\\',
+                           'p','9','.','w','a','s','m',0};
     static CHAR16 pconf[] = {'e','t','c','\\','i','n','i','t','.','c','o','n','f',0};
     static CHAR16 papp2[] = {'v','m','\\','a','p','p','2',0};
     void *cimg = 0, *limg = 0, *fimg = 0, *a2img = 0, *iimg = 0, *shimg = 0,
-         *cfimg = 0;
+         *cfimg = 0, *nimg = 0, *p9img = 0;
     uint64_t clen = 0, llen = 0, flen = 0, a2len = 0, ilen = 0, shlen = 0,
-             cflen = 0;
+             cflen = 0, nlen = 0, p9len = 0;
     load_esp_file(image_handle, systab, pcon, &cimg, &clen);
     load_esp_file(image_handle, systab, plog, &limg, &llen);
     load_esp_file(image_handle, systab, pfs, &fimg, &flen);
     load_esp_file(image_handle, systab, pini, &iimg, &ilen);
     load_esp_file(image_handle, systab, psh, &shimg, &shlen);
+    load_esp_file(image_handle, systab, pnet, &nimg, &nlen);
+    load_esp_file(image_handle, systab, pp9, &p9img, &p9len);
     load_esp_file(image_handle, systab, pconf, &cfimg, &cflen);
     g_bi.mod_console = (uint64_t)(uintptr_t)cimg;
     g_bi.mod_console_len = clen;
@@ -64,6 +70,10 @@ extern "C" EFI_STATUS __attribute__((ms_abi)) efi_main(EFI_HANDLE image_handle,
     g_bi.mod_init_len = ilen;
     g_bi.mod_shell = (uint64_t)(uintptr_t)shimg;
     g_bi.mod_shell_len = shlen;
+    g_bi.mod_net = (uint64_t)(uintptr_t)nimg;
+    g_bi.mod_net_len = nlen;
+    g_bi.mod_p9 = (uint64_t)(uintptr_t)p9img;
+    g_bi.mod_p9_len = p9len;
     g_bi.conf = (uint64_t)(uintptr_t)cfimg;
     g_bi.conf_len = cflen;
     g_bi.prog2 = (uint64_t)(uintptr_t)a2img;

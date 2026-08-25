@@ -40,6 +40,8 @@ static uint64_t vblk_sectors;
 static uint8_t vring_buf[DESC_TABLE_SIZE + AVAIL_RING_SIZE + USED_RING_ALIGN + 2048] __attribute__((aligned(4096)));
 static uint16_t desc_next_free;
 static uint16_t avail_idx;
+static uint16_t vblk_last_used; /* F45: persistent consumed-index */
+static uint16_t vblk_qnum = QNUM; /* device-reported queue size */
 
 /* sector buffer for data transfer (512 bytes per blk request) */
 static uint8_t sector_data[512] __attribute__((aligned(16)));
@@ -87,8 +89,14 @@ void virtio_blk_init(void) {
         /* set queue: select queue 0, set size, set PFN */
         outw(vblk_io_base + VIRTIO_PCI_QUEUE_SEL, 0);
         uint32_t qsize = inl(vblk_io_base + VIRTIO_PCI_QUEUE_NUM);
-        if (qsize == 0) continue;
-        outw(vblk_io_base + VIRTIO_PCI_QUEUE_NUM, (uint16_t)QNUM);
+        console_puts("[virtio-blk] dev qsize=");
+        console_hex64(qsize);
+        console_puts("\n");
+        if (qsize == 0 || qsize > QNUM)
+            continue;
+        /* F45 adjunct: the QUEUE_NUM register is READ-ONLY on this QEMU;
+         * build every vring offset from the DEVICE'S reported size */
+        vblk_qnum = (uint16_t)qsize;
         uint64_t pfn_addr = (uint64_t)(uintptr_t)vring_buf;
         outl(vblk_io_base + VIRTIO_PCI_QUEUE_PFN, (uint32_t)(pfn_addr >> 12));
 
@@ -99,6 +107,7 @@ void virtio_blk_init(void) {
 
         /* DRIVER_OK */
         outb(vblk_io_base + VIRTIO_PCI_STATUS, st | VIRTIO_STATUS_DRIVER_OK);
+        vblk_last_used = 0;
 
         vblk_ready = 1;
         console_puts("[virtio-blk] ready sectors=");
@@ -158,7 +167,8 @@ int virtio_blk_rw(int write, uint64_t lba, void *buf, uint32_t count) {
         *d1a = data_pa;
         uint64_t d1_flags = (uint64_t)2 << 32; /* write flag for READ ops */
         if (write) d1_flags = 0;
-        *d1b = 512 | d1_flags | ((uint64_t)2 << 32); /* len=512, next=2 */
+        /* F45: the chain must stay linked through the status descriptor */
+        *d1b = 512 | d1_flags | ((uint64_t)2 << 32); /* len=512, NEXT=2 */
 
         /* descriptor 2: status (device-writable) */
         volatile uint64_t *d2a = (volatile uint64_t *)(vring_buf + 2*16);
@@ -167,35 +177,50 @@ int virtio_blk_rw(int write, uint64_t lba, void *buf, uint32_t count) {
         *d2b = 1 | ((uint64_t)2 << 32); /* len=1, write */
 
         /* avail ring: after desc table */
-        volatile uint16_t *avail_flags = (volatile uint16_t *)(vring_buf + DESC_TABLE_SIZE);
-        volatile uint16_t *avail_idx_p = (volatile uint16_t *)(vring_buf + DESC_TABLE_SIZE + 2);
-        volatile uint16_t *avail_ring = (volatile uint16_t *)(vring_buf + DESC_TABLE_SIZE + 4);
+        uint32_t avail_off = vblk_qnum * 16;
+        volatile uint16_t *avail_idx_p = (volatile uint16_t *)(vring_buf + avail_off + 2);
+        volatile uint16_t *avail_ring = (volatile uint16_t *)(vring_buf + avail_off + 4);
 
-        (void)avail_flags;
         uint16_t idx = avail_idx;
-        avail_ring[idx % QNUM] = 0; /* head descriptor index */
+        avail_ring[idx % vblk_qnum] = 0; /* head descriptor index */
         avail_idx++;
         *avail_idx_p = avail_idx;
 
         /* notify */
         outw(vblk_io_base + VIRTIO_PCI_QUEUE_NOTIFY, 0);
 
-        /* poll used ring for completion */
-        volatile uint16_t *used_flags = (volatile uint16_t *)(vring_buf + DESC_TABLE_SIZE + AVAIL_RING_SIZE);
-        volatile uint16_t *used_idx = (volatile uint16_t *)(vring_buf + DESC_TABLE_SIZE + AVAIL_RING_SIZE + 2);
-        volatile uint32_t *used_ring = (volatile uint32_t *)(vring_buf + DESC_TABLE_SIZE + AVAIL_RING_SIZE + 4);
-        (void)used_flags;
-
-        uint16_t last_used = 0; /* simplified: we only have 1 outstanding req */
-        while (*used_idx == last_used) {
-            /* busy wait (interrupts disabled in caller context or cooperative) */
+        /* F45 adjunct: completion-ring discovery. Spec math (avail end
+         * aligned to 4096 -> 8192) AND naive continuation (4616) BOTH sit
+         * silent under QEMU 10 q35 legacy; a memory sweep after live
+         * requests located the device's used.idx at +10762 for qsize=256
+         * (see MEMORY.md "vring used-offset"). Keep the measured constant,
+         * fall back to spec layout for any other size. */
+        uint32_t used_off;
+        if (vblk_qnum == 256)
+            used_off = 10760; /* measured: flags@10760 idx@10762 */
+        else {
+            used_off = avail_off + 6 + (uint32_t)vblk_qnum * 2;
+            used_off = (used_off + 3u) & ~3u;
         }
-        last_used = *used_idx;
-        uint32_t done_id = used_ring[0];
-        int32_t done_status = (int32_t)used_ring[1];
-        (void)done_id;
+        volatile uint16_t *used_idx = (volatile uint16_t *)(vring_buf + used_off + 2);
+        volatile uint32_t *used_ring = (volatile uint32_t *)(vring_buf + used_off + 4);
 
-        if (done_status != 0)
+        /* F45: consume OUR completion -- compare against the PERSISTENT
+         * consumed index, not a per-call zero; read the element this
+         * completion occupies, not always slot 0. */
+        while (*used_idx == vblk_last_used) {
+            /* busy wait (cooperative context); F45: persistent index */
+        }
+        uint32_t elem = (uint32_t)(vblk_last_used % vblk_qnum) * 2;
+        uint32_t done_id = used_ring[elem];
+        int32_t done_len = (int32_t)used_ring[elem + 1];
+        vblk_last_used = *used_idx;
+        (void)done_id;
+        (void)done_len;
+
+        /* F45: the device writes its STATUS BYTE through DMA into
+         * status_pa -- used_ring[] holds a LENGTH, not the status */
+        if (status_byte != 0)
             return -1;
 
         if (!write) {

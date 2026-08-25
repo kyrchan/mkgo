@@ -24,6 +24,9 @@ void irq0_stub(void);
 void virtio_blk_init(void);
 int virtio_blk_rw(int write, uint64_t lba, void *buf, uint32_t count);
 int virtio_blk_available(void);
+void virtio_net_init(void);
+void virtio_net_poll(void);
+int virtio_net_available(void);
 
 /* cpu */
 void cpu_dump_features(void);

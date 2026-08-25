@@ -33,7 +33,8 @@ CORE_OBJS := $(BUILD)/core/main.o $(BUILD)/core/kmain.o $(BUILD)/core/lib.o \
              $(BUILD)/core/engine.o $(BUILD)/core/wasi_glue.o \
              $(BUILD)/core/sched.o $(BUILD)/core/ports.o $(BUILD)/core/kernsvc.o \
              $(BUILD)/core/ctx.o $(BUILD)/core/devblk.o $(BUILD)/core/fstransport.o \
-             $(BUILD)/core/virtio_blk.o $(BUILD)/core/input.o \
+             $(BUILD)/core/virtio_blk.o $(BUILD)/core/virtio_net.o \
+             $(BUILD)/core/input.o \
              $(BUILD)/core/fsroute.o
 ARCH_OBJS := $(BUILD)/arch/x86_64/uart.o $(BUILD)/arch/x86_64/cpu.o \
              $(BUILD)/arch/x86_64/traps.o $(BUILD)/arch/x86_64/traps_s.o \
@@ -103,13 +104,18 @@ build/test_pp.wasm: build/test_pp.raw
 	python3 scripts/add_abiver.py $< $@ 1
 
 # service modules: build raw then stamp abi_ver=1 custom section (v1.1)
-services/console/console.wasm.raw: $(wildcard services/console/*.go)
+services/console/console.wasm.raw: $(wildcard services/console/*.go) $(wildcard guests/lib/*.go)
 	cd services/console && GOOS=wasip1 GOARCH=wasm go build -o console.wasm.raw .
 
-services/login/login.wasm.raw: $(wildcard services/login/*.go)
+services/net/net.wasm.raw: $(wildcard services/net/*.go)
+	cd services/net && GOOS=wasip1 GOARCH=wasm go build -o net.wasm.raw .
+services/net/net.wasm: services/net/net.wasm.raw
+	python3 scripts/add_abiver.py $< $@ 1
+
+services/login/login.wasm.raw: $(wildcard services/login/*.go) $(wildcard guests/lib/*.go)
 	cd services/login && GOOS=wasip1 GOARCH=wasm go build -o login.wasm.raw .
 
-services/fs/fs.wasm.raw: $(wildcard services/fs/*.go)
+services/fs/fs.wasm.raw: $(wildcard services/fs/*.go) $(wildcard guests/lib/*.go)
 	cd services/fs && GOOS=wasip1 GOARCH=wasm go build -o fs.wasm.raw .
 
 services/console/console.wasm: services/console/console.wasm.raw
@@ -119,14 +125,14 @@ services/login/login.wasm: services/login/login.wasm.raw
 services/fs/fs.wasm: services/fs/fs.wasm.raw
 	python3 scripts/add_abiver.py $< $@ 1
 
-services/init/init.wasm.raw: $(wildcard services/init/*.go) services/go.mod
+services/init/init.wasm.raw: $(wildcard services/init/*.go) $(wildcard guests/lib/*.go) services/go.mod
 	cd services/init && GOOS=wasip1 GOARCH=wasm go build -o init.wasm.raw .
 	python3 scripts/add_abiver.py $< $@ 1 || true
 
 services/init/init.wasm: services/init/init.wasm.raw
 	python3 scripts/add_abiver.py $< $@ 1
 
-services/shell/shell.wasm.raw: $(wildcard services/shell/*.go) services/go.mod
+services/shell/shell.wasm.raw: $(wildcard services/shell/*.go) $(wildcard guests/lib/*.go) services/go.mod
 	cd services/shell && GOOS=wasip1 GOARCH=wasm go build -o shell.wasm.raw .
 
 services/shell/shell.wasm: services/shell/shell.wasm.raw
@@ -143,7 +149,11 @@ build/test_p5b.wasm: build/test_p5b.raw
 
 build/test_p8.raw: guests/p8/main.go
 	cd guests/p8 && GOOS=wasip1 GOARCH=wasm go build -o ../../$@ .
+build/test_p9.raw: guests/p9/main.go $(wildcard guests/lib/*.go)
+	cd guests/p9 && GOOS=wasip1 GOARCH=wasm go build -o ../../$@ .
 build/test_p8.wasm: build/test_p8.raw
+	python3 scripts/add_abiver.py $< $@ 1
+build/test_p9.wasm: build/test_p9.raw
 	python3 scripts/add_abiver.py $< $@ 1
 
 
@@ -226,6 +236,25 @@ $(BUILD)/disk-p7.img: $(BUILD)/BOOTX64.EFI services/fs/fs.wasm \
 	printf 'console console.wasm 0\nfs fs.wasm 10\nlogin login.wasm 8\nshell shell.wasm 8\n' > $(BUILD)/init.conf.tmp
 	$(MCOPY) -i $@ $(BUILD)/init.conf.tmp ::/etc/init.conf
 
+# Phase 9 disk: services incl. net + the p9 driver guest in /vm/app
+$(BUILD)/disk-p9.img: $(BUILD)/BOOTX64.EFI build/test_p9.wasm \
+                      services/fs/fs.wasm services/console/console.wasm \
+                      services/login/login.wasm services/init/init.wasm \
+                      services/shell/shell.wasm services/net/net.wasm | $(BUILD)
+	dd if=/dev/zero of=$@ bs=1M count=0 seek=64 status=none
+	$(MFORMAT) -i $@ ::
+	$(MMD) -i $@ ::/EFI ::/EFI/BOOT ::/vm ::/boot ::/boot/modules ::/etc
+	$(MCOPY) -i $@ $(BUILD)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
+	$(MCOPY) -i $@ services/fs/fs.wasm ::/boot/modules/fs.wasm
+	$(MCOPY) -i $@ services/console/console.wasm ::/boot/modules/console.wasm
+	$(MCOPY) -i $@ services/login/login.wasm ::/boot/modules/login.wasm
+	$(MCOPY) -i $@ services/init/init.wasm ::/boot/modules/init.wasm
+	$(MCOPY) -i $@ services/shell/shell.wasm ::/boot/modules/shell.wasm
+	$(MCOPY) -i $@ services/net/net.wasm ::/boot/modules/net.wasm
+	$(MCOPY) -i $@ build/test_p9.wasm ::/boot/modules/p9.wasm
+	printf 'console console.wasm 0\nfs fs.wasm 10\nlogin login.wasm 8\nshell shell.wasm 8\nnet net.wasm 22\np9 p9.wasm 0 respawn=no\n' > $(BUILD)/init-p9.conf.tmp
+	$(MCOPY) -i $@ $(BUILD)/init-p9.conf.tmp ::/etc/init.conf
+
 $(BUILD)/VARS.fd:
 	cp $(OVMF_VARS) $@
 
@@ -301,6 +330,15 @@ test-p7: $(BUILD)/disk-p7.img $(BUILD)/VARS.fd
 		&& echo "TEST PASS (p7)" \
 		|| { echo "TEST FAIL (p7)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -40; exit 1; }
 
+
+.PHONY: test-p9
+test-p9: $(BUILD)/disk-p9.img $(BUILD)/VARS.fd
+	bash scripts/run_p9.sh $(BUILD)/serial.log "$(QEMU)" "$(QEMU_ENV)" -- \
+	    -drive format=raw,file=$(BUILD)/disk-p9.img $(QEMU_BASE)
+	@grep -q 'p9. udp ok' $(BUILD)/serial.log \
+	    && grep -q 'p9. http ok' $(BUILD)/serial.log \
+	    && echo "TEST PASS (p9 network E2E)" \
+	    || { echo "TEST FAIL (p9)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -40; exit 1; }
 
 # Phase 8: cooperative multitasking — both sessions make progress
 define MKDISKP8

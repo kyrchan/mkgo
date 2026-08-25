@@ -268,6 +268,9 @@ func (d *DevmanClient) Enum() ([]DeviceRec, error) {
 		return nil, ErrShort
 	}
 	n := int(Get32(rep[24:28]))
+	if n < 0 || n > 64 {
+		return nil, ErrShort // denial/NACK parsed as absurd count
+	}
 	out := make([]DeviceRec, 0, n)
 	off := 28
 	for i := 0; i < n; i++ {

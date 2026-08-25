@@ -289,12 +289,16 @@ static bool all_dead(void) {
     return true;
 }
 
+extern "C" void virtio_net_dbg(void);
+
 void sched_run(void) {
     extern void devblk_poll(void);
     extern void input_poll(void);
+    extern void virtio_net_poll(void);
     while (!all_dead()) {
         input_poll();
         devblk_poll();
+        virtio_net_poll();
         int picked = -1;
         for (uint32_t k = 0; k < MAX_SESSIONS; k++) {
             uint32_t i = (next_rr + k) % MAX_SESSIONS;
