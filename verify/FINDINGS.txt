@@ -269,3 +269,18 @@ guests/test_p5a_v2.go (new working-tree file) reviewed: the p5a gate rewritten o
 ===== FINDING 67 2026-08-22 MAIN@9aec1b3+dirty =====
 severity: NOTE
 guests/p5a/main.go (new working-tree package) reviewed: standalone p5a gate rewritten as its own package with raw wasmimports, canonical v1.1 AUTH framing (rname@8, LStr creds, reply parse at offset 24 with status decode), bounded bind retry (200k), typed fs client via lib.BindFS for create/write/read roundtrip. Clean structure; auth retry loop is yield-bounded; private reply queue falls back create→bind correctly. This appears to supersede test_p5a_v2.go as the packaged gate form. No defects spotted.
+===== FINDING 12/13/16/18/23/28/31/32/58/59-CLOSED 2026-08-22 MAIN@b82f6ff =====
+CLOSED — the blocker-hardening series (340497d..7f36fbf, 12 commits) landed with practice-#2 evidence: host test-kernel harness (f6ba648) encodes POST-fix contracts for each finding and was verified FAILING on pre-fix HEAD. Per-finding verification at HEAD b82f6ff:
+- F13 CLOSED: ports_name_owned_by requires ports[g].creator == sid; binder handles no longer satisfy LOGIN ownership gate (ports.cc).
+- F18 CLOSED: kernsvc_nack(op,seq,status=0xFFFFFFFF) called on registry unknown-op + SPAWN cap-denial + devman/power denials + unknown ops (kernsvc.cc:259/268/306/318); SETCONF denial path replies correctly.
+- F32 CLOSED: port_send overwrites wire uid[4:8] with sched_uid_of(sid) on every path — endpoint dispatch, fsroute feed, queue enqueue alike.
+- F31 CLOSED: devblk_rw gates raw block access on SCHED_CAP_FSADM with audited denial before any backend dispatch (RAM disk or virtio).
+- F12 CLOSED: __builtin_add_overflow(lba,count,&end) guards both RAM-disk bounds and virtio-blk_rw entry.
+- F16 CLOSED: routed READ reply clamp cp=min(n,len,avail) against fresh reply body; fsresp memset per roundtrip per commit e728bdb.
+- F23+F28 CLOSED: fsroute_intercept consumes a datagram only when waiter name AND seq match; port_send/ports_enqueue_by_name fall through to normal queueing otherwise (fsroute.cc fsroute_intercept; ports.cc conditional interception).
+- F59 CLOSED: wasi_now_ns uses divide-first + remainder correction ((c/khz)*1e6 + ((c%khz)*1e6)/khz) — no u64 overflow.
+- F58 CLOSED: g_skip_sig_check bypass deleted from wasm3/m3_bind.c AND wasi_glue.cc; signature validation enforced unconditionally (AreFuncTypesEqual throws on mismatch); linking now binds per-function record with canonical spec signatures + explicit legacy alt-shape allowlist (sched_yield i()/v(), kern_focus_set i(i)/v(i)); poll_oneoff corrected to full 4-arg preview1 shape.
+Also closed by this batch: F21 (LEB hardening: add_overflow section-end guard, bounds-checked name-LEB), F29 residue removed, F37 (ppa reduced to CAP_KILL only), route-1 repair (canonical fs protocol end-to-end). Mechanical at HEAD: core compile sweep zero failures; SVC full suite -race -count=1 green across all module roots (console/init/login/net/shell/fs/display/guests-lib). Phase-7 gate green per f2a867f; multiuser E2E green @4907776 (test-p5a/test-p5b PASS with u2→u1 denials proven). Remaining open work is scope, not defects: P10 negatives+KVM/TCG matrix, kfs suite gate, P9 shim integration per MEMORY.md manifest.
+===== FINDING 68 2026-08-22 ALL@fleet-pins =====
+severity: NOTE
+All three lanes advanced to fleet model-pin commits (MAIN@b82f6ff, SVC@ce7a13f, TLS@1ccd2bf) — opencode.json model pinned to muse-spark-1.2-contributor-free across all worktrees. Tooling/config-only; no source changes in these commits beyond the pins.
