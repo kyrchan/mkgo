@@ -38,6 +38,7 @@ uint64_t cpu_cycles(void); /* monotonically increasing cycle counter */
 void gdt_install(void);
 void idt_install(void);
 void paging_identity_init(void);
+uint64_t paging_pml4_pa(void);
 
 /* timer */
 uint64_t timer_calibrate_tsc_khz(void);

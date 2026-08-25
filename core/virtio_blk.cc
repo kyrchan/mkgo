@@ -158,17 +158,17 @@ int virtio_blk_rw(int write, uint64_t lba, void *buf, uint32_t count) {
         /* descriptor 0: header (device-readable) */
         volatile uint64_t *d0a = (volatile uint64_t *)(vring_buf + 0*16);
         volatile uint64_t *d0b = (volatile uint64_t *)(vring_buf + 0*16 + 8);
+        /* legacy desc word: len u32 | flags u16 | NEXT u16 (bits 48-63) */
         *d0a = hdr_pa;
-        *d0b = 16 | ((uint64_t)1 << 32); /* len=16, next=1 */
+        *d0b = 16ull | (1ull << 32) | (1ull << 48); /* NEXT -> desc 1 */
 
         /* descriptor 1: data */
         volatile uint64_t *d1a = (volatile uint64_t *)(vring_buf + 1*16);
         volatile uint64_t *d1b = (volatile uint64_t *)(vring_buf + 1*16 + 8);
         *d1a = data_pa;
-        uint64_t d1_flags = (uint64_t)2 << 32; /* write flag for READ ops */
-        if (write) d1_flags = 0;
-        /* F45: the chain must stay linked through the status descriptor */
-        *d1b = 512 | d1_flags | ((uint64_t)2 << 32); /* len=512, NEXT=2 */
+        uint64_t d1_flags = write ? 0ull : (2ull << 32); /* dev writes on READ */
+        /* chain MUST link through the status descriptor (F45) */
+        *d1b = 512ull | d1_flags | (1ull << 32) | (2ull << 48); /* NEXT -> 2 */
 
         /* descriptor 2: status (device-writable) */
         volatile uint64_t *d2a = (volatile uint64_t *)(vring_buf + 2*16);

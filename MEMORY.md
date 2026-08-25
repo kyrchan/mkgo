@@ -354,3 +354,14 @@ fresh context, state carried by MEMORY.md; (2) MEMORY.md top section =
 current manifest only, lean; laws live in AGENTS.md sections below.
 Treat "agent went weird" as HYGIENE FIRST: rotate session, re-read top
 manifest, only then suspect logic.
+
+**VRING HANDOFF PROTOCOL (owner directive, 2026-08-25 02:5x)**: if by
+next-day checkpoint MAINLINE has NOT closed the Phase 9 vring anomaly
+(used-ring writes at +10762 vs spec 8192; see ee56f00 KNOWN ISSUE +
+796aecb resume notes) AND x-preview upstream timeouts have stopped, the
+coordinator rotates MAINLINE to a FRESH 0x-Alpha session tasked solely
+with that bug, using /home/cyr/kernel/VRING-HANDOFF.md as the briefing.
+Everything known is consolidated there: symptoms, environment, ranked
+hypotheses (#1 accidental modern/VIRTIO_F_VERSION_1 negotiation via
+byte-wide GUEST_FEATURES write), evidence paths, next steps.
+MAINLINE meanwhile continues Phase 10 regression matrix + kfs gate.

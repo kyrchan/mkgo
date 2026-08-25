@@ -79,9 +79,7 @@ void kmain(const struct boot_info *bi) {
         extern void virtio_blk_init(void);
         virtio_blk_init();
     }
-#ifndef VN_NO_NET_INIT
     virtio_net_init();
-#endif
     devblk_attach();
 
     /* preload service modules so registry SPAWN can resolve them */

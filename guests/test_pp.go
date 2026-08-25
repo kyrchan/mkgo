@@ -81,7 +81,7 @@ func regList(h int32) []byte {
 	out := make([]byte, 4096)
 	for i := 0; i < 20000; i++ {
 		n := port_recv(myQ, &out[0], uint32(len(out)))
-		if n > 0 && out[2] == 1 {
+		if n >= 28 && out[2] == 1 {
 			return out[:n]
 		}
 		sched_yield()
@@ -103,9 +103,9 @@ func regKill(h int32, sid uint32) int32 {
 	out := make([]byte, 256)
 	for i := 0; i < 20000; i++ {
 		n := port_recv(myQ, &out[0], uint32(len(out)))
-		if n >= 8 && out[2] == 2 {
-			return int32(uint32(out[4]) | uint32(out[5])<<8 |
-				uint32(out[6])<<16 | uint32(out[7])<<24)
+		if n >= 28 && out[2] == 2 {
+			return int32(uint32(out[24]) | uint32(out[25])<<8 |
+				uint32(out[26])<<16 | uint32(out[27])<<24)
 		}
 		sched_yield()
 	}
@@ -197,13 +197,14 @@ func ppa() {
 		}
 	}
 	rep := regList(rg)
-	if len(rep) >= 8 {
-		n := uint32(rep[4]) | uint32(rep[5])<<8 | uint32(rep[6])<<16 | uint32(rep[7])<<24
+	if len(rep) >= 28 {
+		/* canonical reply: body {u32 n; rec[25]{sid,uid,state,name[16]}} @24 */
+		n := uint32(rep[24]) | uint32(rep[25])<<8 | uint32(rep[26])<<16 | uint32(rep[27])<<24
 		os.Stdout.WriteString("[reg] sessions=")
 		os.Stdout.WriteString(itoa(int(n)))
 		os.Stdout.WriteString(":")
 		consoleSid := int32(-1)
-		off := 8
+		off := 28
 		for i := uint32(0); i < n && off+25 <= len(rep); i++ {
 			sid := uint32(rep[off]) | uint32(rep[off+1])<<8 |
 				uint32(rep[off+2])<<16 | uint32(rep[off+3])<<24
