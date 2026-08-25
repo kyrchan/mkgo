@@ -57,9 +57,13 @@ void wasi_calibrate_clock(uint64_t tsc_khz) {
         g_tsc_khz = tsc_khz;
 }
 uint64_t wasi_now_ns(void) {
-    /* TSC ticks → nanoseconds: ns = cycles * 1e6 / kHz */
-    if (!g_tsc_khz) return 0;
-    return cpu_cycles() * 1000000ULL / g_tsc_khz;
+    /* TSC ticks → ns. F59: divide first (with remainder correction) so
+     * cycles*1e6 can never overflow u64 on large cycle accumulators. */
+    uint64_t khz = g_tsc_khz;
+    if (!khz)
+        return 0;
+    uint64_t c = cpu_cycles();
+    return (c / khz) * 1000000ULL + ((c % khz) * 1000000ULL) / khz;
 }
 
 /* ---- PRNG (xorshift64* over cycles entropy) ---- */
@@ -278,15 +282,89 @@ m3ApiRawFunction(wasi_sched_yield) {
 
 /* ---------------- routed path ops (Phase 5, ABI v1.1) ----------------
  * preview1 path_open/fd_read/fd_write(>=3)/fd_close/path_create_directory
- * forward to the fs.wasm session; fds live in the session's wctx. */
+ * forward to fs.wasm over its §1 port using the SAME op encoding as
+ * direct-port clients (services/fs server.go): STAT=1 LIST=2 READ=3
+ * WRITE=4 CREATE=5 MKDIR=6 DELETE=7, payload = {u16 len, path, ...}.
+ * Replies are canonical 24-byte-header frames: status i32 @24, body @28.
+ * The server is stateless/path-based; preview1 fds map to {path, cursor}
+ * kept kernel-side below. */
 
-#define ROP_OPEN 1
-#define ROP_CLOSE 2
-#define ROP_READ 3
-#define ROP_WRITE 4
-#define ROP_STAT 5
-#define ROP_MKDIR 6
-#define ROP_DEL 7
+#define FSOP_STAT 1
+#define FSOP_READ 3
+#define FSOP_WRITE 4
+#define FSOP_CREATE 5
+#define FSOP_MKDIR 6
+
+/* services/fs wire status (guests/lib/fsclient.go) */
+#define FS_ST_IO (-1)
+#define FS_ST_NOENTRY (-2)
+#define FS_ST_EXISTS (-3)
+#define FS_ST_NOTDIR (-4)
+#define FS_ST_ISDIR (-5)
+#define FS_ST_NOSPACE (-6)
+#define FS_ST_BADNAME (-7)
+#define FS_ST_NOTEMPTY (-8)
+#define FS_ST_RANGE (-9)
+#define FS_ST_ACCESS (-10)
+
+/* preview1 errno (wasi_preview1 numbering) */
+#define WASI_EACCES 2
+#define WASI_EEXIST 20
+#define WASI_EIO 29
+#define WASI_EISDIR 31
+#define WASI_ENOSPC 51
+#define WASI_ENOENT 44
+#define WASI_ENOTDIR 54
+#define WASI_ENOTEMPTY 55
+
+static int32_t fserr_to_wasi(int32_t st) {
+    switch (st) {
+    case 0:
+        return WASI_ESUCCESS;
+    case FS_ST_NOENTRY:
+        return WASI_ENOENT;
+    case FS_ST_EXISTS:
+        return WASI_EEXIST;
+    case FS_ST_NOTDIR:
+        return WASI_ENOTDIR;
+    case FS_ST_ISDIR:
+        return WASI_EISDIR;
+    case FS_ST_NOSPACE:
+        return WASI_ENOSPC;
+    case FS_ST_BADNAME:
+    case FS_ST_RANGE:
+        return WASI_EINVAL;
+    case FS_ST_NOTEMPTY:
+        return WASI_ENOTEMPTY;
+    case FS_ST_ACCESS:
+        return WASI_EACCES;
+    default:
+        return WASI_EIO;
+    }
+}
+
+/* per-session fd -> routed path + offset cursor */
+#define RFD_PATH_MAX 192
+struct rfd {
+    bool used;
+    uint64_t off;
+    char path[RFD_PATH_MAX];
+};
+static rfd fdtab[12][SCHED_MAX_FDS];
+
+static rfd *rfd_of(int32_t fd) {
+    uint32_t sid = sched_current_sid();
+    if (sid >= 12 || fd < 3 || fd >= SCHED_MAX_FDS)
+        return 0;
+    if (!fdtab[sid][fd].used)
+        return 0;
+    return &fdtab[sid][fd];
+}
+
+static void rfd_clear(uint32_t sid, int32_t fd) {
+    if (sid < 12 && fd >= 3 && fd < SCHED_MAX_FDS)
+        fdtab[sid][fd] = {};
+}
 
 static uint8_t fsreq[4096];
 static uint8_t fsresp[8192];
@@ -328,29 +406,26 @@ static int fs_roundtrip(uint32_t reqlen) {
     uint16_t sq = ++fs_rt_seq;
     fsreq[2] = (uint8_t)sq;
     fsreq[3] = (uint8_t)(sq >> 8);
-#ifdef HOST_BUILD
-    fprintf(stderr, "[rt] step=expect seq=%u\n", sq);
-#endif
+    __builtin_memset(fsresp, 0, sizeof(fsresp)); /* F16: no stale tail */
     if (fsroute_expect(sq, sched_name_of(sched_current_sid())) != 0) {
-#ifdef HOST_BUILD
-        fprintf(stderr, "[rt] expect FAIL\n");
-#endif
         return -1;
     }
     if (!ports_enqueue_by_name("fs", fsreq, reqlen)) {
-#ifdef HOST_BUILD
-        fprintf(stderr, "[rt] enqueue FAIL\n");
-#endif
         return -1;
     }
-#ifdef HOST_BUILD
-    fprintf(stderr, "[rt] step=wait\n");
-#endif
-    int r = fsroute_wait(sq, fsresp, sizeof(fsresp));
-#ifdef HOST_BUILD
-    fprintf(stderr, "[rt] wait r=%d\n", r);
-#endif
-    return r;
+    return fsroute_wait(sq, fsresp, sizeof(fsresp));
+}
+
+/* canonical reply accessors: status i32 @24, body @28 */
+static int32_t rep_status(void) {
+    return (int32_t)((uint32_t)fsresp[24] | (uint32_t)fsresp[25] << 8 |
+                     (uint32_t)fsresp[26] << 16 |
+                     (uint32_t)fsresp[27] << 24);
+}
+static const uint8_t *rep_body(void) { return fsresp + 28; }
+/* fresh body bytes actually received by the last roundtrip */
+static uint32_t rep_body_len(int r) {
+    return r > 28 ? (uint32_t)r - 28 : 0;
 }
 
 static int alloc_fd(void) {
@@ -363,6 +438,21 @@ static int alloc_fd(void) {
             return fd;
         }
     return -1;
+}
+
+/* copy a guest path into a kernel buffer with bounds checking */
+static bool fetch_path(IM3Runtime runtime, char *path, uint32_t cap,
+                       const char *gpath, int32_t gpath_len) {
+    if (!gpath || gpath_len < 0)
+        return false;
+    uint32_t plen = (uint32_t)gpath_len;
+    if (plen >= cap)
+        return false;
+    if (plen && !mem_ok(runtime, gpath, plen))
+        return false;
+    __builtin_memcpy(path, gpath, plen);
+    path[plen] = 0;
+    return true;
 }
 
 m3ApiRawFunction(wasi_path_open) {
@@ -378,31 +468,58 @@ m3ApiRawFunction(wasi_path_open) {
     m3ApiGetArgMem(uint32_t *, opened_fd)
     (void)dirfd; (void)dirflags; (void)rb; (void)ri; (void)fdflags;
 
+    char kpath[RFD_PATH_MAX];
+    if (!fetch_path(runtime, kpath, sizeof(kpath), path, path_len))
+        m3ApiReturn(WASI_EINVAL);
+    uint32_t plen = (uint32_t)__builtin_strlen(kpath);
+
     int fd = alloc_fd();
     if (fd < 0)
         m3ApiReturn(WASI_EBADF2);
-    /* payload: u32 fh_hint(0), u32 flags bit0=create */
-    uint8_t pay[8] = {0};
-    pay[4] = (oflags & 1) ? 1 : 0;
-    uint32_t rl = mk_req(ROP_OPEN, path, path_len < 0 ? 0 : (uint32_t)path_len,
-                         pay, 8);
+
+    /* O_CREAT: create-or-truncate first (server CREATE semantics) */
+    if (oflags & 1) {
+        uint32_t rl = mk_req(FSOP_CREATE, kpath, plen, 0, 0);
+        int r = fs_roundtrip(rl);
+        if (r < 28) {
+            rfd_clear(sched_current_sid(), fd);
+            sched_wasi_state *wf = sched_wasi_current();
+            wf->fds[fd] = SCHED_FD_EMPTY;
+            m3ApiReturn(r < 0 ? WASI_ENOSYS : WASI_EIO);
+        }
+        int32_t st = rep_status();
+        if (st != 0) {
+            rfd_clear(sched_current_sid(), fd);
+            sched_wasi_state *wf = sched_wasi_current();
+            wf->fds[fd] = SCHED_FD_EMPTY;
+            m3ApiReturn(fserr_to_wasi(st));
+        }
+    }
+
+    /* verify existence via STAT */
+    uint32_t rl = mk_req(FSOP_STAT, kpath, plen, 0, 0);
     int r = fs_roundtrip(rl);
-    if (r < 6) { /* OPEN reply = {u16 errno, u32 fh} */
-        sched_wasi_state *w = sched_wasi_current();
-        w->fds[fd] = SCHED_FD_EMPTY;
-        m3ApiReturn(r < 0 ? WASI_ENOSYS : (int32_t)(fsresp[0] | fsresp[1] << 8));
+    if (r < 28 || rep_status() != 0) {
+        int32_t st = r < 28 ? FS_ST_IO : rep_status();
+        rfd_clear(sched_current_sid(), fd);
+        sched_wasi_state *wf = sched_wasi_current();
+        wf->fds[fd] = SCHED_FD_EMPTY;
+        m3ApiReturn(fserr_to_wasi(st));
     }
-    int32_t errno_ = (int32_t)(fsresp[0] | (fsresp[1] << 8));
-    if (errno_ != 0) {
-        sched_wasi_state *w = sched_wasi_current();
-        w->fds[fd] = SCHED_FD_EMPTY;
-        m3ApiReturn(errno_);
+
+    rfd *e;
+    uint32_t sid = sched_current_sid();
+    if (sid >= 12) {
+        sched_wasi_state *wf = sched_wasi_current();
+        wf->fds[fd] = SCHED_FD_EMPTY;
+        m3ApiReturn(WASI_ENOSYS);
     }
-    uint32_t fh = (uint32_t)fsresp[2] | (uint32_t)fsresp[3] << 8 |
-                  (uint32_t)fsresp[4] << 16 | (uint32_t)fsresp[5] << 24;
-    sched_wasi_state *w = sched_wasi_current();
-    w->fds[fd] = fh;
-    if (opened_fd)
+    e = &fdtab[sid][fd];
+    e->used = true;
+    e->off = 0;
+    __builtin_memcpy(e->path, kpath, plen + 1);
+
+    if (opened_fd && mem_ok(runtime, opened_fd, 4))
         *opened_fd = (uint32_t)fd;
     m3ApiReturn(0);
 }
@@ -413,29 +530,29 @@ m3ApiRawFunction(wasi_path_create_directory) {
     m3ApiGetArgMem(char *, path)
     m3ApiGetArg(int32_t, path_len)
     (void)dirfd;
-    uint32_t rl = mk_req(ROP_MKDIR, path,
-                         path_len < 0 ? 0 : (uint32_t)path_len, 0, 0);
+    char kpath[RFD_PATH_MAX];
+    if (!fetch_path(runtime, kpath, sizeof(kpath), path, path_len))
+        m3ApiReturn(WASI_EINVAL);
+    uint32_t rl =
+        mk_req(FSOP_MKDIR, kpath, (uint32_t)__builtin_strlen(kpath), 0, 0);
     int r = fs_roundtrip(rl);
-    if (r < 2)
+    if (r < 28)
         m3ApiReturn(WASI_ENOSYS);
-    m3ApiReturn((int32_t)(fsresp[0] | (fsresp[1] << 8)));
+    m3ApiReturn(fserr_to_wasi(rep_status()));
 }
 
 m3ApiRawFunction(wasi_fd_close_routed) {
     m3ApiReturnType(int32_t)
     m3ApiGetArg(int32_t, fd)
     sched_wasi_state *w = sched_wasi_current();
-    if (!w || fd < 3 || fd >= SCHED_MAX_FDS || w->fds[fd] == SCHED_FD_EMPTY)
+    if (!w || fd < 3 || fd >= SCHED_MAX_FDS || w->fds[fd] == SCHED_FD_EMPTY ||
+        !rfd_of(fd)) {
         m3ApiReturn(WASI_EBADF2);
-    uint32_t fh = w->fds[fd];
-    uint8_t pay[4] = {(uint8_t)fh, (uint8_t)(fh >> 8), (uint8_t)(fh >> 16),
-                      (uint8_t)(fh >> 24)};
-    uint32_t rl = mk_req(ROP_CLOSE, 0, 0, pay, 4);
-    int r = fs_roundtrip(rl);
+    }
+    /* server is stateless: no roundtrip needed */
+    rfd_clear(sched_current_sid(), fd);
     w->fds[fd] = SCHED_FD_EMPTY;
-    if (r < 2)
-        m3ApiReturn(WASI_ENOSYS);
-    m3ApiReturn((int32_t)(fsresp[0] | (fsresp[1] << 8)));
+    m3ApiReturn(0);
 }
 
 /* shared read/write for routed fds; returns wasi errno, sets done */
@@ -444,38 +561,56 @@ int routed_rw(int32_t fd, bool write, uint8_t *buf, uint32_t len,
     sched_wasi_state *w = sched_wasi_current();
     if (!w || fd < 3 || fd >= SCHED_MAX_FDS || w->fds[fd] == SCHED_FD_EMPTY)
         return WASI_EBADF2;
-    uint32_t fh = w->fds[fd];
-    uint8_t pay[8 + 8192];
-    pay[0] = (uint8_t)fh;
-    pay[1] = (uint8_t)(fh >> 8);
-    pay[2] = (uint8_t)(fh >> 16);
-    pay[3] = (uint8_t)(fh >> 24);
-    pay[4] = (uint8_t)len;
-    pay[5] = (uint8_t)(len >> 8);
-    pay[6] = (uint8_t)(len >> 16);
-    pay[7] = (uint8_t)(len >> 24);
+    rfd *e = rfd_of(fd);
+    if (!e)
+        return WASI_EBADF2;
+    if (len > 8192)
+        len = 8192; /* single datagram payload budget */
+
+    /* tail payload after mk_req's {u16 pLen, path}: {u64 off, u16 cnt[,data]} */
+    uint32_t plen = (uint32_t)__builtin_strlen(e->path);
+    uint8_t pay[10 + 8192];
+    uint32_t o = 0;
+    for (int b = 0; b < 8; b++)
+        pay[o++] = (uint8_t)(e->off >> (8 * b));
+    pay[o++] = (uint8_t)len;
+    pay[o++] = (uint8_t)(len >> 8);
     if (write) {
-        if (len > 8192)
-            return WASI_ENOSYS; /* single-shot cap for now */
         for (uint32_t i = 0; i < len; i++)
-            pay[8 + i] = buf[i];
+            pay[o++] = buf[i];
     }
-    uint32_t rl = mk_req(write ? ROP_WRITE : ROP_READ, 0, 0, pay,
-                         write ? 8 + len : 8);
+    uint32_t rl =
+        mk_req(write ? FSOP_WRITE : FSOP_READ, e->path, plen, pay, o);
     int r = fs_roundtrip(rl);
-    if (r < 6)
+    if (r < 28)
         return WASI_ENOSYS;
-    int32_t err = (int32_t)(fsresp[0] | (fsresp[1] << 8));
-    if (err != 0)
-        return err;
-    uint32_t n = (uint32_t)fsresp[2] | (uint32_t)fsresp[3] << 8 |
-                 (uint32_t)fsresp[4] << 16 | (uint32_t)fsresp[5] << 24;
-    if (!write) {
-        uint32_t cp = n < len ? n : len;
-        for (uint32_t i = 0; i < cp; i++)
-            buf[i] = fsresp[6 + i];
+    int32_t st = rep_status();
+    if (st != 0)
+        return fserr_to_wasi(st);
+
+    const uint8_t *body = rep_body();
+    uint32_t blen = rep_body_len(r);
+    if (write) {
+        /* WRITE body: u32 newSize */
+        if (blen >= 4)
+            e->off += len;
+        *done = len;
+        return 0;
     }
-    *done = n;
+    /* READ body: {u16 got, data} -- F16 clamp on every bound */
+    if (blen < 2)
+        return WASI_EIO;
+    uint32_t n = (uint32_t)(body[0] | (body[1] << 8));
+    uint32_t avail = blen - 2;
+    uint32_t cp = n;
+    if (cp > len)
+        cp = len;
+    if (cp > avail)
+        cp = avail;
+    for (uint32_t i = 0; i < cp; i++)
+        buf[i] = body[2 + i];
+    e->off += cp;
+    *done = cp;
     return 0;
 }
 
