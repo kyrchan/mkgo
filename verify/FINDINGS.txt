@@ -440,3 +440,5 @@ fix: enlarge vring_buf to cover 10760+4+8*256 (=12,812 → pad to 16 KiB) while 
 ===== FINDING 80a =====
 severity: NOTE
 Same file/revert context: virtio_blk.cc is back on LEGACY transport (working tree now ≈ HEAD plus the measured-offset block); virtio_modern.cc/h remain linked (Makefile:37) but now have ZERO callers — dead code candidate. Either retire them or keep explicitly as the Phase-6-port fallback with a note. Also F79 status split: net side now BOUNDED (virtio_net.cc:312 tx wait, 20M-spin timeout with isr/status diagnostics — good); blk side completion poll (:211) still unbounded → F79 stays open for blk only.
+===== POLL-LOG =====
+2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN e38caac/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt since F80 review; md5 sweep identical (modern 7cf06d48, blk 06062681, net c2a9aea1, kernsvc 1caeec60, ports a2f4bf1f, devblk e4508f84, wasi_glue e6b61e6e, fsroute 30a777bc). Open: F80 MAJOR + F79(blk) MINOR; zero open BLOCKERs.
