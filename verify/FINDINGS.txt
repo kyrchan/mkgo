@@ -303,3 +303,6 @@ Coordinator declared ALL PHASES COMPLETE after VERIFY confirmed: all three repos
 ===== FINDING 69 2026-08-22 MAIN@949feac+dirty =====
 severity: NOTE
 core/virtio_net.cc (new, 333 lines, working tree — Phase-9 shim) reviewed: legacy virtio-net PCI shim feeding the §6 RX/TX packet windows per ABI. Ownership split correct (raw HW in shim, policy in services/net per §8); polled operation with corrupt-slot clamps both directions; used-ring tracking via persistent rx_last_used correctly advances (unlike the F45-class bug in virtio_blk.cc — this one got it right); full-ring drop documented as v1 policy. Compile clean under freestanding flags. No capability surface (shim serves a session's window, no cross-session access). No defects found. P9 shim scope work, not a defect.
+===== FINDING 70 2026-08-22 MAIN@949feac+dirty =====
+severity: NOTE
+P9 gate landed in working tree: guests/p9/main.go (driver guest), Makefile disk-p9.img + test-p9 target, scripts/run_p9.sh, services/net/net.wasm.raw rebuilt. virtio_net.cc compile-clean under freestanding flags. All six blocker sites reconfirmed unchanged (F12 overflow-safe present, F13 creator-gate present, F16 clamp present, F18 NACK active, F31 CAP_FSADM gate active, F32 uid stamping active). Phase-9 shim integration progressing per MEMORY.md manifest.
