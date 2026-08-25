@@ -284,3 +284,17 @@ Also closed by this batch: F21 (LEB hardening: add_overflow section-end guard, b
 ===== FINDING 68 2026-08-22 ALL@fleet-pins =====
 severity: NOTE
 All three lanes advanced to fleet model-pin commits (MAIN@b82f6ff, SVC@ce7a13f, TLS@1ccd2bf) — opencode.json model pinned to muse-spark-1.2-contributor-free across all worktrees. Tooling/config-only; no source changes in these commits beyond the pins.
+===== FINDING 68 2026-08-22 MAIN@b82f6ff =====
+severity: NOTE
+BLOCKER-HARDENING BATCH VERIFIED at HEAD (commits f6ba648..b82f6ff, 14 commits). All seven open BLOCKERs independently re-verified at source level with evidence:
+- F12 CLOSED: __builtin_add_overflow guards lba+count in devblk_rw (devblk.cc:85) before any address math; applied to RAM disk and virtio backends.
+- F13 CLOSED: ports_name_owned_by requires ports[g].creator == sid — binders no longer satisfy LOGIN ownership gate.
+- F16 CLOSED: routed READ clamp is now three-way min(n, len, avail) against the actual reply body length.
+- F18 CLOSED: kernsvc_nack() answers status -1 on every fall-through (unknown ops, cap denials at registry/devman/power); 4 call sites confirmed.
+- F23 CLOSED: fsroute_intercept matches BOTH waiter name AND seq before consuming a datagram; non-matching traffic falls through to its queue.
+- F28 CLOSED: port_send and ports_enqueue_by_name intercept only when fsroute_intercept returns true; unrelated traffic keeps flowing.
+- F31 CLOSED: devblk_rw gates raw block access on CAP_FSADM with audited denial; init.conf grants it to fs only.
+- F32 CLOSED: port_send overwrites wire uid[4:8] with sched_uid_of(sid) on every path.
+- F58 CLOSED: wasm3 signature validation enforced unconditionally (g_skip_sig_check deleted from m3_bind.c and wasi_glue.cc); per-function-record linking replaces by-name binding; legacy alt shapes allowlisted per-name.
+Also verified closed: F21 (LEB overflow-safe), F29 (g_last_mem debug state removed), F37 (ppa reduced to CAP_KILL), F59 (overflow-safe cycles→ns with remainder correction).
+Practice #2 evidence on record: test-kernel harness (f6ba648) encodes post-fix contracts for all 11 regression tests, verified FAILING on pre-fix HEAD. Gates: p4+g1 green under enforcement; p5a/p5b rewritten on lib.FSClient PASS. Mechanical: compile sweep zero failures across core/*.cc; SVC full suite -race green across parent + fs + display + guests/lib modules; TLS img + hvtest green. Remaining open items are MINOR/NOTE class only.
