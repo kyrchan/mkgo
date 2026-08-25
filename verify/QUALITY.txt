@@ -1,9 +1,9 @@
 # QUALITY.txt — rolling summary (LANE=VERIFY) — regenerated each pass
-# Last pass: 2026-08-26 — MAIN@e38caac+dirty (virtio churn reviewed), SVC@ce7a13f, TLS@1ccd2bf
+# Last pass: 2026-08-26 — MAIN@3c93eff+dirty (vring root-causes + modern ports), SVC@ce7a13f, TLS@1ccd2bf
 
 | repo | head reviewed | mechanical | open BLOCKERs | open MAJORs | trend |
 |---|---|---|---|---|---|
-| MAIN  | e38caac + working tree (virtio_modern.cc md5 1d8f93b8: unbounded vmod_features_ok DELETED → F77 CLOSED; virtio_blk.cc on modern transport with bounded inline FEATURES_OK check; virtio_net.cc reverted to legacy PCI transport — zero vmod_ refs; kernsvc/ports/devblk/fsroute md5s unchanged vs last-verified sweep) | F77/F78 filed and adjudicated this cycle; fresh blocker-site sweep green (see below) | **0** | F4 hosteng stale (dead tool); F46 overclaim (corrected by honest-status revisions) | Phase-9 integration maturing in-tree; substrate blocker sites stable |
+| MAIN  | 3c93eff + working tree (commit fixes vring root causes #1 desc-NEXT encoding and #2 identity-map holes/pt_arena/PGE; working tree stages modern-transport blk (ba2e8e80) and net (092b0c9b) rewrites — both reviewed clean, correctly sized rings, no F80-class OOB; F80 CLOSED) | g++ -fsyntax-only -Wall -Wextra freestanding: virtio_modern.cc rc=0, paging.cc rc=0; host tests 44/44 per commit message | **0** | F4 hosteng stale (dead tool); F46 overclaim (corrected by honest-status revisions) | Phase-9 modern migration complete pending runtime test-p9; substrate blocker sites stable |
 | SVC   | ce7a13f (fleet model-pin on 128314a lineage: net E2E + race-hardening + multiuser rooting + display service + kfs + fuzz targets; fs/display split into own modules) | go vet clean; FULL suite -race -count=1 GREEN across parent module (console/init/login/net/shell) + sub-modules (fs, display/terminal) + guests/lib | 0 | 0 | healthy; no deltas since last pass |
 | TLS   | 1ccd2bf (fleet model-pin on b75d0f5 lineage: hvtest scaffolding + golden-file converter tests + README fleet docs) | go vet clean; go test -race green (img + hvtest) | 0 | 0 | healthy; Phase-12 prep started |
 
@@ -28,15 +28,24 @@ All four sensitive-file md5s identical to last-verified values — no silent dri
   blk completion poll + vmod_probe reset-ack spin STILL OPEN.
 - F81 MINOR: MMIO BAR window identity-mapped cacheable (no PCD) —
   bare-metal risk only; QEMU-tolerant.
-- virtio_modern.cc/h committed and now LIVE (blk on modern); net still
-  legacy (QEMU10-ignored, documented remaining blocker in
-  VRING-HANDOFF.md); modern net port pending.
+- F82 MINOR: vmod_probe modern-range fallback mis-types devices
+  (blk fallback would accept a net adapter; misses real 0x1042);
+  per-candidate [vmod] boot-log noise.
+- virtio_modern.cc/h committed and LIVE; blk+net both on MODERN in the
+  working tree — pending runtime make test-p9 (legacy retired,
+  QEMU10-ignored, see VRING-HANDOFF.md).
+- F82 MINOR: vmod_probe modern-range fallback mis-types devices
+  (blk fallback would accept a net adapter; misses real 0x1042);
+  per-candidate [vmod] boot-log noise.
+- virtio_modern.cc/h committed and LIVE; blk+net both on MODERN in the
+  working tree — pending runtime make test-p9 (legacy retired,
+  QEMU10-ignored, see VRING-HANDOFF.md).
 - F77 residual nit: dead vmod_features_ok declaration at virtio_modern.h:20.
 
 ## Remaining scope work (not defects)
-P9 vring runtime validation upstream (mainline lane, MODERN transport for
-blk; net back on legacy pending QEMU 10.x diagnosis) · kfs crash-suite
-gate cadence · THREAT-MODEL.md items 7+ hardening backlog.
+P9 vring runtime validation upstream (modern ports for blk+net landed;
+make test-p9 pending) · kfs crash-suite gate cadence · THREAT-MODEL.md
+items 7+ hardening backlog.
 
 ## Process notes
 - fs + display are separate Go modules under services/ — parent ./...
