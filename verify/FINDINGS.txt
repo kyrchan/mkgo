@@ -317,3 +317,6 @@ Phase 10 gate green commit reviewed: WASI root-preopen (fd 3, FD_PREOPEN_ROOT se
 ===== FINDING 73 2026-08-22 MAIN@a8761dc =====
 severity: NOTE
 fleet handoff commit: MAINLINE handed off to fresh 0x-alpha session for the Phase-9 vring anomaly per VRING-HANDOFF.md protocol. The handoff document (new, tracked) compiles everything known about the blocker — symptom, environment, ruled-out causes, four ordered hypotheses, and working state (net probe/MAC/windows/ENUM; p9 guest wired). opencode.json model pin updated. MEMORY.md working-tree revision syncs the coordinator task manifest. All six blocker fix-sites unchanged at this head. No defects.
+===== FINDING 74 2026-08-22 MAIN@e38caac =====
+severity: NOTE
+fleet tooling commit reviewed: overnight.sh gains MISSION OVERRIDE — .mainline-prompt replaces SEED/CONT when present, injected after default assignments (fixing the dead-code ordering noted in the message). Enables the coordinator to redirect MAINLINE at the vring anomaly without editing the runner. No kernel source changes; blocker sites unchanged.
