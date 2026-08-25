@@ -320,3 +320,6 @@ fleet handoff commit: MAINLINE handed off to fresh 0x-alpha session for the Phas
 ===== FINDING 74 2026-08-22 MAIN@e38caac =====
 severity: NOTE
 fleet tooling commit reviewed: overnight.sh gains MISSION OVERRIDE — .mainline-prompt replaces SEED/CONT when present, injected after default assignments (fixing the dead-code ordering noted in the message). Enables the coordinator to redirect MAINLINE at the vring anomaly without editing the runner. No kernel source changes; blocker sites unchanged.
+===== FINDING 75 2026-08-22 MAIN@e38caac+dirty =====
+severity: NOTE
+virtio_net.cc poll loop rework reviewed clean — Phase-9 integration maturing. Improvements over prior read: (1) TX drain breaks on vn_tx failure instead of losing the frame (retry next poll); (2) RX completion loop advances persistent rx_last_used BEFORE processing, reads used_ring[desc_id*2]/[+1] per element (F45 pattern applied to net); (3) buffer repost after consumption via desc_put(WRITE)+avail_push+notify — correct recycling; (4) full-ring drop documented v1 policy; unsigned rt-rh wrap at 2^32 unreachable in practice. Compile-clean under freestanding flags. All six blocker fix-sites verified intact (F12 add_overflow=1, F13 creator-gate active, F16 three-way clamp, F18 kernsvc_nack×6, F31 CAP_FSADM gate, F32 uid stamp). No defects.
