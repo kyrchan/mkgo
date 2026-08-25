@@ -21,14 +21,16 @@ All four sensitive-file md5s identical to last-verified values — no silent dri
 - F6 LIST/CAPS ungated — acknowledged in ABI §11 v2 roadmap.
 - F52 12-session LIST ceiling — substrate limit, init defers correctly.
 - F55 fuzz soaks — recurring sweep duty, currently passing.
-- F78 debug residue in virtio_blk.cc — RESOLVED in legacy revert
-  (06062681: both page-table walks gone).
-- F80 MAJOR: vring_buf (10,758 B) undersized vs measured used-offset
-  workaround (device writes to 12,812) — ~2 KB OOB overrun into .bss;
-  enlarge/pad buffer or avoid qsize==256.
-- F79 unbounded device-wait spins — net side CLOSED (bounded 20M-spin
-  timeout w/ diagnostics); blk completion poll (:211) still open.
-- virtio_modern.cc/h now caller-less dead code linked by Makefile:37.
+- F78 debug residue in virtio_blk.cc — RESOLVED (legacy path deleted).
+- F80 MAJOR — CLOSED @3c93eff: measured-offset OOB workaround deleted
+  with legacy transport; modern layout explicit + correctly sized.
+- F79 unbounded device-wait spins — net side bounded (timeout+diag);
+  blk completion poll + vmod_probe reset-ack spin STILL OPEN.
+- F81 MINOR: MMIO BAR window identity-mapped cacheable (no PCD) —
+  bare-metal risk only; QEMU-tolerant.
+- virtio_modern.cc/h committed and now LIVE (blk on modern); net still
+  legacy (QEMU10-ignored, documented remaining blocker in
+  VRING-HANDOFF.md); modern net port pending.
 - F77 residual nit: dead vmod_features_ok declaration at virtio_modern.h:20.
 
 ## Remaining scope work (not defects)
