@@ -118,7 +118,10 @@ void kmain(const struct boot_info *bi) {
         if (l_) sched_spawn_named("login", l_, bi->mod_login_len, 0, 0);
         int sfs = -1;
         if (f_) {
-            sfs = sched_spawn_named("fs", f_, bi->mod_fs_len, 0, 0);
+            /* fs owns the whole-disk transport: it carries CAP_FSADM
+             * (abi/ABI.md §3 gate); boot services hold no other bits */
+            sfs = sched_spawn_named("fs", f_, bi->mod_fs_len, 0,
+                                    SCHED_CAP_FSADM);
             if (sfs > 0)
                 devblk_attach();
         }

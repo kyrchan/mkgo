@@ -80,8 +80,19 @@ func main() {
 	}
 
 	text := []byte("hello from p5a roundtrip")
-	if err := fsc.Create("hello.txt"); err != nil {
-		os.Stdout.WriteString("[p5a] create err\n")
+	// The login service registers this user with fs right after the AUTH
+	// reply; under cooperative scheduling the first op can race that
+	// registration. Bounded retry on access-denied absorbs the window.
+	var cerr error
+	for i := 0; i < 50; i++ {
+		cerr = fsc.Create("hello.txt")
+		if cerr == nil || cerr != lib.ErrFSAccess {
+			break
+		}
+		sched_yield()
+	}
+	if cerr != nil {
+		os.Stdout.WriteString("[p5a] create err: " + cerr.Error() + "\n")
 		return
 	}
 	n, werr := fsc.WriteFile("hello.txt", 0, text)

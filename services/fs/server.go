@@ -246,7 +246,17 @@ func dispatch(fat store, sessions map[uint32]*fsSession, req []byte, replies *li
 		if hdr.UID != 0 {
 			return statusOnly(op, seq, lib.FSAccess), hdr.RNam, true
 		}
-		return statusOnly(op, seq, registerSession(sessions, payload)), hdr.RNam, true
+		st := registerSession(sessions, payload)
+		if st == lib.FSOK {
+			// provision the user's home root (idempotent); a registered
+			// user whose /home/<name> is missing would fail every op
+			if sess := sessions[lib.Get32(payload[0:4])]; sess != nil {
+				if _, err := fat.Stat("/home/" + sess.name); err == ErrNoEntry {
+					_ = fat.Mkdir("/home/" + sess.name)
+				}
+			}
+		}
+		return statusOnly(op, seq, st), hdr.RNam, true
 	}
 
 	// classify op for policy: mutating vs read-only

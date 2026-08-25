@@ -171,3 +171,58 @@ func TestFocusMovesToShell(t *testing.T) {
 		t.Fatalf("focused=%q want shell", k.Focused)
 	}
 }
+
+// TestAuthRegistersUserWithFS: successful AUTH must feed fs.wasm's
+// uid→(name,capmask) table (REGISTER op 8) so per-user rooting engages.
+func TestAuthRegistersUserWithFS(t *testing.T) {
+	k := lib.NewFakeKernel()
+	stop := make(chan struct{})
+	defer close(stop)
+	k.Cur = k.AddSession("login", 0, lib.CapAll)
+	startLogin(t, k, stop)
+
+	// fake fs server owning the well-known name; records REGISTERs
+	k.AddSession("fs", 0, 0)
+	fsH := k.PortBind(lib.NameFS)
+	if fsH == lib.InvalidHandle {
+		t.Fatal("bind fs failed")
+	}
+	type regRec struct{ uid uint32; name string; mask uint64 }
+	regc := make(chan regRec, 4)
+	go func() {
+		buf := make([]byte, lib.MaxMsg)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			n := k.PortRecv(fsH, buf)
+			if n >= lib.CanonicalHeaderLen+14 && lib.Get16(buf[0:]) == 8 {
+				pl := buf[lib.CanonicalHeaderLen:n]
+				name, off, ok := lib.LStr(pl, 4)
+				if !ok || len(pl) < off+8 {
+					continue
+				}
+				regc <- regRec{lib.Get32(pl[0:]), name, lib.Get64(pl[off:])}
+				continue
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	cli := newAuthClient(t, k)
+	st, _, _, err := cli.auth("u1", "pw")
+	if err != nil || st != statusOK {
+		t.Fatalf("auth st=%d err=%v", st, err)
+	}
+
+	select {
+	case r := <-regc:
+		if r.uid != 1001 || r.name != "u1" {
+			t.Fatalf("register uid=%d name=%q want u1/1001", r.uid, r.name)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("fs never received REGISTER after successful auth")
+	}
+}

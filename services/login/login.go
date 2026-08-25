@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+
 	lib "kernel.lane/guests/lib"
 )
 
@@ -43,6 +45,9 @@ const (
 	statusBad = int32(-1)
 	spawnNone = uint32(0xFFFFFFFF)
 )
+
+// opFSRegister mirrors lib.OpFSRegister (fs multiuser table feed).
+const opFSRegister = uint16(8)
 
 func (o *LoginOptions) users() []User {
 	if len(o.Users) > 0 {
@@ -124,11 +129,50 @@ func kernAuth(k lib.Kernel, reg *lib.RegistryClient, replies *lib.ReplyBook, req
 		rep = appendStatus(rep, statusBad, 0, spawnNone)
 	default:
 		sid := doSpawn(k, reg, opts.shell(), u)
+		// Grant identity to the AUTHENTICATING session itself (v1 op
+		// targets by session name; rname carries it). Without this the
+		// caller keeps uid 0/admin or stays unrooted on fs.
+		_ = reg.Login(hdr.RNam, u.UID, u.Mask)
 		rep = appendStatus(rep, statusOK, u.Mask, sid)
 		focusShell(k)
+		k.PortSend(rh, rep) // answer first; fs registration is best effort
+		registerFS(k, u)
+		return
 	}
 	_ = pass // stub: any password accepted until Phase 10 hashes
 	k.PortSend(rh, rep)
+}
+
+// registerFS feeds fs.wasm's uid→(name,capmask) table so per-user rooting
+// (/home/<name>) applies to this user's subsequent requests. Strictly
+// best effort: short bounded retries so a missing fs never stalls AUTH.
+func registerFS(k lib.Kernel, u *User) {
+	fh := lib.InvalidHandle
+	for i := 0; i < 200 && fh == lib.InvalidHandle; i++ {
+		fh = k.PortBind(lib.NameFS)
+		if fh == lib.InvalidHandle {
+			k.Yield()
+		}
+	}
+	if fh == lib.InvalidHandle {
+		return
+	}
+	c, err := lib.NewInboxClient(k, "fsreg")
+	if err != nil {
+		return
+	}
+	c.Budget = 2000
+	pl := make([]byte, 0, 14+len(u.Name))
+	var head [4]byte
+	lib.Put32(head[:], u.UID)
+	pl = append(pl, head[:]...)
+	pl = lib.AppendLStr(pl, u.Name)
+	var m [8]byte
+	lib.Put64(m[:], u.Mask)
+	pl = append(pl, m[:]...)
+	if _, err := c.InboxRequest(fh, opFSRegister, pl); err != nil {
+		os.Stdout.WriteString("[login] fsreg failed: " + err.Error() + "\n")
+	}
 }
 
 func doSpawn(k lib.Kernel, reg *lib.RegistryClient, shell string, u *User) uint32 {
