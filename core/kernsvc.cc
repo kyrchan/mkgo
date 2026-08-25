@@ -31,6 +31,17 @@ static void kernsvc_reply(const uint8_t *data, uint32_t len) {
     ports_enqueue_by_name(g_rname, data, len);
 }
 
+/* F18 (ABI §7): "Unknown op / insufficient bit => status -1, audited."
+ * Every fall-through MUST answer so clients fail fast instead of spinning
+ * their full recv budget on a lost reply. */
+static void kernsvc_nack(uint16_t op, uint16_t seq) {
+    static uint8_t nb[8];
+    put16(nb, op);
+    put16(nb + 2, seq);
+    put32(nb + 4, 0xFFFFFFFFu);
+    kernsvc_reply(nb, 8);
+}
+
 void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
                       const uint8_t *data, uint32_t len) {
     (void)reply_h;
@@ -226,6 +237,7 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
         console_puts(" op=");
         console_hex64(op);
         console_puts(" reason=op target=registry\n");
+        kernsvc_nack(op, seq); /* F18: unknown/cap-denied must answer */
         return;
     }
 
@@ -234,6 +246,7 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
             console_puts("[audit] sid=");
             console_hex64(from_sid);
             console_puts(" op=ENUM reason=cap target=devman\n");
+            kernsvc_nack(op, seq); /* F18 */
             return;
         }
         if (op == 1) { /* ENUM -> one record: console class window */
@@ -250,6 +263,7 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
             console_puts("[audit] sid=");
             console_hex64(from_sid);
             console_puts(" op=? reason=op target=devman\n");
+            kernsvc_nack(op, seq); /* F18 */
         }
         return;
     }
@@ -261,6 +275,7 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
             console_puts(" op=");
             console_hex64(op);
             console_puts(" reason=cap target=power\n");
+            kernsvc_nack(op, seq); /* F18 */
             return;
         }
         if (op == 1 || op == 2) {
@@ -273,6 +288,7 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
             kernsvc_reply(rbuf, 8);
             cpu_halt();
         }
+        kernsvc_nack(op, seq); /* F18: unknown power op */
         return;
     }
 }

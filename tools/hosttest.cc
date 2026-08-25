@@ -213,11 +213,7 @@ static void t_unknown_op_replies(void) {
     put16(fr + 2, 7);  /* seq */
     memcpy(fr + 8, "evil-q", 6);
 
-    port_send(S_EVIL, /*registry*/ 0, fr, sizeof fr);
-    CHECK(port_send(S_EVIL, 0, fr, sizeof fr) == 0 ||
-              true, "T3 dispatch exercised");
-
-    /* registry handle is slot of kernel endpoint: send via bind */
+    /* registry handle is a kernel endpoint reached via bind */
     int rh = port_bind(S_EVIL, "registry", 8);
     CHECK(rh >= 0, "T3 bind registry");
     CHECK(port_send(S_EVIL, rh, fr, sizeof fr) == 0, "T3 send to registry");
