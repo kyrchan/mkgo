@@ -4,6 +4,40 @@ Read this first. Source of truth when context is compacted.
 The full phase-by-phase plan lives in `AGENTS.md` — this file is state,
 decisions, and gotchas. Update at milestones or near context limits.
 
+## Status — ALL 9 GATES GREEN on committed HEAD + substrate blockers closed (2026-08-25)
+
+**Gates: g1 g2 g3 p4 p5a p5b p7 p8a p8b ALL PASS + make test-kernel 44/44 + unit tests.**
+
+### Blocker-hardening batch landed (each commit = finding + regression test):
+- F13 ports_name_owned_by creator-vs-binder · F18 kernsvc NACK status -1 on all
+  fall-throughs · F32 port_send uid stamping (spoof-proof identity) ·
+  F12+F31 devblk wraparound-safe bounds + CAP_FSADM gate (init.conf fs mask 0x10,
+  ABI.md §3 documented) · F23+F28 fsroute seq-match + conditional interception ·
+  F16 routed_rw clamp+memset · F59 overflow-safe cycles→ns · F58 sig-check bypass
+  DELETED, canonical per-name signatures enforced, void-shape variants
+  (sched_yield_v/focus_set_v) because raw-call layout is [rets...,args...] --
+  linking a v(i)-declared import to an i(i) fn shifts args by one slot ·
+  F21 abi_ver LEB hardening · F37 ppa slot reduced to CAP_KILL · F29 g_last_mem gone.
+- NEW kernel-substrate regression infra: `make test-kernel` (tools/hosttest.cc)
+  links REAL ports/kernsvc/fsroute/devblk/input objects vs fake scheduler.
+- §7 direct-mode RPCs now reply INLINE on the sending handle when rname empty
+  (was: dropped -> full-budget stall for init/console/devman callers).
+- Multiuser flow end-to-end: login grants identity to the AUTHENTICATING session
+  (registry LOGIN by name) + feeds fs REGISTER {uid,name,capmask}; fs provisions
+  /home/<name> on REGISTER; p5a/p5b rewritten on lib.FSClient with u2->u1 denials.
+- p7 flow = current architecture (shell claims §4 focus itself; run_p7.sh types
+  `cat /etc/motd`; fs seeds motd at mount). Gate greps updated accordingly.
+
+## ⚡ REMAINING MANIFEST (coordinator order)
+1. **Phase 9**: virtio-net native shim (§6 RX/TX packet windows, polled) +
+   wire services/net E2E + `test-p9` gate (host nc UDP echo + HTTP GET via
+   QEMU user-net against 10.0.2.2). net.wasm exists & unit-green; needs the shim.
+2. **Phase 10 negative tests**: two concurrent users; cross-user denial BOTH
+   routes (direct-port + preview1); KVM+TCG matrix for every gate;
+   tools/img integration into Makefile path.
+3. kfs crash-suite integration gate (unit tests exist in services/fs).
+
+## ⚡ YOUR NEXT TASKS
 ## ⚡ YOUR NEXT TASKS (coordinator order, 2026-08-24 03:2x — gates being green is NOT the finish line)
 
 The remaining-work manifest below still stands. In order:
