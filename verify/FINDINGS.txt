@@ -493,3 +493,5 @@ F81 recheck + paging rework review: working tree replaces the dense 64-GiB 2MiB 
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN 3c93eff/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open: F79(blk+probe) / F81 / F82 MINORs; zero open BLOCKERs.
 ===== POLL-LOG =====
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN 3c93eff/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open: F79(blk+probe) / F81 / F82 MINORs; zero open BLOCKERs.
+===== POLL-LOG =====
+2026-08-26 delta review: virtio_net.cc 092b0c9b -> f47ed327 — tx-timeout [netdbg] console block replaced by bare return -1 (wait stays bounded at 20M spins, so no F79 regression; slightly less diagnosable), wasm3.h include relocated, netwin_attach C-linkage wrapper added for kernsvc SPAWN hook. No new defects; F82a notes stand (dead desc_put idx>=2 branch remains).
