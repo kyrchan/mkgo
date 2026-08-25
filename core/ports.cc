@@ -178,12 +178,16 @@ extern "C" int ports_owner_of_handle(uint32_t sid, int h) {
 }
 
 extern "C" bool ports_name_owned_by(uint32_t sid, const char *name) {
-    if (sid >= 12)
+    /* F13: ownership means CREATOR, not binder. port_bind hands out
+     * handles to existing names freely (legal fan-in); only the session
+     * that created the port owns the well-known name. Kernel endpoints
+     * are creator 0 and owned by no session. */
+    if (sid >= 12 || sid == 0)
         return false;
     for (int h = 0; h < H_PER_SESS; h++) {
         int8_t g = htab[sid][h];
         if (g >= 0 && g < MAX_PORTS && ports[g].used &&
-            !strcmp(ports[g].name, name))
+            ports[g].creator == sid && !strcmp(ports[g].name, name))
             return true;
     }
     return false;
