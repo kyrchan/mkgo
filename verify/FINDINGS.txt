@@ -574,3 +574,12 @@ MAIN@3c93eff+dirty guests/p9/main.go (new, 185 lines) reviewed clean — Phase-9
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN 3c93eff/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open: F79(blk+probe) / F81 / F82 / F83 MINORs; zero open BLOCKERs.
 ===== POLL-LOG =====
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN 3c93eff/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open: F79(blk+probe) / F81 / F82 / F83 MINORs; zero open BLOCKERs.
+===== FINDING 85 2026-08-26 MAIN@3c93eff+dirty (services/net churn) =====
+severity: MAJOR
+services/net/net_test.go:305,313 · TEST BUILD BROKEN by stale call sites: udp.Bind signature changed to (*UDPQueue, uint16) (returns actual bound port; ephemeral allocation for port 0 — good feature), netclient_test.go was adapted (`q, _ :=`), but net_test.go still uses the old THREE-value form `qb, _, _ := b.udp.Bind(...)` at :304/:305 and :313. go vet fails, `go test -race ./...` build-fails — the whole services/net suite is again unrunnable (same effect as F84). Also note vet_rc=0 echo was masked by pipefail absence in my probe; vet output itself shows the errors.
+why: practice #2 requires failing tests to gate fixes; a module that cannot compile its tests disables that gate for the P9 path.
+fix: update net_test.go:304-315 to two-value form (`qb, _ := ...`); re-run vet + full race suite.
+
+===== FINDING 85a =====
+severity: NOTE
+Same delta reviewed clean elsewhere: udp.go ephemeral-port allocator scans 49152..65535 with wrap guard (`p != 0`) and taken-check under existing demux map semantics; netport.go OPEN now records the ACTUAL bound port in sk.udpPort (correct for outbound UDP replies); net.wasm/net.wasm.raw rebuilt (+6KB). No capability or ABI surface touched.
