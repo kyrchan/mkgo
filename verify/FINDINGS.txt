@@ -517,3 +517,13 @@ fix: wrap the dbg_n block in #ifdef VMOD_TRACE (or a registry knob) before merge
 2026-08-26 also reviewed: netwin_attach_impl retains vn_ready early-out (clean); no other deltas.
 ===== POLL-LOG =====
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN 3c93eff/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open: F79(blk+probe) / F81 / F82 / F83 MINORs; zero open BLOCKERs.
+===== FINDING 84 2026-08-26 MAIN@3c93eff+dirty (services/net) =====
+severity: MAJOR
+services/net/netport.go:209 · BUILD BROKEN: uses strconv.Itoa (UDP sendto error path) but strconv is missing from the import block — `go build ./...`, `go vet ./...`, and `go test -race ./...` all FAIL with "undefined: strconv" for the whole net module, blocking every test in services/net including the Phase-9 E2E suite. New file (289 lines) implements the "net" well-known port server per lane-local ABI-NOTES §10: canonical v1.1 framing correct (24B header + status@24), reply-to-rname via ReplyBook, stop-channel + yield handling clean.
+why: a non-compiling service module silently disables the P9 test matrix; violates practice #2 (no fix without a failing test — here tests can't even run).
+fix: add "strconv" to imports; then run full go vet + go test -race for the module.
+
+===== FINDING 84a =====
+severity: MINOR
+netport.go RECV TCP path (~line 246): on a listen socket each Accept() OVERWRITES sk.tcp — previously accepted connections are leaked (never Closed) and only the most recent client remains serviceable; one socket id cannot round-robin multiple children. Also errNoSuchSock is returned when max==0 && UDP where "status 0/got=0" semantics would fit better. nextID uint16 wraps after 65k sockets (theoretical). Functional limitation, not an ABI violation.
+fix: queue accepted conns (slice + index) or document one-connection-per-socket v1 policy in ABI-NOTES §10; use errState for degenerate RECV args.
