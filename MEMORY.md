@@ -28,6 +28,37 @@ decisions, and gotchas. Update at milestones or near context limits.
 - p7 flow = current architecture (shell claims §4 focus itself; run_p7.sh types
   `cat /etc/motd`; fs seeds motd at mount). Gate greps updated accordingly.
 
+## ⚡ ACTIVE: Phase 9 vring blocker -- PRECISE STATE FOR INSTANT RESUME (2026-08-26)
+
+**Symptom**: QEMU 10.0.11 q35 legacy virtio (blk AND net): device processes the
+FIRST ~2 requests then stops consuming avail entries. Completions observed
+WRITING at vring_buf+10762 (idx) / +10768,+10772 (elem id/len) -- NOT at spec
+align(4096+518,4096)=8192 nor naive 4616. Our avail idx @+4098 keeps climbing;
+device's counter frozen at 2; ISR=0.
+
+**Ruled out**: PCI cmd bits (already 0x7), PFN registration (readback matches),
+notify delivery (QEMU -trace virtio_queue_notify fires), flags-width bug
+(desc_put took u16 flags -> 1u<<32 UB -- FIXED to u64), sig-check bypass,
+stale disks (several false leads!). F45's three bugs are FIXED in code but
+that didn't restore flow.
+
+**Next hypotheses to try (in order)**:
+1. QEMU may now require GUEST_FEATURES write of VIRTIO_F_BAD_FEATURE/VERSION
+   handshake BEFORE QUEUE_PFN on transitional devices; try writing 0 via outl
+   BEFORE status ACK|DRIVER sequence ordering variants.
+2. Try `-machine pc` with SeaBIOS-direct? (OVMF residue theory: firmware used
+   MODERN interface leaving device in modern mode where LEGACY PFN writes are
+   ignored after reset; check `disable-modern=on` + `disable-legacy=off`
+   COMBO was only partially tested).
+3. Port the driver to the MODERN virtio MMIO/common-config interface via BAR4
+   (qtree showed bar4 mem 0xc000000000, 64bit) -- bigger but well-specified.
+4. Compare against QEMU 8.x/9.x binary in ~/.local if available.
+
+**Working right now**: net device probe/MAC/windows/ENUM; p9 guest + run_p9.sh
++ test-p9 target wired (fails at first ARP send). RAM-disk backend serves all
+other gates. test-kernel 44/44. Canonical §7 replies = new wire law (28B).
+
+## ⚡ REMAINING MANIFEST
 ## ⚡ REMAINING MANIFEST (coordinator order)
 1. **Phase 9**: virtio-net native shim (§6 RX/TX packet windows, polled) +
    wire services/net E2E + `test-p9` gate (host nc UDP echo + HTTP GET via
