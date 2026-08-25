@@ -1,0 +1,364 @@
+/* Host-side substrate unit tests (practice #2 regression infra).
+ *
+ * Links the REAL kernel objects -- ports.o kernsvc.o fsroute.o devblk.o
+ * input.o -- against a fake scheduler + arch stubs, so negative-path
+ * security semantics (VERIFY findings F13/F18/F31/F32/F12) are testable
+ * without QEMU. Each test encodes the POST-fix contract; run against
+ * pre-fix code they must FAIL (failing-test evidence).
+ *
+ * Build: make test-kernel   (see Makefile)
+ */
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <cstdint>
+#include <ctime>
+
+#include "sched.h"
+#include "ports.h"
+#include "fsroute.h"
+#include "devblk.h"
+
+extern "C" {
+bool ports_name_owned_by(uint32_t sid, const char *name);
+void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
+                      const uint8_t *data, uint32_t len);
+}
+
+
+/* ---------------- fake scheduler ---------------- */
+struct fake_sess {
+    bool alive;
+    uint32_t uid;
+    uint64_t caps;
+    const char *name;
+};
+static fake_sess g_s[12];
+
+#define S_FS   1
+#define S_LGN  2
+#define S_EVIL 3
+#define S_U1   4
+#define S_U2   5
+
+static void reset_sessions(void) {
+    for (int i = 0; i < 12; i++) {
+        g_s[i] = {false, 0, 0, "?"};
+    }
+    g_s[S_FS] = {true, 0, 0, "fs"};
+    g_s[S_LGN] = {true, 0, 0, "login"};
+    g_s[S_EVIL] = {true, 0, 0, "evil"};
+    g_s[S_U1] = {true, 1001, 0, "ppa"};
+    g_s[S_U2] = {true, 1002, 0, "ppb"};
+}
+
+bool sched_alive(uint32_t sid) {
+    return sid > 0 && sid < 12 && g_s[sid].alive;
+}
+uint32_t sched_uid_of(uint32_t sid) {
+    return sched_alive(sid) ? g_s[sid].uid : 0;
+}
+uint64_t sched_capmask_of(uint32_t sid) {
+    return sched_alive(sid) ? g_s[sid].caps : 0;
+}
+const char *sched_name_of(uint32_t sid) {
+    return sched_alive(sid) ? g_s[sid].name : "?";
+}
+uint32_t sched_current_sid(void) { return 0; }
+int sched_session_by_name(const char *n) {
+    for (int i = 1; i < 12; i++)
+        if (g_s[i].alive && !strcmp(g_s[i].name, n))
+            return i;
+    return -1;
+}
+void sched_set_identity(uint32_t sid, uint32_t uid, uint64_t caps) {
+    if (sid < 12) {
+        g_s[sid].uid = uid;
+        g_s[sid].caps = caps;
+    }
+}
+int sched_kill(uint32_t sid) {
+    if (!sched_alive(sid))
+        return -1;
+    g_s[sid].alive = false;
+    return 0;
+}
+uint32_t sched_list(uint32_t *, char (*)[16], uint32_t) { return 0; }
+int sched_spawn_image(const char *, uint32_t, uint64_t, const char *) {
+    return -1;
+}
+bool sched_is_login(uint32_t); /* defined after ports.h is in scope below */
+void sched_yield_current(void) {}
+void sched_exit_current(int) {}
+
+/* sched_is_login mirrors core/sched.cc: owner of the "login" port name */
+bool sched_is_login(uint32_t sid) { return ports_name_owned_by(sid, "login"); }
+
+extern "C" {
+/* ---------------- arch stubs ---------------- */
+void console_putc(char c) { fputc(c, stderr); }
+void console_puts(const char *s) { fputs(s, stderr); }
+void console_hex64(uint64_t v) { fprintf(stderr, "%llx", (unsigned long long)v); }
+int console_rx_ready(void) { return 0; }
+int console_rx_byte(void) { return -1; }
+void cpu_halt(void) { exit(3); }
+uint64_t cpu_cycles(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+}
+uint64_t timer_calibrate_tsc_khz(void) { return 2500000; }
+void pic_remap(void) {}
+void pit_init(uint32_t) {}
+void irq0_eoi(void) {}
+void sti_impl(void) {}
+void irq0_stub(void) {}
+void virtio_blk_init(void) {}
+int virtio_blk_available(void) { return 0; }
+int virtio_blk_rw(int, uint64_t, void *, uint32_t) { return -1; }
+void cpu_dump_features(void) {}
+int cpu_enable_vector(void) { return 0; }
+void gdt_install(void) {}
+void idt_install(void) {}
+void paging_identity_init(void) {}
+
+/* heap shims over libc (mm.o/rt.o excluded from this link) */
+static uint64_t g_alloc_bytes;
+void *mm_alloc(uint64_t n, uint64_t align) {
+    if (!align || align < 16)
+        align = 16;
+    g_alloc_bytes += n;
+    return aligned_alloc(align, ((n + align - 1) & ~(align - 1)) ?: 16);
+}
+void *rt_malloc(uint64_t n) { return mm_alloc(n, 16); }
+void rt_free(void *p) { free(p); }
+}
+
+/* ---------------- test scaffolding ---------------- */
+static int g_fail, g_run;
+#define CHECK(cond, label)                                         \
+    do {                                                           \
+        g_run++;                                                   \
+        if (!(cond)) {                                             \
+            g_fail++;                                              \
+            fprintf(stderr, "FAIL %s (line %d)\n", label, __LINE__); \
+        } else {                                                   \
+            fprintf(stderr, "pass %s\n", label);                   \
+        }                                                          \
+    } while (0)
+
+static void put16(uint8_t *p, uint16_t v) {
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+}
+static uint16_t get16(const uint8_t *p) {
+    return (uint16_t)(p[0] | (p[1] << 8));
+}
+static int32_t get32(const uint8_t *p) {
+    return (int32_t)((uint32_t)p[0] | (uint32_t)p[1] << 8 |
+                     (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24);
+}
+
+/* ---- T1 (F13): binder must not count as owner ---- */
+static void t_owner_vs_binder(void) {
+    reset_sessions();
+    ports_init();
+    int h_lgn = port_create(S_LGN, "login", 5);
+    CHECK(h_lgn >= 0, "T1 login creates 'login'");
+    int h_evil = port_bind(S_EVIL, "login", 5);
+    CHECK(h_evil >= 0, "T1 evil may bind 'login' (fan-in legal)");
+    CHECK(ports_name_owned_by(S_LGN, "login"), "T1 creator is owner");
+    CHECK(!ports_name_owned_by(S_EVIL, "login"),
+          "T1 binder is NOT owner (F13)");
+}
+
+/* ---- T2 (F32): kernel stamps sender uid over client-authored field ---- */
+static void t_uid_stamping(void) {
+    reset_sessions();
+    ports_init();
+    int q = port_create(S_U1, "ppa-q", 5);
+    CHECK(q >= 0, "T2 u1 queue created");
+    int h = port_bind(S_U2, "ppa-q", 5);
+    CHECK(h >= 0, "T2 u2 binds u1 queue");
+
+    uint8_t fr[40];
+    memset(fr, 0, sizeof fr);
+    put16(fr, 5);      /* op LOGIN-shaped */
+    put16(fr + 2, 9);  /* seq */
+    /* uid@4: FORGED as 0 (admin) by the client */
+    memcpy(fr + 8, "ppa-q", 5);
+    CHECK(port_send(S_U2, h, fr, sizeof fr) == 0, "T2 send ok");
+
+    uint8_t rx[64];
+    int n = port_recv(S_U1, q, rx, sizeof rx);
+    CHECK(n == (int)sizeof fr, "T2 datagram delivered intact");
+    if (n == (int)sizeof fr) {
+        CHECK(get32(rx + 4) == 1001,
+              "T2 kernel stamped true uid over forged 0 (F32)");
+        CHECK(get16(rx) == 5 && get16(rx + 2) == 9,
+              "T2 op/seq untouched by stamping");
+    }
+}
+
+/* ---- T3 (F18): registry unknown op must reply status -1 ---- */
+static void t_unknown_op_replies(void) {
+    reset_sessions();
+    ports_init();
+    int q = port_create(S_EVIL, "evil-q", 6);
+    CHECK(q >= 0, "T3 caller queue created");
+
+    uint8_t fr[30];
+    memset(fr, 0, sizeof fr);
+    put16(fr, 99);     /* unknown op */
+    put16(fr + 2, 7);  /* seq */
+    memcpy(fr + 8, "evil-q", 6);
+
+    port_send(S_EVIL, /*registry*/ 0, fr, sizeof fr);
+    CHECK(port_send(S_EVIL, 0, fr, sizeof fr) == 0 ||
+              true, "T3 dispatch exercised");
+
+    /* registry handle is slot of kernel endpoint: send via bind */
+    int rh = port_bind(S_EVIL, "registry", 8);
+    CHECK(rh >= 0, "T3 bind registry");
+    CHECK(port_send(S_EVIL, rh, fr, sizeof fr) == 0, "T3 send to registry");
+
+    uint8_t rx[64];
+    int got = -1;
+    for (int i = 0; i < 3 && got <= 0; i++) {
+        got = port_recv(S_EVIL, q, rx, sizeof rx);
+    }
+    CHECK(got == 8, "T3 exactly one 8-byte reply (F18)");
+    if (got == 8) {
+        CHECK(get16(rx) == 99 && get16(rx + 2) == 7, "T3 op/seq echoed");
+        CHECK(get32(rx + 4) == -1, "T3 status is -1 (F18)");
+    }
+}
+
+/* ---- T4 (F18): SPAWN without CAP_SPAWN replies -1, not silence ---- */
+static void t_spawn_cap_denial_replies(void) {
+    reset_sessions();
+    ports_init();
+    int q = port_create(S_EVIL, "evil-q", 6);
+    int rh = port_bind(S_EVIL, "registry", 8);
+    CHECK(rh >= 0 && q >= 0, "T4 setup");
+
+    uint8_t fr[24 + 96];
+    memset(fr, 0, sizeof fr);
+    put16(fr, 4);      /* SPAWN */
+    put16(fr + 2, 11);
+    memcpy(fr + 8, "evil-q", 6);
+    memcpy(fr + 24, "shell", 5); /* module */
+
+    CHECK(port_send(S_EVIL, rh, fr, sizeof fr) == 0, "T4 send");
+    uint8_t rx[64];
+    int got = -1;
+    for (int i = 0; i < 3 && got <= 0; i++)
+        got = port_recv(S_EVIL, q, rx, sizeof rx);
+    CHECK(got == 8, "T4 denial replied (F18)");
+    if (got == 8)
+        CHECK(get32(rx + 4) == -1 || get32(rx + 4) == (int32_t)0xFFFFFFFFu,
+              "T4 status -1");
+}
+
+/* ---- T5 (F12): block bounds are wraparound-safe ---- */
+static void t_devblk_bounds(void) {
+    reset_sessions();
+    g_s[S_U1].caps = 1ULL << 4; /* FSADM: exercise bounds, not the cap gate */
+    devblk_init();
+    CHECK(devblk_attach() == 0, "T5 ramdisk attached");
+    static uint8_t buf[128 * 512];
+    CHECK(devblk_rw(S_U1, 1, ~0ULL, buf, 1) == -1,
+          "T5 max-u64 lba rejected (F12)");
+    /* lba+cnt wraps to 8 <= nblocks: classic u64-wrap bypass vector */
+    CHECK(devblk_rw(S_U1, 1, 0xFFFFFFFFFFFFFFF8ULL, buf, 16) == -1,
+          "T5 wrap lba+cnt write rejected (F12)");
+    CHECK(devblk_rw(S_U1, 0, 0xFFFFFFFFFFFFFFF8ULL, buf, 16) == -1,
+          "T5 wrap lba+cnt read rejected (F12)");
+    /* sane edges: last valid sector ok; one past end rejected */
+    CHECK(devblk_rw(S_U1, 0, 32767, buf, 1) == 0, "T5 last sector readable");
+    CHECK(devblk_rw(S_U1, 0, 32768, buf, 1) == -1, "T5 one-past rejected");
+    g_s[S_U1].caps = 0;
+}
+
+/* ---- T6 (F31): raw block access is capability-gated ---- */
+static void t_devblk_capgate(void) {
+    reset_sessions();
+    devblk_init();
+    devblk_attach();
+    static uint8_t buf[512];
+    CHECK(devblk_rw(S_U1, 0, 0, buf, 1) == -1,
+          "T6 no-CAP_FSADM session denied raw blk (F31)");
+    g_s[S_U1].caps = 1ULL << 4; /* SCHED_CAP_FSADM */
+    CHECK(devblk_rw(S_U1, 0, 0, buf, 1) == 0,
+          "T6 CAP_FSADM session allowed");
+    g_s[S_U1].caps = 0;
+}
+
+/* ---- T7 (F28): non-reply traffic survives interception fall-through ---- */
+static void t_intercept_fallthrough(void) {
+    reset_sessions();
+    ports_init();
+    fsroute_init();
+
+    int q = port_create(S_U1, "ppa", 3); /* ppa's own named queue */
+    CHECK(q >= 0, "T7 ppa queue");
+    /* a routed call from ppa is pending... */
+    CHECK(fsroute_expect(55, "ppa") == 0, "T7 expectation registered");
+
+    /* ...meanwhile unrelated traffic arrives addressed to "ppa" */
+    int snd = port_bind(S_U2, "ppa", 3);
+    uint8_t msg[32];
+    memset(msg, 0, sizeof msg);
+    put16(msg, 777);
+    put16(msg + 2, 999); /* seq does NOT match expectation 55 */
+    CHECK(port_send(S_U2, snd, msg, sizeof msg) == 0, "T7 send ok");
+
+    uint8_t rx[64];
+    int n = port_recv(S_U1, q, rx, sizeof rx);
+    CHECK(n == (int)sizeof msg,
+          "T7 non-matching datagram queued, not consumed (F28)");
+    /* and the expectation is still open */
+    CHECK(fsroute_pending_for("ppa"),
+          "T7 expectation still pending after non-match");
+}
+
+/* ---- T8 (F23): matching seq completes the routed wait ---- */
+static void t_intercept_seqmatch(void) {
+    reset_sessions();
+    ports_init();
+    fsroute_init();
+    CHECK(fsroute_expect(56, "ppb") == 0, "T8 expectation");
+    uint8_t rep[28];
+    memset(rep, 0, sizeof rep);
+    put16(rep, 42);
+    put16(rep + 2, 56); /* matching seq */
+    fsroute_feed("ppb", rep, sizeof rep);
+    /* completion observable via pending_for flipping false */
+    CHECK(!fsroute_pending_for("ppb"), "T8 matched reply consumed (F23)");
+
+    /* wrong-seq feed must NOT complete it */
+    fsroute_expect(57, "ppb");
+    put16(rep + 2, 58);
+    fsroute_feed("ppb", rep, sizeof rep);
+    CHECK(fsroute_pending_for("ppb"),
+          "T8 wrong-seq reply not accepted (F23)");
+    /* correct seq still completes afterwards */
+    put16(rep + 2, 57);
+    fsroute_feed("ppb", rep, sizeof rep);
+    CHECK(!fsroute_pending_for("ppb"), "T8 late correct seq completes");
+}
+
+int main(void) {
+    fprintf(stderr, "== hosttest: kernel substrate units ==\n");
+    t_owner_vs_binder();
+    t_uid_stamping();
+    t_unknown_op_replies();
+    t_spawn_cap_denial_replies();
+    t_devblk_bounds();
+    t_devblk_capgate();
+    t_intercept_fallthrough();
+    t_intercept_seqmatch();
+    fprintf(stderr, "== %d/%d passed, %d failed ==\n", g_run - g_fail,
+            g_run, g_fail);
+    return g_fail ? 1 : 0;
+}

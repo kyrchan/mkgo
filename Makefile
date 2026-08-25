@@ -351,7 +351,26 @@ test-unit:
 	cd services/console && go test -v -count=1 . 2>/dev/null || true
 	cd guests/lib && go test -v -count=1 . 2>/dev/null || true
 
-test-all: test-unit test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7
+# kernel-substrate unit tests (practice #2 regression infra): real ports/
+# kernsvc/fsroute/devblk/input objects against a fake scheduler on host.
+HT_CXXFLAGS := -std=c++20 -O1 -g -Wall -Icore -Ithird_party/wasm3
+HT_OBJS := $(BUILD)/ht/ports.o $(BUILD)/ht/kernsvc.o $(BUILD)/ht/fsroute.o \
+           $(BUILD)/ht/devblk.o $(BUILD)/ht/input.o
+
+$(BUILD)/hosttest: tools/hosttest.cc $(HT_OBJS) | $(BUILD)
+	@mkdir -p $(dir $@)
+	$(CXX) $(HT_CXXFLAGS) -c $< -o $(BUILD)/ht/hosttest.o
+	$(CXX) -no-pie $(BUILD)/ht/hosttest.o $(HT_OBJS) -o $@
+
+$(BUILD)/ht/%.o: core/%.cc $(wildcard core/*.h) | $(BUILD)
+	@mkdir -p $(dir $@)
+	$(CXX) $(HT_CXXFLAGS) -c $< -o $@
+
+.PHONY: test-kernel
+test-kernel: $(BUILD)/hosttest
+	$(BUILD)/hosttest
+
+test-all: test-kernel test-unit test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7
 
 
 clean:

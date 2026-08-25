@@ -18,6 +18,7 @@ set -u
 LANE_LOG=${LANE_LOG:-$LANE_DIR/.lane.log}
 LANE_SID=${LANE_SID:-$LANE_DIR/.lane.sid}
 LANE_MAX_ROUNDS=${LANE_MAX_ROUNDS:-200}
+ROTATE_EVERY=${LANE_ROTATE_EVERY:-12}
 cd "$LANE_DIR" || exit 1
 
 echo $$ >"$LANE_DIR/.runner.pid"
@@ -82,6 +83,11 @@ while [ "$round" -le "$LANE_MAX_ROUNDS" ]; do
     echo "[$LANE_NAME] round $round end $(date)" >>"$LANE_LOG"
     rm -f "$CHUNK"
     rm -f "$CHUNK"
+    # proactive context hygiene: force a fresh session every ROTATE_EVERY rounds
+    if [ $((round % ROTATE_EVERY)) -eq 0 ] && [ -f "$LANE_SID" ]; then
+        echo "[$LANE_NAME] rotating session (context hygiene) $(date)" >>"$LOG"
+        rm -f "$LANE_SID"
+    fi
     sleep 10
     round=$((round + 1))
 done

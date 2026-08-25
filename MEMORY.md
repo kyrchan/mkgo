@@ -279,3 +279,13 @@ net stack, fuzz targets per practice #4). MAINLINE's next-round reality:
 post-merge tree with net.wasm/display.wasm available — proceed to
 virtio-net shim + test-p9 gate (task #2). kfs still worktree-only in
 lane/services awaiting its commit.
+
+**AGENT COGNITIVE HYGIENE (2026-08-25, owner insight)**: agent failures
+were NOT laziness — they were context saturation (giant sessions degrade
+reasoning until opencode aborts) + rule overload (every action risks
+violating some constraint -> paralysis or escape). Countermeasures now
+mechanical: (1) runners proactively rotate sessions every 12 rounds —
+fresh context, state carried by MEMORY.md; (2) MEMORY.md top section =
+current manifest only, lean; laws live in AGENTS.md sections below.
+Treat "agent went weird" as HYGIENE FIRST: rotate session, re-read top
+manifest, only then suspect logic.

@@ -17,6 +17,7 @@ cd "$(dirname "$0")/.."
 
 LOG=.overnight.log
 MAX_ROUNDS=${1:-200}
+ROTATE_EVERY=${LANE_ROTATE_EVERY:-12}
 
 SEED="Read AGENTS.md and MEMORY.md first. You are running unattended. \
 Execute the phase plan continuously and unabated per the Autonomy mandate; \
@@ -81,6 +82,11 @@ while [ "$round" -le "$MAX_ROUNDS" ]; do
     echo "[overnight] round $round end $(date)" >>"$LOG"
     rm -f "$CHUNK"
     rm -f "$CHUNK"
+    # proactive context hygiene: force a fresh session every ROTATE_EVERY rounds
+    if [ $((round % ROTATE_EVERY)) -eq 0 ] && [ -f "$LANE_SID" ]; then
+        echo "[$LANE_NAME] rotating session (context hygiene) $(date)" >>"$LOG"
+        rm -f "$LANE_SID"
+    fi
     sleep 10
     round=$((round + 1))
 done
