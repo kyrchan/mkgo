@@ -3,11 +3,25 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
 	"testing"
 	"time"
 
 	lib "kernel.lane/guests/lib"
 )
+
+// mkEtcUsers builds an /etc/users file from (name,uid,salt,pw,mask) tuples.
+func mkEtcUsers(entries [][5]string) string {
+	var b strings.Builder
+	for _, e := range entries {
+		name, uid, salt, pw, mask := e[0], e[1], e[2], e[3], e[4]
+		sum := sha256.Sum256([]byte(salt + pw))
+		b.WriteString(name + ":" + uid + ":" + salt + "$" + hex.EncodeToString(sum[:]) + ":" + mask + "\n")
+	}
+	return b.String()
+}
 
 func startLogin(t *testing.T, k *lib.FakeKernel, stop chan struct{}) {
 	t.Helper()
@@ -225,4 +239,83 @@ func TestAuthRegistersUserWithFS(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("fs never received REGISTER after successful auth")
 	}
+}
+
+// TestParseEtcUsers verifies the name:uid:salt$hash:capmask parser.
+func TestParseEtcUsers(t *testing.T) {
+	txt := "# comment\nadmin:0:adm$s3cr3t:0xff\nu1:1001:u1$x:0x18\n\n"
+	users, err := parseEtcUsers(txt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 2 {
+		t.Fatalf("want 2 users, got %d", len(users))
+	}
+	if users[0].Name != "admin" || users[0].UID != 0 || users[0].Mask != 0xff {
+		t.Fatalf("admin entry %+v", users[0])
+	}
+	if users[0].Salt != "adm" || users[0].Hash != "s3cr3t" {
+		t.Fatalf("admin salt/hash %q/%q", users[0].Salt, users[0].Hash)
+	}
+	if users[1].Name != "u1" || users[1].UID != 1001 || users[1].Mask != 0x18 {
+		t.Fatalf("u1 entry %+v", users[1])
+	}
+}
+
+// TestVerifyPassword checks salted SHA-256 verification.
+func TestVerifyPassword(t *testing.T) {
+	sum := sha256.Sum256([]byte("mysalt" + "hunter2"))
+	u := User{Name: "u1", UID: 1001, Mask: 0x18, Salt: "mysalt", Hash: hex.EncodeToString(sum[:])}
+
+	if !verifyPassword(u, "hunter2") {
+		t.Fatal("correct password must verify")
+	}
+	if verifyPassword(u, "wrong") {
+		t.Fatal("wrong password must not verify")
+	}
+	// empty salt => accept any (DefaultUsers fallback)
+	if !verifyPassword(User{Name: "admin"}, "anything") {
+		t.Fatal("empty-salt user must accept any password")
+	}
+}
+
+// TestAuthWrongPasswordRejected: with /etc/users loaded, an incorrect
+// password must be rejected (statusBad) — the Phase 10 regression this
+// feature exists to prevent.
+func TestAuthWrongPasswordRejected(t *testing.T) {
+	users := []User{
+		{Name: "u1", UID: 1001, Mask: lib.CapFocus | lib.CapFSAdmin, Salt: "s1",
+			Hash: hashPw("s1", "secret")},
+	}
+	k := lib.NewFakeKernel()
+	stop := make(chan struct{})
+	defer close(stop)
+	k.Cur = k.AddSession("login", 0, lib.CapAll)
+	go Serve(k, LoginOptions{Users: users, Stop: stop})
+	waitLoginPort(k)
+
+	cli := newAuthClient(t, k)
+
+	// wrong password => rejected
+	st, mask, sid, err := cli.auth("u1", "wrong")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st != statusBad || mask != 0 || sid != spawnNone {
+		t.Fatalf("wrong pw: st=%d mask=%x sid=%d", st, mask, sid)
+	}
+
+	// correct password => OK
+	st2, mask2, _, err := cli.auth("u1", "secret")
+	if err != nil || st2 != statusOK {
+		t.Fatalf("right pw: st=%d err=%v", st2, err)
+	}
+	if mask2 != lib.CapFocus|lib.CapFSAdmin {
+		t.Fatalf("right pw mask=%x", mask2)
+	}
+}
+
+func hashPw(salt, pw string) string {
+	sum := sha256.Sum256([]byte(salt + pw))
+	return hex.EncodeToString(sum[:])
 }
