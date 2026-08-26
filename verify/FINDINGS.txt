@@ -760,3 +760,11 @@ F83 scope reduced: virtio_net.cc (md5 19fa2518) removes the [netdbg] periodic ri
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN 3c93eff/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open: F79(blk+probe) / F81 / F82 MINORs; F83 reduced to p9 dbg-recv instance; zero open BLOCKERs.
 ===== POLL-LOG =====
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN 3c93eff/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open: F79(blk+probe) / F81 / F82 MINORs; F83 reduced to p9 dbg-recv instance; zero open BLOCKERs.
+===== FINDING 88 2026-08-26 MAIN@3c93eff+dirty =====
+severity: MAJOR
+services/net/udp.go handle() (~line 160) · SYNTAX-BROKEN FILE from a botched edit: an orphaned fragment `strconv.Itoa(int(dg.DstPort)) + "\n")` sits between ParseUDP error handling and the demux lookup — looks like the head of a debug print was deleted leaving the tail. go vet / go test / go build all fail ("expected statement, found ')'"), blocking the entire services/net suite again. The rest of the aggregate diff vs HEAD matches already-reviewed content (modern port, checksum, yield fixes).
+why: non-compiling module disables the P9 test matrix; corruption suggests uncommitted multi-file edits are being made without build verification.
+fix: delete the orphaned fragment (or complete the intended print behind a trace flag); run go vet before each poll cycle lands.
+
+===== POLL-LOG =====
+2026-08-26 also noted: netport.go md5 churn matches previously-reviewed two-level-yield state; virtio_net.cc mtime-only.
