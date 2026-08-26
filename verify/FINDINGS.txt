@@ -1416,3 +1416,5 @@ fix: restore the TCP send body (nil-check → sk.tcp.Write(data) → status) or 
 F93 STILL OPEN: netport.go md5 b6e72961 — the truncated NetOpSend case persists (vet fails at :292 "expected '(', found openBody"; race suite build-fails). No repair landed this cycle. Remains MAJOR/open.
 ===== FINDING 93-CLOSED =====
 F93 CLOSED: netport.go (md5 21ccdfb5) — the truncated NetOpSend TCP branch is restored (nil-check, tcp.Write with state diagnostic, errState on failure). go vet clean; go test -race ok (3.440s). Module fully green. tcp.go also churned (57c6b64c) consistent with the repair.
+===== POLL-LOG =====
+2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN 37b90da/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open MINORs: F79(blk+probe) / F81 / F82; F83 reduced to p9 dbg-recv + rxcomp prints. Zero open BLOCKERs or MAJORs.
