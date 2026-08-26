@@ -1436,3 +1436,5 @@ F93 CLOSED: netport.go (md5 21ccdfb5) — the truncated NetOpSend TCP branch is 
 2026-08-26 delta review: MAIN@a191f8d — config-only revert of the lane model to muse-spark-1.2-contributor-free (only authed provider here; openrouter tier would fail every round). No code changes; no findings.
 ===== POLL-LOG =====
 2026-08-26 delta review: MAIN@29eb2a9 — VRING-HANDOFF.md scheduling-deadlock theory + overnight log (docs only). Working tree: netstack.go adds runtime.Gosched() after each frame processed in the RX drain loop (processing + ACK generation can burn the whole quantum under TCG, appearing as a system-wide freeze). Reviewed clean — bounded per-frame cost, no correctness issues. Suite green (vet clean, race ok 3.473s). Zero open BLOCKERs or MAJORs.
+===== POLL-LOG =====
+2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN 29eb2a9/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open MINORs: F79(blk+probe) / F81 / F82; F83 reduced to p9 dbg-recv + rxcomp prints. Zero open BLOCKERs or MAJORs.
