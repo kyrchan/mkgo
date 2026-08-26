@@ -8,7 +8,7 @@
 static constexpr int MAX_PORTS = 24;
 static constexpr int MAX_Q = 32;
 static constexpr int MSG_MAX = 4096;
-static constexpr int H_PER_SESS = 8;
+static constexpr int H_PER_SESS = 16;
 
 struct msg {
     uint32_t from_sid;
