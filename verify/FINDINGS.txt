@@ -1412,3 +1412,5 @@ fix: restore the TCP send body (nil-check → sk.tcp.Write(data) → status) or 
 
 ===== POLL-LOG =====
 2026-08-26 also reviewed in same delta: ServeNet loop now calls s.pump() INLINE before PortRecv (wire-pump goroutine eliminated — addresses wasip1 starvation root cause architecturally); two-level yield retained. Zero open BLOCKERs.
+===== FINDING 93-recheck =====
+F93 STILL OPEN: netport.go md5 b6e72961 — the truncated NetOpSend case persists (vet fails at :292 "expected '(', found openBody"; race suite build-fails). No repair landed this cycle. Remains MAJOR/open.
