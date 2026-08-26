@@ -664,3 +664,11 @@ F83 family grows again: services/net/netport.go:234 adds an unconditional `[net-
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN 3c93eff/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open: F79(blk+probe) / F81 / F82 / F83 MINORs; zero open BLOCKERs.
 ===== POLL-LOG =====
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN 3c93eff/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open: F79(blk+probe) / F81 / F82 / F83 MINORs; zero open BLOCKERs.
+===== FINDING 87 2026-08-26 MAIN@3c93eff+dirty (services/net) =====
+severity: MINOR
+services/net/main.go (~lines 118-156, working tree) · dualFeed now RE-DERIVES window slices per access via ptrAt(rxWinBase/txWinBase) — correct response to wasm3 linear-memory relocation (good). BUT the bases are HARDCODED constants (rxWinBase=0x1000000, txWinBase=+RingSize) while startup still calls attachWindows() whose devman-reported offsets are DISCARDED (`if _, _, err :=`). If the kernel ever places §6 windows elsewhere, net silently reads/writes wrong memory with no error. Related nit: ptrAt takes uint64 but truncates through uintptr on wasm32 — fine below 4 GiB, worth an explicit guard.
+why: silent misaddressing risk against a contract ("devman-reported") the code no longer honors.
+fix: compare devman-reported offs[0]/offs[1] against the constants at startup and fail loudly on mismatch (or consume the reported values directly); bounds-check off+size <= mem size in ptrAt.
+
+===== POLL-LOG =====
+2026-08-26 also reviewed clean in this delta: relocation-aware re-derivation pattern itself (the right fix for stranded pointers), attachWindows retained as existence validation.
