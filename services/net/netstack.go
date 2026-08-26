@@ -238,8 +238,31 @@ func (s *Stack) SendUDPDatagram(dstIP IP4, dgram []byte) error {
 	return s.sendIPv4(dstIP, IP4ProtoUDP, dgram)
 }
 
-// SendTCPSegment is the TCP layer's outbound entry.
+// SendTCPSegment is the TCP layer's outbound entry. Computes the TCP
+// checksum (with IPv4 pseudo-header) -- slirp silently drops segments
+// whose checksum is zero/invalid.
 func (s *Stack) SendTCPSegment(dstIP IP4, seg []byte) error {
+	sum := uint32(0)
+	buf := make([]byte, 0, len(seg)+12)
+	buf = append(buf, s.IP[:]...)
+	buf = append(buf, dstIP[:]...)
+	buf = append(buf, 0, 6)
+	var l [2]byte
+	l[0] = byte(len(seg) >> 8)
+	l[1] = byte(len(seg))
+	buf = append(buf, l[:]...)
+	buf = append(buf, seg...)
+	if len(buf)%2 != 0 {
+		buf = append(buf, 0)
+	}
+	for i := 0; i < len(buf); i += 2 {
+		sum += uint32(buf[i])<<8 | uint32(buf[i+1])
+	}
+	for sum>>16 != 0 {
+		sum = (sum & 0xFFFF) + (sum >> 16)
+	}
+	seg[16] = byte(^sum >> 8)
+	seg[17] = byte(^sum)
 	return s.sendIPv4(dstIP, IP4ProtoTCP, seg)
 }
 
