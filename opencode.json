@@ -1,6 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "opencode/x-preview-f-free",
+  "model": "openrouter/meta/muse-spark-1.2",
   "permission": {
     "*": "allow",
     "question": "deny"
