@@ -1,20 +1,21 @@
 # QUALITY.txt — rolling summary (LANE=VERIFY) — regenerated each pass
-# Last pass: 2026-08-26 — MAIN@37b90da (UDP gate green, TCP stall diagnosed w/ ranked theories)
+# Last pass: 2026-08-27 01:46 UTC — MAIN@5077ff0 (debug strip committed, zero BLOCKERs)
 
 | repo | head reviewed | mechanical | open BLOCKERs | open MAJORs | trend |
 |---|---|---|---|---|---|
-| MAIN  | b315f21 + working tree (UDP ECHO MILESTONE: [p9] udp ok through net.wasm + shim + user-net; TCP SYN/SYN-ACK on wire, establishment timing race remains under TCG; all modern-port work committed; F80/F84/F85/F88/F89 closed, F81/F82/F83 MINORs tracked) | g++ freestanding syntax checks rc=0; go vet clean; services/net race suite green (ok ~3.3s); host tests 44/44 per commit message | **0** | F4 hosteng stale (dead tool); F46 overclaim (corrected) | Phase-9 UDP gate GREEN; HTTP-under-TCG is the remaining P9 step |
-| SVC   | ce7a13f (fleet model-pin on 128314a lineage: net E2E + race-hardening + multiuser rooting + display service + kfs + fuzz targets; fs/display split into own modules) | go vet clean; FULL suite -race -count=1 GREEN across parent module (console/init/login/net/shell) + sub-modules (fs, display/terminal) + guests/lib | 0 | 0 | healthy; no deltas since last pass |
-| TLS   | 1ccd2bf (fleet model-pin on b75d0f5 lineage: hvtest scaffolding + golden-file converter tests + README fleet docs) | go vet clean; go test -race green (img + hvtest) | 0 | 0 | healthy; Phase-12 prep started |
+| MAIN  | 5077ff0 (p9 gate green → strip [net-dbg] + [net] rx prints in 4 net files; strconv/os imports pruned; net.wasm rebuilt 2624349 bytes; p9 GATE PASS per commit: udp ok + http ok len=207) | g++ syntax rc0; go vet host clean, wasip1 build rc0; go test -race green (MAIN net 1.093s, SVC parent/fs/display/lib, TLS) | **0** | 0 | debug residue shrinking; F83 net-side CLOSED |
+| SVC   | ce7a13f (fleet model-pin on 128314a lineage: net E2E + race-hardening + multiuser rooting + display service + kfs + fuzz targets; fs/display split into own modules) | go vet clean ×5 modules; FULL suite -race -count=1 GREEN: parent 1.03-3.46s + fs 4.05s + display/terminal 1.09s + guests/lib 1.25s | 0 | 0 | healthy; no deltas |
+| TLS   | 1ccd2bf (fleet model-pin on b75d0f5 lineage: hvtest scaffolding + golden-file converter tests + README fleet docs) | go vet clean; go test -race green (img + hvtest) | 0 | 0 | healthy; no deltas |
 
-## Blocker-site sweep (fresh, this pass)
-- F13 creator-gate: `ports[g].creator == sid` present in ports.cc (×1).
-- F18 NACK: kernsvc_nack ×6 call sites active in kernsvc.cc.
-- F31 CAP_FSADM gate present in devblk.cc (×2 refs).
-- F32 uid stamping: sched_uid_of in ports.cc port_send path (×1).
-- F58 sig-check bypass: g_skip_sig_check = ZERO occurrences repo-wide.
+## Blocker-site sweep (fresh, this pass @5077ff0)
+- F12 overflow guard: __builtin_add_overflow in devblk.cc present.
+- F13 creator-gate: `ports[g].creator == sid` in ports.cc present (×1).
 - F16 clamp: routed_rw len>8192 budget clamp at wasi_glue.cc:592 + fd validation.
-All four sensitive-file md5s identical to last-verified values — no silent drift.
+- F18 NACK: kernsvc_nack ×6 call sites active in kernsvc.cc.
+- F31 CAP_FSADM gate: devblk_rw gated, 2 refs in devblk.cc.
+- F32 uid stamping: sched_uid_of in ports.cc port_send path (×1).
+- F58 sig-check bypass: g_skip_sig_check = 0 hits repo-wide.
+All sensitive-file md5s stable vs last verified; no silent drift.
 
 ## Open items (all MINOR/NOTE class)
 - F4 hosteng.cc stale vs current API (dead tool, not in build path).
@@ -22,39 +23,20 @@ All four sensitive-file md5s identical to last-verified values — no silent dri
 - F52 12-session LIST ceiling — substrate limit, init defers correctly.
 - F55 fuzz soaks — recurring sweep duty, currently passing.
 - F78 debug residue in virtio_blk.cc — RESOLVED (legacy path deleted).
-- F80 MAJOR — CLOSED @3c93eff: measured-offset OOB workaround deleted
-  with legacy transport; modern layout explicit + correctly sized.
-- F79 unbounded device-wait spins — net side bounded (timeout+diag);
-  blk completion poll + vmod_probe reset-ack spin STILL OPEN.
-- F81 MINOR: MMIO BAR window identity-mapped cacheable (no PCD) —
-  bare-metal risk only; QEMU-tolerant.
-- F82 MINOR: vmod_probe modern-range fallback mis-types devices
-  (blk fallback would accept a net adapter; misses real 0x1042);
-  per-candidate [vmod] boot-log noise.
-- virtio_modern.cc/h committed and LIVE; blk+net both on MODERN in the
-  working tree — pending runtime make test-p9 (legacy retired,
-  QEMU10-ignored, see VRING-HANDOFF.md).
-- F82 MINOR: vmod_probe modern-range fallback mis-types devices
-  (blk fallback would accept a net adapter; misses real 0x1042);
-  per-candidate [vmod] boot-log noise.
-- virtio_modern.cc/h committed and LIVE; blk+net both on MODERN in the
-  working tree — pending runtime make test-p9 (legacy retired,
-  QEMU10-ignored, see VRING-HANDOFF.md).
-- F77 residual nit: dead vmod_features_ok declaration at virtio_modern.h:20.
+- F80 MAJOR — CLOSED @3c93eff: measured-offset OOB workaround deleted.
+- F79 MINOR: unbounded spins — blk poll (virtio_blk.cc:113) + vmod_probe reset-ack (virtio_modern.cc:169) still open.
+- F81 MINOR: MMIO BAR cacheable (no PCD) — bare-metal risk only.
+- F82 MINOR: vmod_probe mis-types + [vmod] cand noise + HOST_FEATURES prints (F95).
+- F83 residue: net [net-dbg] side now CLOSED by 5077ff0 cleanup; remaining p9 dbg-recv (guests/p9/main.go:112) bounded.
+- F95 MINOR: HOST_FEATURES/GUEST_FEATURES prints in vmod_features() — intentional probe, keep until hypothesis closed.
+- F96 CLOSED: strconv unused import fixed (wasip1 build clean, wasm rebuilt).
+- F97 NOTE: 5077ff0 debug strip clean (no new defects).
+- F77 nit: dead vmod_features_ok decl at virtio_modern.h:20.
 
 ## Remaining scope work (not defects)
-P9 vring runtime validation upstream (modern ports for blk+net landed;
-make test-p9 pending) · kfs crash-suite gate cadence · THREAT-MODEL.md
-items 7+ hardening backlog.
+P9 gate PASS on committed HEAD per 5077ff0 (needs independent VERIFY rerun) · kfs crash-suite gate cadence · THREAT-MODEL items 7+.
 
 ## Process notes
-- fs + display are separate Go modules under services/ — parent ./...
-  skips them; run each module root individually.
-- Fleet broadcasts sync into all worktrees' MEMORY.md (verify copy left
-  uncommitted by design).
-- Blocker-site md5 sweep is the reliable drift detector for silent
-  working-tree edits between polls.
-- Correction: prior passes' "6 open BLOCKERs" refrain was stale session
-  memory — ledger blocks show F12/F13/F16/F18/F31/F32/F58 all carry
-  CLOSED status with committed evidence (b82f6ff batch + reconfirmations
-  at every subsequent sweep). True open-BLOCKER count is and remains 0.
+- main.go wasip1-tagged: host vet excludes it; wasip1 build is ground truth for imports (F96 caught/fixed there).
+- Net wasm rebuild confirms debug strings stripped and import fix applied.
+- 5077ff0 correctly retains strconv in netstack.go (ipStr) and os in netport.go (sendto err) — only drops unused imports.
