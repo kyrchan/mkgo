@@ -285,3 +285,32 @@ func TestShellKillSession(t *testing.T) {
 	st.typeLine("kill-session 1")
 	waitFor(t, func() bool { return st.outputContains("denied") }, "kill denial missing")
 }
+
+// TestShellSessions: `sessions` dumps the registry LIST (auditing).
+func TestShellSessions(t *testing.T) {
+	st := newShellTest(t, "")
+	// add a second session so the dump is non-trivial
+	st.k.AddSession("worker", 1002, lib.CapFocus)
+
+	st.typeLine("sessions")
+	waitFor(t, func() bool {
+		return st.outputContains("shell") && st.outputContains("worker") &&
+			st.outputContains("1001") && st.outputContains("1002")
+	}, "sessions dump missing entries")
+}
+
+// TestShellCaps: `caps <sid>` dumps one session's capability bits.
+func TestShellCaps(t *testing.T) {
+	st := newShellTest(t, "")
+	st.typeLine("caps 1")
+	waitFor(t, func() bool {
+		// shell sid=1 holds focus|kill|spawn per newShellTest
+		return st.outputContains("focus") && st.outputContains("kill") &&
+			st.outputContains("spawn")
+	}, "caps dump missing bits")
+
+	// zero-cap session dumps "(no capabilities)"
+	zero := st.k.AddSession("nobody", 0, 0)
+	st.typeLine("caps " + strconv.FormatUint(uint64(zero.Sid), 10))
+	waitFor(t, func() bool { return st.outputContains("no capabilities") }, "zero-cap missing")
+}

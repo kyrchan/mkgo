@@ -155,7 +155,7 @@ func (s *Shell) exec(line string) {
 	cmd, args := fields[0], fields[1:]
 	switch cmd {
 	case "help":
-		s.out("built-ins: echo ls cat stat kill-session run help")
+		s.out("built-ins: echo ls cat stat kill-session sessions caps run help")
 	case "echo":
 		s.out(strings.Join(args, " "))
 	case "ls":
@@ -166,6 +166,10 @@ func (s *Shell) exec(line string) {
 		s.cmdStat(args)
 	case "kill-session":
 		s.cmdKill(args)
+	case "sessions":
+		s.cmdSessions()
+	case "caps":
+		s.cmdCaps(args)
 	case "run":
 		s.cmdRun(args)
 	default:
@@ -270,7 +274,70 @@ func (s *Shell) cmdKill(args []string) {
 	}
 }
 
-// cmdRun launches a module via registry SPAWN with this shell's own
+// cmdSessions dumps the kernel registry's session table for auditing
+// (abi/ABI.md §7 LIST). Lists every session's sid, uid, state, name.
+func (s *Shell) cmdSessions() {
+	if s.reg == nil {
+		s.out("registry unavailable")
+		return
+	}
+	list, err := s.reg.List()
+	if err != nil {
+		s.out("sessions: " + err.Error())
+		return
+	}
+	if len(list) == 0 {
+		s.out("(no sessions)")
+		return
+	}
+	s.out("sid  uid   state name")
+	for _, si := range list {
+		st := "?"
+		switch si.State {
+		case lib.StateRunnable:
+			st = "R"
+		case lib.StateRunning:
+			st = "R"
+		case lib.StateZombie:
+			st = "Z"
+		case lib.StateFree:
+			st = "."
+		}
+		s.out(strconv.FormatUint(uint64(si.Sid), 10) + "  " +
+			strconv.FormatUint(uint64(si.UID), 10) + "  " +
+			st + "     " + si.Name)
+	}
+}
+
+// cmdCaps dumps one session's capability set for auditing
+// (abi/ABI.md §7 CAPS {sid}). Lists each held bit by name.
+func (s *Shell) cmdCaps(args []string) {
+	if s.reg == nil || len(args) == 0 {
+		s.out("usage: caps <sid>")
+		return
+	}
+	sid, err := strconv.ParseUint(args[0], 10, 32)
+	if err != nil {
+		s.out("caps: bad sid")
+		return
+	}
+	caps, err := s.reg.Caps(uint32(sid))
+	if err != nil {
+		s.out("caps: " + err.Error())
+		return
+	}
+	if len(caps) == 0 {
+		s.out(args[0] + ": (no capabilities)")
+		return
+	}
+	var parts []string
+	var mask uint64
+	for _, c := range caps {
+		parts = append(parts, lib.CapNames(c.Rights)...)
+		mask |= c.Rights
+	}
+	s.out(args[0] + ": " + strings.Join(parts, " ") + " (0x" + strconv.FormatUint(mask, 16) + ")")
+}
 // capability set (looked up through LIST+CAPS; never-more-than-caller).
 func (s *Shell) cmdRun(args []string) {
 	if s.reg == nil || len(args) == 0 {
