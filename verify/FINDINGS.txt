@@ -1016,3 +1016,11 @@ F87 recheck: window base relocated again — kernsvc.cc ENUM records, virtio_net
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN b4fda96/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open MINORs: F79(blk+probe) / F81 / F82; F83 reduced to p9 dbg-recv instance. Zero open BLOCKERs or MAJORs.
 ===== POLL-LOG =====
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN b4fda96/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open MINORs: F79(blk+probe) / F81 / F82; F83 reduced to p9 dbg-recv instance. Zero open BLOCKERs or MAJORs.
+===== FINDING 92 2026-08-26 MAIN@b4fda96+dirty =====
+severity: MAJOR
+core/virtio_net.cc:289 · BUILD BROKEN: new `if (tx_pending && dbg_once)` references dbg_once which is NOT DECLARED anywhere in the file — g++ -fsyntax-only fails ("'dbg_once' was not declared in this scope"). Fourth build-breakage in this churn series (F84/F85/F88/F89 pattern now recurring in kernel C++ too). Likely an intended once-only diagnostic flag that was referenced before being defined.
+why: kernel image cannot build; all gates blocked.
+fix: declare dbg_once (e.g. static bool dbg_once = true, cleared after first dump) or drop the condition; run the syntax check before landing.
+
+===== POLL-LOG =====
+2026-08-26 also reviewed: rest of delta matches prior adjudications (64MiB window base aligned across kernsvc/net/main.go; kick/reap wiring intact). Zero open BLOCKERs.
