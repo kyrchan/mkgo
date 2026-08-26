@@ -1322,3 +1322,5 @@ F87 recheck: window base reverted 256 MiB -> 64 MiB (the "proven working placeme
 2026-08-26 delta review: virtio_net.cc mtime bump only, md5 69329fcb unchanged (content = already-adjudicated modern port + grow session). services/net/tcp.go and netport.go show zero diff lines — touch-only. All content previously adjudicated. No new defects.
 ===== POLL-LOG =====
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN ffa09cf/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open MINORs: F79(blk+probe) / F81 / F82; F83 reduced to p9 dbg-recv + rxcomp prints. Zero open BLOCKERs or MAJORs.
+===== POLL-LOG =====
+2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN ffa09cf/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open MINORs: F79(blk+probe) / F81 / F82; F83 reduced to p9 dbg-recv + rxcomp prints. Zero open BLOCKERs or MAJORs.
