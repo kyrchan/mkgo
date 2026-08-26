@@ -864,3 +864,11 @@ F83 family grows: services/net/netport.go (befa8115) adds two more unconditional
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN 3c93eff/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open: F79(blk+probe) / F81 / F82 MINORs; F83 reduced to p9 dbg-recv instance; zero open BLOCKERs.
 ===== POLL-LOG =====
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN 3c93eff/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open: F79(blk+probe) / F81 / F82 MINORs; F83 reduced to p9 dbg-recv instance; zero open BLOCKERs.
+===== FINDING 89 2026-08-26 MAIN@3c93eff+dirty =====
+severity: MAJOR
+services/net/tcp.go:425,429,434 · BUILD BROKEN again: new [net-dbg] prints use os.Stdout but "os" (and "strconv") are not in tcp.go's import block — go vet and go test -race build-fail ("undefined: os" at :425). Also: seg_DstPort_fallback (:415) is defined but never called — dead code from an incomplete edit; the fallback presumably was meant to recover DstPort when ParseTCP fails, but handle() just drops parse errors instead.
+why: non-compiling module disables the P9 test matrix (third occurrence of this class: F84, F85, now F88/F89).
+fix: add "os"/"strconv" imports (or drop the prints per F83); either wire seg_DstPort_fallback into handle() or delete it; run vet before landing.
+
+===== POLL-LOG =====
+2026-08-26 also noted: suite was green at last pass (F88 closed), so this breakage arrived with today's tcp.go edit — pattern suggests edits are being landed without a post-edit vet/build check. Recommend mainline adopt pre-commit vet hook.
