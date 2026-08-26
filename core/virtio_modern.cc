@@ -181,10 +181,26 @@ int vmod_probe(uint16_t want_devid, vmod_dev *out) {
 uint64_t vmod_features(vmod_dev *d, uint64_t accept) {
     *(volatile uint32_t *)(d->common + 0x00) = 0; /* select lo half */
     uint32_t lo = *(volatile uint32_t *)(d->common + 0x04);
+    /* Step 1: print HOST_FEATURES low 32 bits before negotiation
+     * to test VIRTIO_F_VERSION_1 hypothesis (bit 32 lives in hi;
+     * legacy view would see lo=0x79bf8064, modern shows VERSION_1). */
+    console_puts("[vmod] HOST_FEATURES lo=");
+    console_hex64((uint64_t)lo);
+    console_puts("\n");
     *(volatile uint32_t *)(d->common + 0x00) = 1;
     uint32_t hi = *(volatile uint32_t *)(d->common + 0x04);
+    console_puts("[vmod] HOST_FEATURES hi=");
+    console_hex64((uint64_t)hi);
+    console_puts(" accept=");
+    console_hex64(accept);
+    console_puts("\n");
     uint64_t dev = (uint64_t)lo | ((uint64_t)hi << 32);
     uint64_t drv = dev & accept;
+    console_puts("[vmod] GUEST_FEATURES lo=");
+    console_hex64((uint64_t)(uint32_t)drv);
+    console_puts(" hi=");
+    console_hex64((uint64_t)(uint32_t)(drv >> 32));
+    console_puts("\n");
     *(volatile uint32_t *)(d->common + 0x08) = 0;
     *(volatile uint32_t *)(d->common + 0x0C) = (uint32_t)drv;
     *(volatile uint32_t *)(d->common + 0x08) = 1;
