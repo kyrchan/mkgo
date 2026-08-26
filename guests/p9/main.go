@@ -25,7 +25,7 @@ func sched_yield() int32
 // like net.wasm's wire-pump can run) AND the kernel quantum.
 func yieldGo() {
 	runtime.Gosched()
-	yieldGo()
+	sched_yield()
 }
 
 var (
