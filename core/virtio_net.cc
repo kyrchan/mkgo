@@ -18,6 +18,7 @@
 #include "plat.h"
 #include "sched.h"
 #include "virtio_modern.h"
+#include "sched.h"
 #include <stdint.h>
 
 #define VN_QNUM 256
@@ -37,7 +38,11 @@
 
 /* fixed offsets of the RX/TX windows inside the net session's linear
  * memory; devman ENUM reports exactly these */
-#define NET_RX_WIN 0x1000000ULL
+/* 512 MiB: far above anything the Go runtime will ever allocate, so the
+ * window pages can never collide with guest heap/stack objects (an
+ * earlier placement at 16 MiB was being overwritten by Go heap growth,
+ * crashing the runtime with stack-corruption panics). */
+#define NET_RX_WIN 0x4000000ULL /* 64 MiB: well above Go heap, modest realloc */
 #define NET_TX_WIN (NET_RX_WIN + RING_SIZE)
 #define NET_MEM_MIN ((NET_TX_WIN + RING_SIZE + 0xFFFFULL) & ~0xFFFFULL)
 
@@ -182,7 +187,9 @@ int netwin_attach_impl(IM3Runtime runtime) {
     if (cur / 65536u < need_pages) {
         M3Result r = ResizeMemory(runtime, need_pages);
         if (r) {
-            console_puts("[netwin] grow failed\n");
+            console_puts("[netwin] grow failed: ");
+            console_puts(r);
+            console_puts("\n");
             return -1;
         }
     }
@@ -221,10 +228,16 @@ static void rput32(uint8_t *p, uint32_t v) {
     p[3] = (uint8_t)(v >> 24);
 }
 
-/* send one frame through the device (one outstanding, polled) */
-static int vn_tx(const uint8_t *frame, uint32_t len) {
-    if (len == 0 || len > 1526)
-        return -1;
+/* TX is single-outstanding and fully non-blocking: virtio_net_poll runs
+ * in SCHEDULER context -- any wait or yield here would stall the whole
+ * guest (spin) or re-enter the scheduler (corruption). State machine:
+ *   idle      -> kick frame, pending=true
+ *   pending   -> reap used ring on later poll iterations
+ * The caller leaves the frame queued until we report it sent. */
+static bool tx_pending;
+static int dbg_once = 2;
+
+static void vn_tx_kick(const uint8_t *frame, uint32_t len) {
     for (uint32_t i = 0; i < len; i++)
         tx_scratch[VN_HDR_LEN + i] = frame[i];
     for (int i = 0; i < VN_HDR_LEN; i++)
@@ -242,15 +255,16 @@ static int vn_tx(const uint8_t *frame, uint32_t len) {
     tx_avail_idx++;
     *aidx = tx_avail_idx;
     vmod_notify(&dev, 1, tx_qoff);
+}
 
+/* reap a completed TX if the device has posted one; returns true when
+ * the outstanding frame is done */
+static bool vn_tx_reap(void) {
     volatile uint16_t *uidx = (volatile uint16_t *)(tx_vring + VN_USED_OFF + 2);
-    uint64_t spins = 0;
-    while (*uidx == tx_last_used) {
-        if (++spins > 20000000ULL)
-            return -1; /* caller retries later */
-    }
+    if (*uidx == tx_last_used)
+        return false;
     tx_last_used = *uidx;
-    return 0;
+    return true;
 }
 
 void virtio_net_poll(void) {
@@ -266,23 +280,47 @@ void virtio_net_poll(void) {
     volatile uint8_t *rxw = mem + NET_RX_WIN;
     volatile uint8_t *txw = mem + NET_TX_WIN;
 
-    /* --- drain guest TX window into the device --- */
+        /* --- TX: single-outstanding non-blocking state machine ---
+     * pending -> reap completion on a later poll; idle+queued -> kick.
+     * NEVER spin or yield inside poll (scheduler context!). */
     uint32_t th = rget32((const uint8_t *)txw);
     uint32_t tt = rget32((const uint8_t *)txw + 4);
-    while (th != tt) {
+    volatile uint16_t *tuidx =
+        (volatile uint16_t *)(tx_vring + VN_USED_OFF + 2);
+    if (tx_pending && dbg_once) {
+        dbg_once--;
+        volatile uint16_t *chk =
+            (volatile uint16_t *)(tx_vring + VN_DESC_TBL + 2);
+        console_puts("[txdbg] pending avail=");
+        console_hex64(*chk);
+        console_puts(" tused=");
+        console_hex64(*tuidx);
+        console_puts(" last=");
+        console_hex64(tx_last_used);
+        uint8_t isr = vmod_isr(&dev);
+        console_puts(" isr=");
+        console_hex64(isr);
+        console_puts("\n");
+    }
+    if (tx_pending) {
+        if (*tuidx != tx_last_used) {
+            tx_last_used = *tuidx;
+            tx_pending = false;
+            th++;
+            rput32((uint8_t *)txw, th);
+        }
+    } else if (th != tt) {
         uint32_t slot = th % WIN_SLOTS;
         const uint8_t *sp =
             (const uint8_t *)(txw + WIN_HEADER + slot * WIN_STRIDE);
         uint32_t len = rget32(sp);
         if (len > 1526)
             len = 1526; /* corrupt slot clamp */
-        if (vn_tx(sp + 4, len) != 0)
-            break; /* leave queued; retry next poll */
-        th++;
-        rput32((uint8_t *)txw, th);
+        vn_tx_kick(sp + 4, len);
+        tx_pending = true;
     }
 
-    /* --- move device completions into the RX window --- */
+/* --- move device completions into the RX window --- */
     volatile uint16_t *uidx = (volatile uint16_t *)(rx_vring + VN_USED_OFF + 2);
     volatile uint32_t *uring = (volatile uint32_t *)(rx_vring + VN_USED_OFF + 4);
     while (*uidx != rx_last_used) {

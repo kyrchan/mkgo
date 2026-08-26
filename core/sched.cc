@@ -326,7 +326,21 @@ void sched_run(void) {
         session *s = &sessions[picked];
         s->state = S_RUNNING;
         cur = s;
+        uint64_t t0 = cpu_cycles();
         ctx_switch(&kern_sp, s->sp);
+        uint64_t dt = cpu_cycles() - t0;
         cur = 0;
+        /* hog detector: a session that burns >2s of cycles without a
+         * single yield is starving everything else (TCG cycles advance
+         * with executed instructions, so this measures real work) */
+        if (dt > 2000000000ULL) {
+            console_puts("[hog] sid=");
+            console_hex64((uint64_t)picked);
+            console_puts(" '");
+            console_puts(s->name);
+            console_puts("' cycles=");
+            console_hex64(dt);
+            console_puts("\n");
+        }
     }
 }

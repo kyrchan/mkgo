@@ -102,6 +102,40 @@ green; strip when done). scripts/run_p9_once.py = deterministic local
 gate runner (in-process echo+http helpers, no shell backgrounding!).
 
 
+CURRENT STATE #3 (2026-08-26 final this cycle -- MODERN TRANSPORT LIVE)
+-----------------------------------------------------------------------
+MILESTONE ACHIEVED: **[p9] udp ok** end-to-end (driver receives its
+echoed datagram through shim->device->slirp->host echo->back). Wire
+proof: filter-dump shows ARP req/reply AND UDP req/reply both ways.
+Legacy transport is GONE (replaced by core/virtio_modern.cc/h).
+
+KEY FIXES THAT UNLOCKED IT (all committed):
+  * windows moved to 0x4000000 (64 MiB): far above Go heap; 512MiB
+    placement failed (wasm3 realloc of 538MB -> 'memory allocation
+    failed'), 64MiB works.
+  * ParseIP4: accept non-DF unfragmented datagrams (slirp replies carry
+    flags=0x0000; old code demanded DF exactly => every inbound IPv4
+    from slirp was silently dropped).
+  * UDP checksum now includes pseudo-header (slirp validates).
+  * Bind(0) allocates an EPHEMERAL port (replies need a real port).
+  * ServeNet idle path: runtime.Gosched()+k.Yield() -- k.Yield alone
+    starves Go goroutines (wire-pump) forever on wasip1.
+  * virtio_net_poll TX is single-outstanding NON-BLOCKING state machine
+    (kick once, reap completion on later polls; never spin/yield in
+    scheduler context).
+
+REMAINING FOR p9 GATE: TCP establishment. Wire shows SYN out +
+SYN-ACK back repeatedly, but conn stays SYN-SENT through driver's 6
+quick retries (each ~instant local state check; gaps of 200 yieldGo).
+NEXT STEPS: (1) lengthen Connect/Send retry gaps (yieldGo x 2000+) or
+add internal SYN-ACK wait in NetOpConn; (2) confirm via [net-dbg] tcp
+seg prints whether SYN-ACK reaches tcp.handle (prints already in
+services/net/tcp.go); (3) then HTTP GET + gate. Debug prints
+([net-dbg], [netrx] raw dump) intentionally left in until gate green.
+TCG NOTE: everything works with LONGER windows; run_p9_once.py takes
+window seconds arg (use 240+).
+
+
 SUCCESS CRITERIA (unchanged)
 ---------------------------
 [p9] udp ok AND http ok via make test-p9 on committed code.

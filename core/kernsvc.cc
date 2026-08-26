@@ -283,12 +283,12 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
                 if (netwin_attached()) {
                     put32(rbuf + o, 2); /* class net */
                     put32(rbuf + o + 4, 0); /* inst 0 = RX */
-                    put32(rbuf + o + 8, 0x1000000);
+                    put32(rbuf + o + 8, 0x4000000);
                     put32(rbuf + o + 12, 0);
                     o += 16;
                     put32(rbuf + o, 2);
                     put32(rbuf + o + 4, 1); /* inst 1 = TX */
-                    put32(rbuf + o + 8, 0x1000000 + (393224));
+                    put32(rbuf + o + 8, 0x4000000 + (393224));
                     put32(rbuf + o + 12, 0);
                     o += 16;
                     n += 2;

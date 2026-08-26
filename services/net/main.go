@@ -121,7 +121,7 @@ func attachWindows() (*WindowRing, *WindowRing, error) {
 // RE-DERIVED on every access: wasm3 can relocate linear memory when the
 // Go heap grows, which would silently strand cached pointers.
 const (
-	rxWinBase = 0x1000000
+	rxWinBase = 0x4000000              // 64 MiB (kept clear of Go heap)
 	txWinBase = rxWinBase + RingSize
 )
 

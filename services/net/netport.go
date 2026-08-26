@@ -5,7 +5,6 @@ import (
 	"os"
 	"strconv"
 	"sync"
-	"time"
 
 	lib "kernel.lane/guests/lib"
 )
@@ -82,7 +81,11 @@ func ServeNet(k lib.Kernel, s *Stack, stop <-chan struct{}) {
 				return
 			}
 			s.pump()
-			time.Sleep(50 * time.Microsecond)
+			// NEVER time.Sleep here: Go's wasip1 sleep busy-spins on
+			// nanotime (TSC), which starves the whole cooperative
+			// guest. Gosched + one kernel quantum instead.
+			runtime.Gosched()
+			k.Yield()
 		}
 	}()
 
