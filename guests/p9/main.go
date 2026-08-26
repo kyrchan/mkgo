@@ -186,6 +186,7 @@ func testHTTP(nc *lib.NetClient) {
 		}
 		idle = 0
 		resp.Write(buf[:n])
+		os.Stdout.WriteString("[p9] got data\n")
 	}
 	out := resp.String()
 	if strings.Contains(out, "200 OK") ||
@@ -226,3 +227,5 @@ func itoa(v int) string {
 	}
 	return string(b[i:])
 }
+
+func minInt(a, b int) int { if a < b { return a }; return b }

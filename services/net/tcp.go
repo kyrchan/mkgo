@@ -353,6 +353,13 @@ func (c *TCPConn) handle(seg *TCPSegment) {
 			c.rcvBuf = append(c.rcvBuf, seg.Payload...)
 			c.rcvNXT += uint32(len(seg.Payload))
 			c.sendLocked(TCPAck, nil)
+			os.Stdout.WriteString("[net-dbg] tcp data pushed len=" +
+				strconv.Itoa(len(seg.Payload)) + "\n")
+		}
+		if len(seg.Payload) > 0 && seg.Seq != c.rcvNXT {
+			os.Stdout.WriteString("[net-dbg] tcp OOO drop seq=" +
+				strconv.FormatUint(uint64(seg.Seq), 10) + " want=" +
+				strconv.FormatUint(uint64(c.rcvNXT), 10) + "\n")
 		}
 		if seg.Flags&TCPFin != 0 && seg.Seq+uint32(len(seg.Payload)) == c.rcvNXT {
 			c.rcvNXT++
@@ -366,6 +373,13 @@ func (c *TCPConn) handle(seg *TCPSegment) {
 			c.rcvBuf = append(c.rcvBuf, seg.Payload...)
 			c.rcvNXT += uint32(len(seg.Payload))
 			c.sendLocked(TCPAck, nil)
+			os.Stdout.WriteString("[net-dbg] tcp data pushed len=" +
+				strconv.Itoa(len(seg.Payload)) + "\n")
+		}
+		if len(seg.Payload) > 0 && seg.Seq != c.rcvNXT {
+			os.Stdout.WriteString("[net-dbg] tcp OOO drop seq=" +
+				strconv.FormatUint(uint64(seg.Seq), 10) + " want=" +
+				strconv.FormatUint(uint64(c.rcvNXT), 10) + "\n")
 		}
 		if seg.Flags&TCPFin != 0 && seg.Seq+uint32(len(seg.Payload)) == c.rcvNXT {
 			c.rcvNXT++
@@ -417,6 +431,7 @@ func NewTCPStack(s *Stack) *TCPStack {
 func (t *TCPStack) handle(pkt *IP4Packet) {
 	seg, err := ParseTCP(pkt.Payload)
 	if err != nil {
+		os.Stdout.WriteString("[net-dbg] tcp parse err " + err.Error() + "\n")
 		return
 	}
 	t.mu.Lock()
