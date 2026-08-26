@@ -68,6 +68,14 @@ other gates. test-kernel 44/44. Canonical §7 replies = new wire law (28B).
    tools/img integration into Makefile path.
 3. kfs crash-suite integration gate (unit tests exist in services/fs).
 
+## ⚡ CURRENT STATUS (2026-08-26 late -- Phase 9 modern transport)
+Modern virtio transport (core/virtio_modern.cc/h) is COMMITTED and working.
+UDP echo round-trip PROVEN end-to-end ([p9] udp ok). TCP handshake completes
+on wire (ESTABLISHED) and HTTP request reaches host (200 served). Remaining:
+response delivery to driver under TCG stalls — documented in VRING-HANDOFF.md
+with import-based alternative approach recommended for next session.
+Gates g1/p4 verified green after all changes. test-kernel 44/44. net tests ok.
+
 ## ⚡ YOUR NEXT TASKS
 ## ⚡ YOUR NEXT TASKS (coordinator order, 2026-08-24 03:2x — gates being green is NOT the finish line)
 
