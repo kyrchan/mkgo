@@ -75,23 +75,11 @@ func ServeNet(k lib.Kernel, s *Stack, stop <-chan struct{}) {
 		k.Yield()
 	}
 
-	go func() { // wire pump keeps the stack serviced while we block on recv
-		for {
-			if stoppedNet(stop) {
-				return
-			}
-			s.pump()
-			// NEVER time.Sleep here: Go's wasip1 sleep busy-spins on
-			// nanotime (TSC), which starves the whole cooperative
-			// guest. Gosched + one kernel quantum instead.
-			runtime.Gosched()
-			k.Yield()
-		}
-	}()
-
 	buf := make([]byte, lib.MaxMsg)
 	replies := lib.NewReplyBook(k)
 	for {
+		s.pump() // process rx frames from §6 window EVERY iteration
+
 		n := k.PortRecv(h, buf)
 		if n >= lib.CanonicalHeaderLen+2 {
 			hdr, _ := lib.ParseHeader(buf[:int(n)])

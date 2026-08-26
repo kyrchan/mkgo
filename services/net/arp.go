@@ -1,6 +1,7 @@
 package main
 
 import (
+	"runtime"
 	"bytes"
 	"errors"
 	"sync"
@@ -174,7 +175,7 @@ func (s *Stack) Resolve(ip IP4, budget int) (MAC, error) {
 			return mac, nil
 		}
 		s.pump() // service inbound frames (replies) while waiting
-		time.Sleep(100 * time.Microsecond)
+		runtime.Gosched()
 	}
 	return MAC{}, errors.New("net: arp timeout")
 }

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
-	"time"
 )
 
 // Stack is one host's network stack attached to a PacketFeed. A single
@@ -189,7 +188,7 @@ func (s *Stack) Ping(dst IP4, id, seq uint16, payload []byte, budget int) (*ICMP
 		return nil, err
 	}
 	for i := 0; i < budget; i++ {
-		time.Sleep(50 * time.Microsecond)
+		runtime.Gosched()
 		s.mu.Lock()
 		for j := range s.icmpIn {
 			r := s.icmpIn[j]
