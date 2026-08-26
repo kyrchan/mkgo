@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"os"
 	"sync"
 )
 
@@ -428,7 +427,6 @@ func (t *TCPStack) handle(pkt *IP4Packet) {
 	if !ok {
 		return
 	}
-	os.Stdout.WriteString("[net-dbg] tcp seg state=" + c.State() + "\n")
 	if c.State() == "LISTEN" && seg.Flags&TCPSyn != 0 && seg.Flags&TCPAck == 0 {
 		// bind the half-open conn to this peer before handshake continues
 		c.mu.Lock()

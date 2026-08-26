@@ -16,7 +16,6 @@ package main
 import (
 	"errors"
 	"os"
-	"strconv"
 	"unsafe"
 
 	lib "kernel.lane/guests/lib"
@@ -140,20 +139,12 @@ func main() {
 // dualFeed splits the §6 pair into one PacketFeed for the stack.
 type dualFeed struct{}
 
-var dbgRxCalls int
-
 func (d dualFeed) Recv() ([]byte, bool) {
 	r, err := NewWindowRing(ptrAt(rxWinBase, RingSize))
 	if err != nil {
 		return nil, false
 	}
-	f, ok := r.Recv()
-	if ok {
-		os.Stdout.WriteString("[net] rx frame len=" +
-			strconv.Itoa(len(f)) + "\n")
-	}
-	_ = dbgRxCalls
-	return f, ok
+	return r.Recv()
 }
 
 func (d dualFeed) Send(f []byte) bool {

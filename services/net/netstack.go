@@ -133,13 +133,9 @@ func (s *Stack) handleIPv4(f *EthFrame) {
 	var broadcast IP4 = [4]byte{255, 255, 255, 255}
 	pkt, err := ParseIP4(f.Payload)
 	if err != nil {
-		os.Stdout.WriteString("[net-dbg] ipv4 parse err " + err.Error() +
-			" plen=" + strconv.Itoa(len(f.Payload)) + "\n")
 		return
 	}
 	if pkt.Dst != s.IP && pkt.Dst != broadcast {
-		os.Stdout.WriteString("[net-dbg] ipv4 not-for-us dst=" +
-			ipStr(pkt.Dst) + "\n")
 		return
 	}
 	s.mu.Lock()

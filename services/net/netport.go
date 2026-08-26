@@ -206,13 +206,10 @@ func (ns *NetServer) dispatch(op, seq uint16, payload []byte) []byte {
 			}
 		default:
 			if sk.tcp == nil {
-				os.Stdout.WriteString("[net-dbg] send: no conn\n")
 				status = errState
 				break
 			}
 			if _, err := sk.tcp.Write(data); err != nil {
-				os.Stdout.WriteString("[net-dbg] tcp write err state=" +
-					sk.tcp.state.String() + "\n")
 				status = errState
 			}
 		}
