@@ -74,6 +74,34 @@ ENVIRONMENT GOTCHAS THAT COST HOURS (do not relearn)
 * pml4 index math: va>>39 for va=48GiB is 0 (not 6!). 48G needs
   PML4[0]->PDPT[48].
 
+CURRENT STATE #2 (2026-08-26 later -- after modern transport brought up)
+-----------------------------------------------------------------------
+LEGACY TRANSPORT REPLACED BY MODERN (virtio 1.x) via
+core/virtio_modern.cc/h + rewritten virtio_blk.cc / virtio_net.cc.
+Working NOW, verified:
+  * probe via PCI cap list (common/notify/isr/device BARs),
+  * VERSION_1+FEATURES_OK handshake,
+  * queue_setup with explicit desc/avail/used addresses + enable,
+  * TX completions, RX deliveries into §6 windows,
+  * ARP request/reply round trip on the wire (filter-dump proof),
+  * UDP datagrams guest->host AND host->guest on the wire,
+  * **[p9] udp ok** achieved end-to-end (driver got its echoed 12 bytes).
+
+REMAINING FOR p9 GATE: TCP establishment timing. Wire shows SYN out and
+SYN-ACK back repeatedly, but net.wasm's conn stays SYN-SENT through the
+driver's 6 quick Send retries => "socket state". Under TCG each yield is
+~1 quantum of real work; budgets tuned for loopback fire too fast.
+FIX DIRECTION: lengthen tcp.Dial/SYN-ACK wait (services/net/tcp.go Dial
+returns immediately; make Connect retry loop in guests/p9/main.go longer
+or give netport NetOpConn an internal wait), then re-run
+`python3 scripts/run_p9_once.py 240` (in-process helpers; prints GATE).
+
+DEBUG PRINTS still present on purpose: [net-dbg] in netport.go/tcp.go/
+udp.go, [netrx] raw dump in core/virtio_net.cc (helpful until gate is
+green; strip when done). scripts/run_p9_once.py = deterministic local
+gate runner (in-process echo+http helpers, no shell backgrounding!).
+
+
 SUCCESS CRITERIA (unchanged)
 ---------------------------
 [p9] udp ok AND http ok via make test-p9 on committed code.
