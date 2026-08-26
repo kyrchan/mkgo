@@ -954,3 +954,5 @@ F91 STILL OPEN: virtio_net.cc md5 fbc729b4 — :286 still references deleted vn_
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN b4fda96/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); virtio_net.cc mtime bump only, md5 fbc729b4 unchanged — F91 build break persists. Zero open BLOCKERs.
 ===== FINDING 91-CLOSED =====
 F91 CLOSED: virtio_net.cc (md5 24277ec2) completes the non-blocking TX refactor — poll now runs a proper single-outstanding state machine: tx_pending → reap used-ring completion on a later poll and advance the window tail; idle+queued → vn_tx_kick. No spin, no yield inside scheduler context (the F79-net concern is now structurally eliminated). Syntax check rc=0 under freestanding flags. Remaining F79 instances: blk completion poll + vmod_probe reset-ack spin only.
+===== POLL-LOG =====
+2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN b4fda96/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open: F79(blk+probe) / F81 / F82 MINORs; F83 reduced to p9 dbg-recv instance; zero open BLOCKERs.
