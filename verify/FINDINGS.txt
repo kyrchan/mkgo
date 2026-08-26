@@ -986,3 +986,11 @@ F91 CLOSED: virtio_net.cc (md5 24277ec2) completes the non-blocking TX refactor 
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN b4fda96/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open: F79(blk+probe) / F81 / F82 MINORs; F83 reduced to p9 dbg-recv instance; zero open BLOCKERs.
 ===== POLL-LOG =====
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN b4fda96/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open: F79(blk+probe) / F81 / F82 MINORs; F83 reduced to p9 dbg-recv instance; zero open BLOCKERs.
+===== FINDING 91-CLOSED =====
+F91 CLOSED: virtio_net.cc (md5 522f1a5c) completes the kick/reap wiring — poll reaps when tx_pending (advancing the window tail only after device completion), kicks when idle; tx_pending set/cleared correctly; syntax check rc=0 under freestanding flags. The spin/yield-in-scheduler-context hazard is fully eliminated for net.
+
+===== FINDING 87-CLOSED =====
+F87 CLOSED: kernsvc.cc devman ENUM window records moved from 0x1000000 to 0x20000000, matching virtio_net.cc's NET_RX_WIN — kernel and service now agree. Rationale documented in-code: 16 MiB placement was being overwritten by Go heap growth (stack-corruption panics); 512 MiB is far above any guest allocation. Residual nit: base constants remain duplicated across shim and service rather than derived from a shared header — acceptable for v1.
+
+===== POLL-LOG =====
+2026-08-26 also reviewed: suite green (vet clean, race ok 3.311s). Open MINORs: F79(blk+probe) / F81 / F82; F83 reduced to p9 dbg-recv instance. Zero open BLOCKERs or MAJORs.
