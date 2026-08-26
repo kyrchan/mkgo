@@ -585,3 +585,5 @@ severity: NOTE
 Same delta reviewed clean elsewhere: udp.go ephemeral-port allocator scans 49152..65535 with wrap guard (`p != 0`) and taken-check under existing demux map semantics; netport.go OPEN now records the ACTUAL bound port in sk.udpPort (correct for outbound UDP replies); net.wasm/net.wasm.raw rebuilt (+6KB). No capability or ABI surface touched.
 ===== FINDING 85-recheck =====
 F85 partial fix: net_test.go:304-305 updated to two-value form, but :313 still reads `qOther, _, _ := b.udp.Bind(9999)` → vet + test build STILL fail. F85 stays MAJOR/open; one call site remaining.
+===== FINDING 85-CLOSED =====
+F85 CLOSED: net_test.go:313 updated to two-value form (`qOther, _ :=`); go vet clean and `go test -race -count=1 .` passes (ok 3.321s). services/net suite fully green again.
