@@ -1,6 +1,7 @@
 package main
 
 import (
+	"runtime"
 	"os"
 	"bytes"
 	"fmt"
@@ -90,6 +91,10 @@ func (s *Stack) handleFrame(raw []byte) {
 	case EthTypeIPv4:
 		s.handleIPv4(f)
 	}
+	// Yield after each frame: processing + ACK generation can be
+	// expensive; without this the session hogs its entire quantum
+	// and under TCG appears as a system-wide freeze.
+	runtime.Gosched()
 }
 
 // handleARP implements RFC 826: merge sender info; reply to requests

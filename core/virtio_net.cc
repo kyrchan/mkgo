@@ -247,7 +247,6 @@ static void rput32(uint8_t *p, uint32_t v) {
  *   pending   -> reap used ring on later poll iterations
  * The caller leaves the frame queued until we report it sent. */
 static bool tx_pending;
-static int dbg_once = 2;
 
 static void vn_tx_kick(const uint8_t *frame, uint32_t len) {
     for (uint32_t i = 0; i < len; i++)
@@ -299,21 +298,6 @@ void virtio_net_poll(void) {
     uint32_t tt = rget32((const uint8_t *)txw + 4);
     volatile uint16_t *tuidx =
         (volatile uint16_t *)(tx_vring + VN_USED_OFF + 2);
-    if (tx_pending && dbg_once) {
-        dbg_once--;
-        volatile uint16_t *chk =
-            (volatile uint16_t *)(tx_vring + VN_DESC_TBL + 2);
-        console_puts("[txdbg] pending avail=");
-        console_hex64(*chk);
-        console_puts(" tused=");
-        console_hex64(*tuidx);
-        console_puts(" last=");
-        console_hex64(tx_last_used);
-        uint8_t isr = vmod_isr(&dev);
-        console_puts(" isr=");
-        console_hex64(isr);
-        console_puts("\n");
-    }
     if (tx_pending) {
         if (*tuidx != tx_last_used) {
             tx_last_used = *tuidx;
@@ -340,11 +324,6 @@ void virtio_net_poll(void) {
         uint32_t desc_id = uring[e * 2];
         uint32_t written = uring[e * 2 + 1];
         rx_last_used++;
-        console_puts("[rxcomp] id=");
-        console_hex64(desc_id);
-        console_puts(" written=");
-        console_hex64(written);
-        console_puts("\n");
 
         const uint8_t *buf = rx_vring + VN_BUF_OFF + desc_id * VN_BUF_SZ;
         if (written >= VN_HDR_LEN && ws.attached) {
