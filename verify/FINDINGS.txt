@@ -1024,3 +1024,5 @@ fix: declare dbg_once (e.g. static bool dbg_once = true, cleared after first dum
 
 ===== POLL-LOG =====
 2026-08-26 also reviewed: rest of delta matches prior adjudications (64MiB window base aligned across kernsvc/net/main.go; kick/reap wiring intact). Zero open BLOCKERs.
+===== FINDING 92-CLOSED =====
+F92 CLOSED: virtio_net.cc (md5 9fdde704) declares dbg_once as a static int (=2, allowing two diagnostic dumps before silencing); syntax check rc=0 under freestanding flags. Build green; the bounded two-shot diagnostic is a reasonable compromise between observability and noise. No new defects.
