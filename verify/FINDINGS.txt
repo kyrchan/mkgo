@@ -928,3 +928,5 @@ fix: replace the :286 call site with the pending/reap protocol (kick when !tx_pe
 ===== FINDING 91a =====
 severity: NOTE
 Positive in same delta: converting TX from spin-wait to non-blocking kick/reap eliminates the last F79-class wait in net entirely (scheduler context can no longer stall). Once F91's wiring lands, F79-net is fully closed; blk + vmod_probe instances remain.
+===== FINDING 91-recheck =====
+F91 STILL OPEN: virtio_net.cc md5 fbc729b4 — :286 still references deleted vn_tx(); syntax check fails identically. No progress on wiring tx_pending/vn_tx_reap into the poll loop. Remains MAJOR (build broken).
