@@ -919,3 +919,12 @@ fix: none — informational.
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN b4fda96/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open: F79(blk+probe) / F81 / F82 MINORs; F83 reduced to p9 dbg-recv instance; zero open BLOCKERs.
 ===== POLL-LOG =====
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN b4fda96/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); virtio_net.cc mtime bump only, md5 522f1a5c unchanged (touch-only). All other tracked files identical. Open: F79(blk+probe) / F81 / F82 MINORs; F83 reduced to p9 dbg-recv instance; zero open BLOCKERs.
+===== FINDING 91 2026-08-26 MAIN@b4fda96+dirty =====
+severity: MAJOR
+core/virtio_net.cc:286 · BUILD BROKEN mid-refactor: the blocking vn_tx() was replaced by a non-blocking kick/reap state machine (vn_tx_kick + vn_tx_reap + tx_pending — the right design for scheduler-context polling, per the in-code comment), but virtio_net_poll() still calls the deleted `vn_tx(sp+4, len)` at :286. g++ -fsyntax-only fails: "'vn_tx' was not declared in this scope". Also tx_pending is set nowhere and vn_tx_reap is never called — the state machine is half-wired.
+why: kernel image cannot build with this translation unit; blocks all gates.
+fix: replace the :286 call site with the pending/reap protocol (kick when !tx_pending, advance window tail only after reap reports completion), or wire reap into the top of virtio_net_poll.
+
+===== FINDING 91a =====
+severity: NOTE
+Positive in same delta: converting TX from spin-wait to non-blocking kick/reap eliminates the last F79-class wait in net entirely (scheduler context can no longer stall). Once F91's wiring lands, F79-net is fully closed; blk + vmod_probe instances remain.
