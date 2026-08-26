@@ -1282,3 +1282,5 @@ F87 recheck: window base relocated once more — 64 MiB -> 256 MiB (0x10000000),
 F87 recheck: window base reverted 256 MiB -> 64 MiB (the "proven working placement") across kernsvc ENUM records, virtio_net.cc, and net main.go — all three sites consistent again. The interim 512MiB/256MiB experiments evidently didn't help; the proven placement wins. Suite green (vet clean, race ok 3.312s). F87 stays CLOSED. No new defects.
 ===== POLL-LOG =====
 2026-08-26 delta review: kernsvc.cc (3de91e7e -> 69329fcb) + virtio_net.cc — content matches prior adjudications (grow session 256MiB, 64MiB proven window base, kick/reap, [rxcomp] diagnostics). No new defects.
+===== POLL-LOG =====
+2026-08-26 delta review: kernsvc.cc churn — content matches the previously-adjudicated 256MiB grow + window-base state. No new defects.
