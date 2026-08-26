@@ -872,3 +872,5 @@ fix: add "os"/"strconv" imports (or drop the prints per F83); either wire seg_Ds
 
 ===== POLL-LOG =====
 2026-08-26 also noted: suite was green at last pass (F88 closed), so this breakage arrived with today's tcp.go edit — pattern suggests edits are being landed without a post-edit vet/build check. Recommend mainline adopt pre-commit vet hook.
+===== FINDING 89-CLOSED =====
+F89 CLOSED: tcp.go imports repaired — go vet clean and go test -race ok (3.301s). Module fully green again.
