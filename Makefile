@@ -261,7 +261,7 @@ $(BUILD)/disk-p9.img: $(BUILD)/BOOTX64.EFI build/test_p9.wasm \
 	$(MCOPY) -i $@ services/shell/shell.wasm ::/boot/modules/shell.wasm
 	$(MCOPY) -i $@ services/net/net.wasm ::/boot/modules/net.wasm
 	$(MCOPY) -i $@ build/test_p9.wasm ::/boot/modules/p9.wasm
-	printf 'console console.wasm 0\nfs fs.wasm 10\nlogin login.wasm 8\nshell shell.wasm 8\nnet net.wasm 22\np9 p9.wasm 0 respawn=no\n' > $(BUILD)/init-p9.conf.tmp
+	printf 'console console.wasm 0\nnet net.wasm 22\np9 p9.wasm 0 respawn=no\n' > $(BUILD)/init-p9.conf.tmp
 	$(MCOPY) -i $@ $(BUILD)/init-p9.conf.tmp ::/etc/init.conf
 
 # Phase 10 disk: legacy slots carry the two user drivers

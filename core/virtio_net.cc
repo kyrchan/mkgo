@@ -42,7 +42,7 @@
  * window pages can never collide with guest heap/stack objects (an
  * earlier placement at 16 MiB was being overwritten by Go heap growth,
  * crashing the runtime with stack-corruption panics). */
-#define NET_RX_WIN 0x4000000ULL /* 64 MiB: well above Go heap, modest realloc */
+#define NET_RX_WIN 0x4000000ULL  /* 64 MiB: proven working placement */
 #define NET_TX_WIN (NET_RX_WIN + RING_SIZE)
 #define NET_MEM_MIN ((NET_TX_WIN + RING_SIZE + 0xFFFFULL) & ~0xFFFFULL)
 
@@ -212,6 +212,18 @@ int netwin_attach_impl(IM3Runtime runtime) {
 
 extern "C" int netwin_attached(void) { return ws.attached; }
 
+/* grow any managed-runtime session's linear memory to at least min_bytes */
+extern "C" int vmod_grow_session(void *runtime, uint32_t min_bytes) {
+    IM3Runtime rt = (IM3Runtime)runtime;
+    unsigned cur = 0;
+    m3_GetMemory(rt, &cur, 0);
+    unsigned need_pages = (min_bytes + 65535u) / 65536u;
+    if (cur / 65536u >= need_pages)
+        return 0;
+    M3Result r = ResizeMemory(rt, need_pages);
+    return r ? -1 : 0;
+}
+
 /* ABI-stable entry used by kernsvc SPAWN hook (C linkage there) */
 extern "C" int netwin_attach(void *runtime) {
     return netwin_attach_impl((IM3Runtime)runtime);
@@ -328,6 +340,11 @@ void virtio_net_poll(void) {
         uint32_t desc_id = uring[e * 2];
         uint32_t written = uring[e * 2 + 1];
         rx_last_used++;
+        console_puts("[rxcomp] id=");
+        console_hex64(desc_id);
+        console_puts(" written=");
+        console_hex64(written);
+        console_puts("\n");
 
         const uint8_t *buf = rx_vring + VN_BUF_OFF + desc_id * VN_BUF_SZ;
         if (written >= VN_HDR_LEN && ws.attached) {

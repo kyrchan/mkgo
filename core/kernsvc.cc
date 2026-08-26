@@ -10,6 +10,7 @@
 extern "C" {
 int netwin_attach(void *runtime);
 int netwin_attached(void);
+int vmod_grow_session(void *runtime, uint32_t min_bytes);
 }
 
 static void put16(uint8_t *p, uint16_t v) {
@@ -176,6 +177,16 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
             /* name of new session = module name (v1) */
             int nsid = sched_spawn_image(modname, sched_uid_of(from_sid), want,
                                          modname);
+            if (nsid > 0 && !strcmp(modname, "net")) {
+                /* net needs room for §6 windows at 64 MiB offset */
+                vmod_grow_session(sched_runtime_of((uint32_t)nsid),
+                                  68 * 1024 * 1024);
+            }
+            if (nsid > 0 && !strcmp(modname, "p9")) {
+                /* driver needs Go heap+stack headroom */
+                vmod_grow_session(sched_runtime_of((uint32_t)nsid),
+                                  32 * 1024 * 1024);
+            }
             if (nsid > 0 && !strcmp(modname, "net")) {
                 /* §6 windows live in the net session's linear memory */
                 netwin_attach(sched_runtime_of((uint32_t)nsid));

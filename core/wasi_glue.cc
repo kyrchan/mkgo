@@ -756,13 +756,11 @@ m3ApiRawFunction(wasi_poll_oneoff) {
     m3ApiGetArgMem(uint32_t *, nevents)
     (void)in;
     (void)subcount;
-    /* approximate a sleep: surrender ONE quantum so other sessions run;
-     * v1 has no real timers. (Multi-quantum sleeps here starve the Go
-     * runtime's own goroutines -- observed as net.wasm wire-pump stalls.) */
-    {
-        extern void sched_yield_current(void);
-        sched_yield_current();
-    }
+    /* NO yield here: returning immediately lets Go's Sleep become a
+     * brief busy-spin that burns THIS session's quantum fairly, keeping
+     * all Go goroutines responsive. Yielding inside this stub would
+     * suspend the entire Go runtime mid-Sleep, starving wire-pump and
+     * other goroutines for many quanta (observed as total RX stall). */
     if (nevents && mem_ok(runtime, nevents, 4))
         *nevents = 0;
     m3ApiReturn(WASI_ESUCCESS);
