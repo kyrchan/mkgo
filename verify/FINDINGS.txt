@@ -1404,3 +1404,11 @@ MAIN@b315f21 reviewed — milestone commit consolidating all previously-adjudica
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN 37b90da/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open MINORs: F79(blk+probe) / F81 / F82; F83 reduced to p9 dbg-recv + rxcomp prints. Zero open BLOCKERs or MAJORs.
 ===== POLL-LOG =====
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN 37b90da/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open MINORs: F79(blk+probe) / F81 / F82; F83 reduced to p9 dbg-recv + rxcomp prints. Zero open BLOCKERs or MAJORs.
+===== FINDING 93 2026-08-26 MAIN@37b90da+dirty =====
+severity: MAJOR
+services/net/netport.go NetOpSend case (~lines 222-228) · BUILD BROKEN by a truncated edit: the TCP branch of NetOpSend is cut off mid-block — `if sk.tcp == nil {` is followed directly by a stray `}` and then `case NetOpRecv:`, with the entire tcp.Write/send logic missing. go vet and go test -race build-fail ("expected '(', found openBody" at :292). This is the third build-breakage in this churn series (F84, F88, F89 were repaired; this one is new).
+why: non-compiling module disables the P9 test matrix; pattern indicates edits landing without post-edit build verification.
+fix: restore the TCP send body (nil-check → sk.tcp.Write(data) → status) or revert to last-known-good netport.go; run go vet + race suite before landing.
+
+===== POLL-LOG =====
+2026-08-26 also reviewed in same delta: ServeNet loop now calls s.pump() INLINE before PortRecv (wire-pump goroutine eliminated — addresses wasip1 starvation root cause architecturally); two-level yield retained. Zero open BLOCKERs.
