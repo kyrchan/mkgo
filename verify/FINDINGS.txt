@@ -884,3 +884,10 @@ F89 STILL OPEN: tcp.go (md5 9ef23fa4) added "os" to imports but the new [net-dbg
 F89 CLOSED (re-verified): tcp.go now imports strconv; go vet clean and go test -race ok (3.321s). services/net fully green again. Remaining F83 debug-print instances unchanged.
 ===== POLL-LOG =====
 2026-08-26 delta review: tcp.go (9ef23fa4 -> 331396f2) — both "os" and "strconv" now imported; the [net-dbg] prints (no-conn dport, seg state) remain unconditional and fold into F83's residue list as previously noted. No other changes; no new defects.
+===== FINDING 90 =====
+severity: NOTE
+MAIN@3eab76a milestone commit reviewed — consolidates the working-tree work adjudicated across F82a/F83/F84-CLOSED/F85-CLOSED/F86/F87/F88-CLOSED/F89-CLOSED into committed history. MILESTONE ACHIEVED: UDP echo round-trip through net.wasm + shim + QEMU user-net ([p9] udp ok) — the Phase-9 UDP gate is functionally green. Remaining (documented in VRING-HANDOFF.md): TCP connection-establishment timing race under TCG and the HTTP fetch step; no new code defects introduced by this commit beyond items already tracked (F79 blk/probe spins, F81 cacheable MMIO, F82 probe type-match, F83 residue prints). MEMORY.md unchanged at 842e28ae.
+why: records the committed baseline for future sweeps.
+fix: none — informational.
+
+## QUALITY.txt refresh follows separately.
