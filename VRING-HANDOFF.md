@@ -136,6 +136,42 @@ TCG NOTE: everything works with LONGER windows; run_p9_once.py takes
 window seconds arg (use 240+).
 
 
+CURRENT STATE #4 (2026-08-26 late -- TCP data phase, commit ac49aeb)
+-----------------------------------------------------------------------
+TRANSPORT LAYER: FULLY WORKING. Modern virtio (virtio_modern.cc) probes,
+negotiates, sets up queues correctly. Frames flow BOTH directions on the
+wire (filter-dump proof). ARP, UDP echo, TCP SYN/SYN-ACK/ACK all work.
+
+ACHIEVED: [p9] udp ok -- driver receives echoed datagram through the
+full stack (driver→net.wasm→shim→device→slirp→host→back).
+
+REMAINING: HTTP response delivery stalls after ESTABLISHED.
+  - Host serves GET with 200 ✓ (python log confirms)
+  - Response frame arrives at device (should generate rx completion)
+  - But net.wasm pump only processes 2 frames total per run:
+    frame#1 = SYN-ACK → ESTABLISHED
+    frame#2 = ??? (possibly ACK or first data segment)
+    The actual HTTP response body frame never reaches tcp.handle.
+  
+  ROOT CAUSE THEORIES (ranked):
+  1. The response arrives while ALL rx buffers are consumed-by-device
+     and our repost logic doesn't return them fast enough under TCG.
+     FIX: increase VN_RX_BUFS from 8 to 32+.
+  2. The tx_pending state machine skips the RX section when it
+     shouldn't. VERIFY: print from BOTH sections every poll call.
+  3. QEMU slirp drops the response because our TCP ACK checksum is
+     wrong. TEST: capture with filter-dump and validate ACK csum.
+
+DEBUG AIDS STILL IN CODE:
+  [net-dbg] prints in netport.go + tcp.go; [rxcomp] in virtio_net.cc;
+  [hog] detector in sched.cc. scripts/run_p9_once.py takes window secs.
+
+TCG PERFORMANCE NOTE: each yieldGo() ≈ 1 full round of all sessions.
+With ~6 sessions × ~50ms/quantum under TCG, a single yield costs
+~300ms wall. Budget loops of 2000 yields = 10 minutes! Reduce budgets
+or switch to KVM for faster iteration.
+
+
 SUCCESS CRITERIA (unchanged)
 ---------------------------
 [p9] udp ok AND http ok via make test-p9 on committed code.
