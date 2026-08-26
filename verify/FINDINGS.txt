@@ -812,3 +812,5 @@ F88 CLOSED: udp.go (md5 587171eb) — orphaned fragment removed, handle() now cl
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN 3c93eff/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open: F79(blk+probe) / F81 / F82 MINORs; F83 reduced to p9 dbg-recv instance; zero open BLOCKERs.
 ===== POLL-LOG =====
 2026-08-26 delta review: guests/p9/main.go (7300eb4d -> e7aa1899) — TCP Connect now retried up to 8x with 4000-yield pacing to accommodate the asynchronous handshake through the shim (SYN out, SYN-ACK back on a later poll). Correct for the cooperative model; gate semantics unchanged. The [p9] dbg recv print (:100) remains — F83's last instance still open. No new defects.
+===== POLL-LOG =====
+2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN 3c93eff/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open: F79(blk+probe) / F81 / F82 MINORs; F83 reduced to p9 dbg-recv instance; zero open BLOCKERs.
