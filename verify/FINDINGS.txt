@@ -882,3 +882,5 @@ F89 CLOSED: tcp.go imports repaired — go vet clean and go test -race ok (3.301
 F89 STILL OPEN: tcp.go (md5 9ef23fa4) added "os" to imports but the new [net-dbg] prints also use strconv.Itoa (:426) — strconv still missing. go vet and go test -race continue to build-fail ("undefined: strconv"). Additionally the prints themselves (no-conn dport, seg state) fold into F83's debug-residue list. Fix: add strconv import; gate prints per F83.
 ===== FINDING 89-CLOSED =====
 F89 CLOSED (re-verified): tcp.go now imports strconv; go vet clean and go test -race ok (3.321s). services/net fully green again. Remaining F83 debug-print instances unchanged.
+===== POLL-LOG =====
+2026-08-26 delta review: tcp.go (9ef23fa4 -> 331396f2) — both "os" and "strconv" now imported; the [net-dbg] prints (no-conn dport, seg state) remain unconditional and fold into F83's residue list as previously noted. No other changes; no new defects.
