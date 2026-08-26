@@ -1,5 +1,5 @@
 # QUALITY.txt — rolling summary (LANE=VERIFY) — regenerated each pass
-# Last pass: 2026-08-26 — MAIN@b315f21 (UDP echo GREEN end-to-end; TCP handshake ESTABLISHED; HTTP 200 served; response-delivery stall remains)
+# Last pass: 2026-08-26 — MAIN@37b90da (UDP gate green, TCP stall diagnosed w/ ranked theories)
 
 | repo | head reviewed | mechanical | open BLOCKERs | open MAJORs | trend |
 |---|---|---|---|---|---|
