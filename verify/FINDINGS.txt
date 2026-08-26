@@ -891,3 +891,5 @@ why: records the committed baseline for future sweeps.
 fix: none — informational.
 
 ## QUALITY.txt refresh follows separately.
+===== POLL-LOG =====
+2026-08-26 delta review: MAIN@b4fda96 — VRING-HANDOFF.md documentation-only commit (+28 lines): modern-transport resume notes, corrected explanation of the earlier +10762 measurements (net rx-buffer content + stale-junk reads, NOT a device used ring), environment constants, hypothesis status (legacy queue-address registration semantics remains the open item), and evidence-file locations. No code changes; no findings. Heads otherwise stable; zero open BLOCKERs.
