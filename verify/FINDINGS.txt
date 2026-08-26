@@ -1274,3 +1274,5 @@ F87 recheck: window base relocated once more — 64 MiB -> 256 MiB (0x10000000),
 2026-08-26 delta review: kernsvc.cc + virtio_net.cc churn — SPAWN-hook grow budget raised 64 MiB -> 256 MiB (matching the window base; Go runtime headroom). vmod_grow_session now logs [grow] ok/failed with page counts (better diagnostics, failure-path only). All content matches prior adjudications. No new defects.
 ===== POLL-LOG =====
 2026-08-26 delta review: kernsvc.cc (032847ce -> b9db1196) — minor churn only; content matches the previously-adjudicated 256MiB grow + window-base state. No new defects.
+===== POLL-LOG =====
+2026-08-26 delta review: kernsvc.cc (032847ce -> 032ec4b0) — vmod_grow_session declaration moved inside the existing extern "C" block (:13) rather than a bare C++ declaration; proper C linkage now explicit. Functionally identical to the reviewed state; all other content unchanged. No new defects.
