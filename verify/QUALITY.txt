@@ -1,9 +1,9 @@
 # QUALITY.txt — rolling summary (LANE=VERIFY) — regenerated each pass
-# Last pass: 2026-08-26 — MAIN@3eab76a (UDP echo milestone), SVC@ce7a13f, TLS@1ccd2bf
+# Last pass: 2026-08-26 — MAIN@b38521b (TCP diagnosis staged, hog detector), SVC@ce7a13f, TLS@1ccd2bf
 
 | repo | head reviewed | mechanical | open BLOCKERs | open MAJORs | trend |
 |---|---|---|---|---|---|
-| MAIN  | 3eab76a + working tree (UDP ECHO MILESTONE: [p9] udp ok through net.wasm + shim + user-net; TCP SYN/SYN-ACK on wire, establishment timing race remains under TCG; all modern-port work committed; F80/F84/F85/F88/F89 closed, F81/F82/F83 MINORs tracked) | g++ freestanding syntax checks rc=0; go vet clean; services/net race suite green (ok ~3.3s); host tests 44/44 per commit message | **0** | F4 hosteng stale (dead tool); F46 overclaim (corrected) | Phase-9 UDP gate GREEN; HTTP-under-TCG is the remaining P9 step |
+| MAIN  | b38521b + working tree (UDP ECHO MILESTONE: [p9] udp ok through net.wasm + shim + user-net; TCP SYN/SYN-ACK on wire, establishment timing race remains under TCG; all modern-port work committed; F80/F84/F85/F88/F89 closed, F81/F82/F83 MINORs tracked) | g++ freestanding syntax checks rc=0; go vet clean; services/net race suite green (ok ~3.3s); host tests 44/44 per commit message | **0** | F4 hosteng stale (dead tool); F46 overclaim (corrected) | Phase-9 UDP gate GREEN; HTTP-under-TCG is the remaining P9 step |
 | SVC   | ce7a13f (fleet model-pin on 128314a lineage: net E2E + race-hardening + multiuser rooting + display service + kfs + fuzz targets; fs/display split into own modules) | go vet clean; FULL suite -race -count=1 GREEN across parent module (console/init/login/net/shell) + sub-modules (fs, display/terminal) + guests/lib | 0 | 0 | healthy; no deltas since last pass |
 | TLS   | 1ccd2bf (fleet model-pin on b75d0f5 lineage: hvtest scaffolding + golden-file converter tests + README fleet docs) | go vet clean; go test -race green (img + hvtest) | 0 | 0 | healthy; Phase-12 prep started |
 
