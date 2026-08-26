@@ -944,3 +944,5 @@ F91 STILL OPEN: virtio_net.cc md5 fbc729b4 — :286 still references deleted vn_
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN b4fda96/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical (virtio_net.cc still fbc729b4 — F91 build break persists). Zero open BLOCKERs.
 ===== POLL-LOG =====
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN b4fda96/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical (virtio_net.cc still fbc729b4 — F91 build break persists). Zero open BLOCKERs.
+===== POLL-LOG =====
+2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN b4fda96/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical (virtio_net.cc still fbc729b4 — F91 build break persists). Zero open BLOCKERs.
