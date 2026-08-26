@@ -47,7 +47,7 @@
 #define NET_MEM_MIN ((NET_TX_WIN + RING_SIZE + 0xFFFFULL) & ~0xFFFFULL)
 
 /* RX queue storage: ring pages then receive buffers */
-#define VN_RX_BUFS 8
+#define VN_RX_BUFS 32
 #define VN_BUF_SZ 2048
 #define VN_BUF_OFF ((VN_USED_OFF + 4u + 8u * VN_QNUM + 4095u) & ~4095u)
 

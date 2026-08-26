@@ -25,6 +25,7 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
                       const uint8_t *data, uint32_t len);
 int netwin_attach(void *runtime) { return -1; }
 int netwin_attached(void) { return 0; }
+int vmod_grow_session(void *runtime, uint32_t min_bytes) { (void)runtime; (void)min_bytes; return 0; }
 }
 void *sched_runtime_of(uint32_t sid) { return 0; }
 
