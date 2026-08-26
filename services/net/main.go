@@ -16,6 +16,7 @@ package main
 import (
 	"errors"
 	"os"
+	"strconv"
 	"unsafe"
 
 	lib "kernel.lane/guests/lib"
@@ -115,23 +116,52 @@ func attachWindows() (*WindowRing, *WindowRing, error) {
 	return rx, tx, nil
 }
 
+// Window bases inside this session's linear memory (devman-reported;
+// pinned instantiation, services/ABI-NOTES.md §10). Slices must be
+// RE-DERIVED on every access: wasm3 can relocate linear memory when the
+// Go heap grows, which would silently strand cached pointers.
+const (
+	rxWinBase = 0x1000000
+	txWinBase = rxWinBase + RingSize
+)
+
 func main() {
 	os.Stdout.WriteString("[net] up\n")
-	rx, tx, err := attachWindows()
-	if err != nil {
+	if _, _, err := attachWindows(); err != nil {
 		os.Stdout.WriteString("[net] " + err.Error() + "\n")
 		return
 	}
 	mac, ip := readAddrArg()
-	stack := NewStack(mac, ip, dualFeed{rx: rx, tx: tx})
+	stack := NewStack(mac, ip, dualFeed{})
 	os.Stdout.WriteString("[net] serving " + ip.String() + "\n")
 	ServeNet(lib.Real(), stack, nil)
 }
 
 // dualFeed splits the §6 pair into one PacketFeed for the stack.
-type dualFeed struct{ rx, tx *WindowRing }
+type dualFeed struct{}
 
-func (d dualFeed) Recv() ([]byte, bool) { return d.rx.Recv() }
-func (d dualFeed) Send(f []byte) bool   { return d.tx.Send(f) }
+var dbgRxCalls int
+
+func (d dualFeed) Recv() ([]byte, bool) {
+	r, err := NewWindowRing(ptrAt(rxWinBase, RingSize))
+	if err != nil {
+		return nil, false
+	}
+	f, ok := r.Recv()
+	if ok {
+		os.Stdout.WriteString("[net] rx frame len=" +
+			strconv.Itoa(len(f)) + "\n")
+	}
+	_ = dbgRxCalls
+	return f, ok
+}
+
+func (d dualFeed) Send(f []byte) bool {
+	t, err := NewWindowRing(ptrAt(txWinBase, RingSize))
+	if err != nil {
+		return false
+	}
+	return t.Send(f)
+}
 
 var _ PacketFeed = dualFeed{}

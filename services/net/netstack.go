@@ -1,7 +1,10 @@
 package main
 
 import (
+	"os"
 	"bytes"
+	"fmt"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -116,14 +119,23 @@ func (s *Stack) handleARP(f *EthFrame) {
 			s.sink.Send(BuildEth(pkt.SrcMAC, s.MAC, EthTypeARP, reply.Build()))
 		}
 	case ARPOpReply:
-		s.arp.Update(pkt.DstIP, pkt.DstMAC) // resolver completion path
+		os.Stdout.WriteString("[net] arp reply src=" + ipStr(pkt.SrcIP) +
+			" mac=" + macStr(pkt.SrcMAC) + " (cache updated)\n")
+		s.arp.Update(pkt.SrcIP, pkt.SrcMAC)
 	}
 }
 
 func (s *Stack) handleIPv4(f *EthFrame) {
 	var broadcast IP4 = [4]byte{255, 255, 255, 255}
 	pkt, err := ParseIP4(f.Payload)
-	if err != nil || (pkt.Dst != s.IP && pkt.Dst != broadcast) {
+	if err != nil {
+		os.Stdout.WriteString("[net-dbg] ipv4 parse err " + err.Error() +
+			" plen=" + strconv.Itoa(len(f.Payload)) + "\n")
+		return
+	}
+	if pkt.Dst != s.IP && pkt.Dst != broadcast {
+		os.Stdout.WriteString("[net-dbg] ipv4 not-for-us dst=" +
+			ipStr(pkt.Dst) + "\n")
 		return
 	}
 	s.mu.Lock()
@@ -215,6 +227,13 @@ func (s *Stack) injectFrom(peer *Stack, seg *TCPSegment) {
 }
 
 // SendUDPDatagram is the UDP layer's outbound entry (used by demux).
+func (s *Stack) SendUDP(dstIP IP4, dg *UDPDatagram) error {
+	dg.checksumSrc = s.IP
+	dg.checksumDst = dstIP
+	return s.sendIPv4(dstIP, IP4ProtoUDP, dg.Build())
+}
+
+// SendUDPDatagram is the raw-segment entry (tests / passthrough).
 func (s *Stack) SendUDPDatagram(dstIP IP4, dgram []byte) error {
 	return s.sendIPv4(dstIP, IP4ProtoUDP, dgram)
 }
@@ -239,3 +258,11 @@ const icmpInCap = 64
 type netError struct{ msg string }
 
 func (e *netError) Error() string { return e.msg }
+
+func ipStr(ip IP4) string {
+	return strconv.Itoa(int(ip[0])) + "." + strconv.Itoa(int(ip[1])) + "." +
+		strconv.Itoa(int(ip[2])) + "." + strconv.Itoa(int(ip[3]))
+}
+func macStr(m MAC) string {
+	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5])
+}

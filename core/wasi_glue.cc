@@ -756,12 +756,12 @@ m3ApiRawFunction(wasi_poll_oneoff) {
     m3ApiGetArgMem(uint32_t *, nevents)
     (void)in;
     (void)subcount;
-    /* approximate a sleep: surrender several quanta so time passes and
-     * other sessions run; v1 has no real timers */
+    /* approximate a sleep: surrender ONE quantum so other sessions run;
+     * v1 has no real timers. (Multi-quantum sleeps here starve the Go
+     * runtime's own goroutines -- observed as net.wasm wire-pump stalls.) */
     {
         extern void sched_yield_current(void);
-        for (int i = 0; i < 48; i++)
-            sched_yield_current();
+        sched_yield_current();
     }
     if (nevents && mem_ok(runtime, nevents, 4))
         *nevents = 0;

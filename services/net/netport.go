@@ -1,6 +1,9 @@
 package main
 
 import (
+	"runtime"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -89,22 +92,25 @@ func ServeNet(k lib.Kernel, s *Stack, stop <-chan struct{}) {
 		n := k.PortRecv(h, buf)
 		if n >= lib.CanonicalHeaderLen+2 {
 			hdr, _ := lib.ParseHeader(buf[:int(n)])
-			if hdr.RNam == "" {
-				continue
-			}
-			rep := ns.dispatch(hdr.Op, hdr.Seq, buf[lib.CanonicalHeaderLen:int(n)])
-			if rep != nil {
-				if rh, err := replies.Bind(hdr.RNam); err == nil {
-					k.PortSend(rh, rep)
+			if hdr.RNam != "" {
+				rep := ns.dispatch(hdr.Op, hdr.Seq,
+					buf[lib.CanonicalHeaderLen:int(n)])
+				if rep != nil {
+					if rh, err := replies.Bind(hdr.RNam); err == nil {
+						k.PortSend(rh, rep)
+					}
 				}
 			}
+			continue // datagram handled: loop hot path
 		}
-		if stoppedNet(stop) {
-			return
-		}
-		if n == 0 {
-			k.Yield()
-		}
+		// CRITICAL on wasip1: two-level yielding is required here.
+		// k.Yield() surrenders THIS session's kernel quantum but returns
+		// to the SAME goroutine -- it never unblocks the wire-pump
+		// goroutine, which starves forever on Go's cooperative
+		// single-threaded runtime. runtime.Gosched() hands control to
+		// that goroutine; both levels are needed every idle pass.
+		runtime.Gosched()
+		k.Yield()
 	}
 }
 
@@ -151,8 +157,7 @@ func (ns *NetServer) dispatch(op, seq uint16, payload []byte) []byte {
 				sk.listen = ln
 			}
 		case NetKindUDP:
-			sk.udpQ = ns.stack.udp.Bind(port)
-			sk.udpPort = port
+			sk.udpQ, sk.udpPort = ns.stack.udp.Bind(port)
 		default:
 			status = errBadOp
 		}
@@ -204,14 +209,19 @@ func (ns *NetServer) dispatch(op, seq uint16, payload []byte) []byte {
 		switch sk.kind {
 		case NetKindUDP:
 			if err := ns.stack.udp.SendTo(sk.udpPort, sk.peerIP, sk.peerPort, data); err != nil {
+				os.Stdout.WriteString("[net] sendto err: " + err.Error() +
+					" port=" + strconv.Itoa(int(sk.udpPort)) + "\n")
 				status = errState
 			}
 		default:
 			if sk.tcp == nil {
+				os.Stdout.WriteString("[net-dbg] send: no conn\n")
 				status = errState
 				break
 			}
 			if _, err := sk.tcp.Write(data); err != nil {
+				os.Stdout.WriteString("[net-dbg] tcp write err state=" +
+					sk.tcp.state.String() + "\n")
 				status = errState
 			}
 		}
@@ -286,4 +296,11 @@ func openBody(status int32, id uint16) []byte {
 	b := make([]byte, 2)
 	lib.Put16(b, id)
 	return b
+}
+
+func eStr(err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	return err.Error()
 }

@@ -12,6 +12,7 @@ package main
 
 import (
 	"os"
+	"runtime"
 	"strings"
 
 	lib "kernel.lane/guests/lib"
@@ -19,6 +20,13 @@ import (
 
 //go:wasmimport wasi_snapshot_preview1 sched_yield
 func sched_yield() int32
+
+// yieldGo surrenders BOTH levels: the Go scheduler (so other goroutines
+// like net.wasm's wire-pump can run) AND the kernel quantum.
+func yieldGo() {
+	runtime.Gosched()
+	yieldGo()
+}
 
 var (
 	udpPort uint16 = 5599
@@ -33,10 +41,10 @@ func main() {
 	k := lib.Real()
 	nc, err := lib.BindNet(k, "p9")
 	for err != nil {
-		sched_yield()
+		yieldGo()
 		nc, err = lib.BindNet(k, "p9")
 	}
-	nc.SetBudget(60000)
+	nc.SetBudget(20000)
 
 	// give the stack time to come up (net.wasm serves after windows attach)
 	if !waitNet(nc) {
@@ -59,7 +67,7 @@ func waitNet(nc *lib.NetClient) bool {
 			return true
 		}
 		last = err
-		sched_yield()
+		yieldGo()
 	}
 	os.Stdout.WriteString("[p9] open err " + eStr(last) + "\n")
 	return false
@@ -78,22 +86,36 @@ func testUDP(nc *lib.NetClient) {
 		os.Stdout.WriteString("[p9] FAIL udp conn " + eStr(err) + "\n")
 		os.Exit(1)
 	}
-	for attempt := 0; attempt < 5; attempt++ {
-		if _, err := nc.Send(sock, payload); err != nil {
-			os.Stdout.WriteString("[p9] FAIL udp send " + eStr(err) + "\n")
-			os.Exit(1)
+	for attempt := 0; attempt < 8; attempt++ {
+		// first SendTo may race the ARP resolution window; retry sends
+		var serr error
+		for r := 0; r < 3; r++ {
+			if _, serr = nc.Send(sock, payload); serr == nil {
+				break
+			}
+			for i := 0; i < 3000; i++ {
+				yieldGo()
+			}
+		}
+		if serr != nil {
+			// ARP resolution may complete right after the deadline;
+			// the cache is warm now -- retry the whole send.
+			continue
 		}
 		buf := make([]byte, len(payload)+64)
 		n, rerr := nc.Recv(sock, buf)
+		if rerr != nil || n > 0 {
+			os.Stdout.WriteString("[p9] dbg recv n=" + itoa(n) +
+				" err=" + eStr(rerr) + "\n")
+		}
 		if rerr == nil && n == len(payload) &&
 			string(buf[:n]) == string(payload) {
 			os.Stdout.WriteString("[p9] udp ok\n")
 			return
 		}
-		_ = rerr
 		// yield between retransmits so the shim and host keep running
 		for i := 0; i < 2000; i++ {
-			sched_yield()
+			yieldGo()
 		}
 	}
 	os.Stdout.WriteString("[p9] FAIL udp echo\n")
@@ -108,13 +130,34 @@ func testHTTP(nc *lib.NetClient) {
 	}
 	defer func() { _ = nc.Close(sock) }()
 
-	if err := nc.Connect(sock, ip10_0_2_2(), hpPort); err != nil {
-		os.Stdout.WriteString("[p9] FAIL tcp conn " + eStr(err) + "\n")
+	// TCP: Connect completes the handshake asynchronously (SYN out,
+	// SYN-ACK back through the shim); retry until the stack accepts.
+	var cerr error
+	for i := 0; i < 8; i++ {
+		cerr = nc.Connect(sock, ip10_0_2_2(), hpPort)
+		if cerr == nil {
+			break
+		}
+		for y := 0; y < 200; y++ {
+			yieldGo()
+		}
+	}
+	if cerr != nil {
+		os.Stdout.WriteString("[p9] FAIL tcp conn " + eStr(cerr) + "\n")
 		os.Exit(1)
 	}
 	req := "GET /hello.txt HTTP/1.0\r\nHost: p9\r\n\r\n"
-	if _, err := nc.Send(sock, []byte(req)); err != nil {
-		os.Stdout.WriteString("[p9] FAIL tcp send " + eStr(err) + "\n")
+	var serr error
+	for i := 0; i < 6; i++ {
+		if _, serr = nc.Send(sock, []byte(req)); serr == nil {
+			break
+		}
+		for y := 0; y < 200; y++ {
+			yieldGo()
+		}
+	}
+	if serr != nil {
+		os.Stdout.WriteString("[p9] FAIL tcp send " + eStr(serr) + "\n")
 		os.Exit(1)
 	}
 
@@ -126,7 +169,7 @@ func testHTTP(nc *lib.NetClient) {
 		if rerr != nil || n <= 0 {
 			idle++
 			for i := 0; i < 1000; i++ {
-				sched_yield()
+				yieldGo()
 			}
 			continue
 		}

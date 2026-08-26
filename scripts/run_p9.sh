@@ -53,6 +53,6 @@ env "$QEMU_ENV_STR" "$QEMU_BIN" "$@" \
     -netdev user,id=n1 -device virtio-net-pci,netdev=n1 \
     -serial file:"$LOG" -display none -no-reboot &
 
-# gate window: firmware ~22 s + service bring-up + two round trips
-sleep 75
+# gate window: firmware + bring-up + round trips (TCG is slow)
+sleep 150
 exit 0

@@ -28,44 +28,45 @@ static uint64_t *g_pml4;
 uint64_t paging_pml4_pa(void) { return (uint64_t)(uintptr_t)g_pml4; }
 
 void paging_identity_init(void) {
-    /* Identity-map the first 512 GiB: covers conventional RAM (<4GiB)
-     * AND the 64-bit MMIO BARs (virtio modern common/notify/isr/device
-     * regions live at e.g. 0xc_0000_0000 under q35). Mapping MMIO here
-     * is safe: pages fault only on access, and we access exactly the
-     * device bars. */
-    /* 64 GiB identity: RAM below 4 GiB plus q35 64-bit MMIO BAR window */
-    uint64_t top = 1ULL << 36;
+    /* Identity-map RAM (<4 GiB, 2 MiB pages) plus a SPARSE high window
+     * (1 GiB pages) covering the q35 64-bit PCI MMIO BAR area (virtio
+     * modern regs live at e.g. 0xC_0000_0000 = 768 GiB). High mappings
+     * cost one PDPT entry per GiB -- no PD allocation needed up there.
+     * VRING-BLOCKER note: an earlier fix used a dense 2MiB map and both
+     * miscomputed the required range (hex/decimal slip: 0xC000000000 is
+     * 768 GiB) and overflowed the private table arena. */
+    uint64_t top = 1ULL << 42; /* 4 TiB */
     uint64_t *pml4 = mk_table();
     g_pml4 = pml4;
 
-    /* one PDPT per PML4 slot (each covers 512 GiB); identity throughout */
     for (uint64_t region = 0; region < top; region += (1ULL << 39)) {
         uint64_t *pdpt = mk_table();
         pml4[(region >> 39) & 511] = ((uint64_t)(uintptr_t)pdpt) | 3;
         for (uint64_t addr = region; addr < region + (1ULL << 39) &&
                                      addr < top;
              addr += (1ULL << 30)) {
-            uint64_t *pd = mk_table();
-            pdpt[(addr >> 30) & 511] = ((uint64_t)(uintptr_t)pd) | 3;
-            for (int i = 0; i < 512 && addr + (uint64_t)i * (1 << 21) < top;
-                 i++) {
-                uint64_t pa = addr + (uint64_t)i * (1 << 21);
-                pd[i] = pa | 0x83; /* present | write | 2MiB page */
+            uint32_t gi = (addr >> 30) & 511;
+            if (addr < (1ULL << 32)) {
+                /* low 4 GiB: 2 MiB pages (RAM, cacheable) */
+                uint64_t *pd = mk_table();
+                pdpt[gi] = ((uint64_t)(uintptr_t)pd) | 3;
+                for (int i = 0; i < 512; i++)
+                    pd[i] = addr + (uint64_t)i * (1 << 21) | 0x83;
+            } else {
+                /* high window: 1 GiB leaf pages (MMIO BARs) */
+                pdpt[gi] = addr | 0x87; /* P|RW|US=0|PS(1G)|A */
             }
         }
     }
     wr_cr3((uint64_t)(uintptr_t)pml4);
-    /* VRING-BLOCKER root cause #2: OVMF leaves CR4.PGE set and its own
-     * global TLB entries behind; those survive our CR3 reload, so any VA
-     * the firmware touched (e.g. 64-bit device BARs it sized) keeps the
-     * FIRMWARE-era translation -- typically not-present for us. Clearing
-     * PGE flushes every global entry. */
+    /* VRING-BLOCKER root cause #2b: OVMF leaves CR4.PGE set and its own
+     * global TLB entries behind; those survive CR3 reload, so any VA the
+     * firmware touched keeps the FIRMWARE-era translation. Clear PGE. */
     {
         uint64_t cr4;
         __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
-        if (cr4 & (1ULL << 7)) { /* PGE */
+        if (cr4 & (1ULL << 7))
             __asm__ volatile("mov %0, %%cr4" :: "r"(cr4 & ~(1ULL << 7)));
-        }
     }
     console_puts("[mm] identity map to ");
     console_hex64(top);

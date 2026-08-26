@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"os"
+	"strconv"
 	"sync"
 )
 
@@ -421,8 +423,11 @@ func (t *TCPStack) handle(pkt *IP4Packet) {
 	c, ok := t.conns[seg.DstPort]
 	t.mu.Unlock()
 	if !ok {
-		return // no listener: RFC says RST; v1 drops silently
+		os.Stdout.WriteString("[net-dbg] tcp no conn dport=" +
+			strconv.Itoa(int(seg.DstPort)) + "\n")
+		return
 	}
+	os.Stdout.WriteString("[net-dbg] tcp seg state=" + c.State() + "\n")
 	if c.State() == "LISTEN" && seg.Flags&TCPSyn != 0 && seg.Flags&TCPAck == 0 {
 		// bind the half-open conn to this peer before handshake continues
 		c.mu.Lock()

@@ -49,8 +49,9 @@ func ParseIP4(p []byte) (*IP4Packet, error) {
 	if total < IP4HdrLen || total > len(p) {
 		return nil, ErrIPv4
 	}
-	if BeGet16(p[6:8]) != 0x4000 { // exactly DF set, MF=0, offset=0
-		return nil, ErrIPv4
+	// accept DF or not; only a non-zero fragment OFFSET is rejected
+	if BeGet16(p[6:8])&0x1FFF != 0 {
+		return nil, ErrIPv4 // fragmented datagram (v1 unsupported)
 	}
 	pkt := &IP4Packet{
 		Proto:   p[9],

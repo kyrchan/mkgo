@@ -29,6 +29,12 @@ extern "C" void isr_dump(const struct frame *f) {
         __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
         console_puts(" cr2=");
         console_hex64(cr2);
+        {
+            uint64_t cr3v;
+            __asm__ volatile("mov %%cr3, %0" : "=r"(cr3v));
+            console_puts(" cr3=");
+            console_hex64(cr3v);
+        }
     }
     console_puts("\n");
     cpu_halt();

@@ -301,8 +301,8 @@ func TestUDPDemuxAndSend(t *testing.T) {
 		}
 	}()
 
-	qb := b.udp.Bind(8080)
-	qa := a.udp.Bind(9090)
+	qb, _ := b.udp.Bind(8080)
+	qa, _ := a.udp.Bind(9090)
 
 	if err := a.udp.SendTo(9090, b.IP, 8080, []byte("hello udp")); err != nil {
 		t.Fatal(err)
@@ -310,7 +310,7 @@ func TestUDPDemuxAndSend(t *testing.T) {
 	waitForCond(t, func() bool { _, ok := qb.Recv(); return ok }, "udp never delivered")
 
 	// demux isolation: wrong port gets nothing
-	qOther := b.udp.Bind(9999)
+	qOther, _ := b.udp.Bind(9999)
 	if err := a.udp.SendTo(9090, b.IP, 8080, []byte("second")); err != nil {
 		t.Fatal(err)
 	}

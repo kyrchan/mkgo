@@ -140,9 +140,12 @@ func (c *ARPCache) Lookup(ip IP4) (MAC, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.m[ip]
-	if !ok || time.Now().After(e.expires) {
+	if !ok {
 		return MAC{}, false
 	}
+	// TTL check disabled under wasip1: the guest clock can jump
+	// (calibrated TSC vs Go's monotonic base), which expired entries
+	// instantly and made every ARP re-resolve. v1 cache is per-boot.
 	return e.mac, true
 }
 

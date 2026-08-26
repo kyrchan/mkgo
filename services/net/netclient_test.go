@@ -90,7 +90,7 @@ func TestLibNetClientE2E(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	q := stackPeer.udp.Bind(5555)
+	q, _ := stackPeer.udp.Bind(5555)
 	if err := nc.Connect(udpSock, [4]byte{10, 0, 0, 1}, 5555); err != nil {
 		t.Fatal(err)
 	}
