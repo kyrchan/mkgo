@@ -1474,3 +1474,5 @@ MAIN@468c614 reviewed — final vring diagnosis commit: (1) debug instrumentatio
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN 468c614/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open MINORs: F79(blk+probe) / F81 / F82; F83 reduced to p9 dbg-recv + rxcomp prints. Zero open BLOCKERs or MAJORs.
 ===== POLL-LOG =====
 2026-08-26 delta review: MAIN@f644244 — small commit on the legacy-transport line: arp.go swaps time.Sleep(100µs) for runtime.Gosched() in its retry loop (removes TSC busy-spin starvation, consistent with prior yield fixes); net.wasm rebuilt. Documentation-only otherwise. No new defects; zero open BLOCKERs or MAJORs.
+===== POLL-LOG =====
+2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN f644244/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open MINORs: F79(blk+probe) / F81 / F82; F83 reduced to p9 dbg-recv + rxcomp prints. Zero open BLOCKERs or MAJORs.
