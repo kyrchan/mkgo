@@ -1032,3 +1032,5 @@ F92 CLOSED: virtio_net.cc (md5 9fdde704) declares dbg_once as a static int (=2, 
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN b4fda96/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open MINORs: F79(blk+probe) / F81 / F82; F83 reduced to p9 dbg-recv instance. Zero open BLOCKERs or MAJORs.
 ===== POLL-LOG =====
 2026-08-26 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN b4fda96/842e28ae · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no source files newer than FINDINGS.txt; md5 sweep identical. Open MINORs: F79(blk+probe) / F81 / F82; F83 reduced to p9 dbg-recv instance. Zero open BLOCKERs or MAJORs.
+===== POLL-LOG =====
+2026-08-26 delta review: services/net/netport.go — wire-pump goroutine's time.Sleep(50µs) replaced with runtime.Gosched() + k.Yield(): Go's wasip1 sleep busy-spins on nanotime (TSC), starving the whole cooperative guest. Correct fix consistent with the two-level-yield pattern; suite green (vet clean, race ok 3.280s). No new defects.
