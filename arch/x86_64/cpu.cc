@@ -1,5 +1,6 @@
 #include "cpu.h"
 #include "plat.h"
+#include "io.h"
 
 void cpu_dump_features(void) {
     struct cpuid max = cpuid(0, 0);
@@ -61,6 +62,11 @@ int cpu_enable_vector(void) {
 }
 
 void cpu_halt(void) {
+    /* QEMU debug-exit: write to port 0xf4 to request VM shutdown. Harmless
+     * NOP on real hardware (unused ISA port); with -device isa-debug-exit
+     * present the VM exits instantly instead of idling until the watchdog
+     * timeout — lets self-terminating gates finish in seconds, not minutes. */
+    outb(0xf4, 0);
     cli();
     for (;;)
         hlt();

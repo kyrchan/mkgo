@@ -28,62 +28,32 @@ decisions, and gotchas. Update at milestones or near context limits.
 - p7 flow = current architecture (shell claims §4 focus itself; run_p7.sh types
   `cat /etc/motd`; fs seeds motd at mount). Gate greps updated accordingly.
 
-## ⚡ ACTIVE: Phase 9 vring blocker -- PRECISE STATE FOR INSTANT RESUME (2026-08-26)
+## ⚡ CURRENT STATUS (2026-08-27 late -- Phase 10 GREEN on v1.3, Phase 11 next) — Option A
 
-**Symptom**: QEMU 10.0.11 q35 legacy virtio (blk AND net): device processes the
-FIRST ~2 requests then stops consuming avail entries. Completions observed
-WRITING at vring_buf+10762 (idx) / +10768,+10772 (elem id/len) -- NOT at spec
-align(4096+518,4096)=8192 nor naive 4616. Our avail idx @+4098 keeps climbing;
-device's counter frozen at 2; ISR=0.
+Phase 9 gate is GREEN: both `[p9] udp ok` AND `[p9] http ok` pass via
+`make test-p9` (commit 5077ff0 stripped debug instrumentation). Phase 10
+multiuser negatives gate PASSES (`make test-p10` 14 markers: p10a+b all ok +
+deny stat/Create/Write + uid-spoof + cap-inherit). `tools/img` retired
+mtools from the Makefile path (commits f46aa9e, 1be7cac).
 
-**Ruled out**: PCI cmd bits (already 0x7), PFN registration (readback matches),
-notify delivery (QEMU -trace virtio_queue_notify fires), flags-width bug
-(desc_put took u16 flags -> 1u<<32 UB -- FIXED to u64), sig-check bypass,
-stale disks (several false leads!). F45's three bugs are FIXED in code but
-that didn't restore flow.
+Gates g1-p10 verified green under TCG after p8a harness fix (dropped
+unreachable `KERNEL-OK` on legacy disk; p8 now checks only `busy. done`
++ `polite. done`). KVM unavailable in this env. Full KVM+TCG matrix pending.
+ABI remains **v1.3 / abi_ver 0x01** for Phase 10 close — `abi/ABI.md:1` v1.3
+and `core/engine.cc:56` still enforce `0x01`. v2.0 spec (`abi_ver 0x02`,
+PCI/VFIO §12-15) parked in `/tmp/v2-stash/` for Phase 11; do not merge
+before Phase 10 tag.
 
-**Next hypotheses to try (in order)**:
-1. QEMU may now require GUEST_FEATURES write of VIRTIO_F_BAD_FEATURE/VERSION
-   handshake BEFORE QUEUE_PFN on transitional devices; try writing 0 via outl
-   BEFORE status ACK|DRIVER sequence ordering variants.
-2. Try `-machine pc` with SeaBIOS-direct? (OVMF residue theory: firmware used
-   MODERN interface leaving device in modern mode where LEGACY PFN writes are
-   ignored after reset; check `disable-modern=on` + `disable-legacy=off`
-   COMBO was only partially tested).
-3. Port the driver to the MODERN virtio MMIO/common-config interface via BAR4
-   (qtree showed bar4 mem 0xc000000000, 64bit) -- bigger but well-specified.
-4. Compare against QEMU 8.x/9.x binary in ~/.local if available.
-
-**Working right now**: net device probe/MAC/windows/ENUM; p9 guest + run_p9.sh
-+ test-p9 target wired (fails at first ARP send). RAM-disk backend serves all
-other gates. test-kernel 44/44. Canonical §7 replies = new wire law (28B).
-
-## ⚡ REMAINING MANIFEST
-## ⚡ REMAINING MANIFEST (coordinator order)
-1. **Phase 9**: virtio-net native shim (§6 RX/TX packet windows, polled) +
-   wire services/net E2E + `test-p9` gate (host nc UDP echo + HTTP GET via
-   QEMU user-net against 10.0.2.2). net.wasm exists & unit-green; needs the shim.
-2. **Phase 10 negative tests**: two concurrent users; cross-user denial BOTH
-   routes (direct-port + preview1); KVM+TCG matrix for every gate;
-   tools/img integration into Makefile path.
-3. kfs crash-suite integration gate (unit tests exist in services/fs).
-
-## ⚡ CURRENT STATUS (2026-08-26 late -- Phase 9 modern transport)
-Modern virtio transport (core/virtio_modern.cc/h) is COMMITTED and working.
-UDP echo round-trip PROVEN end-to-end ([p9] udp ok). TCP handshake completes
-on wire (ESTABLISHED) and HTTP request reaches host (200 served). Remaining:
-response delivery to driver under TCG stalls — documented in VRING-HANDOFF.md
-with import-based alternative approach recommended for next session.
-Gates g1/p4 verified green after all changes. test-kernel 44/44. net tests ok.
-
-## ⚡ YOUR NEXT TASKS
-## ⚡ YOUR NEXT TASKS (coordinator order, 2026-08-24 03:2x — gates being green is NOT the finish line)
+## ⚡ YOUR NEXT TASKS (coordinator order, Option A)
 
 The remaining-work manifest below still stands. In order:
-1. `git merge lane/services` (brings net.wasm, display.wasm, v1.3-conformant modules, uid-rooting)
-2. Build virtio-net native shim + `test-p9` gate per AGENTS.md Phase 9; wire services/net E2E
-3. Phase 10 negative tests: two concurrent users, cross-user denial both routes, KVM+TCG matrix
-4. kfs lands via LANE SERVICES — integrate + crash-suite gate when it commits
+1. Phase 10 remaining: README.md v1.3 sync, KVM+TCG matrix for all gates,
+   re-evidence `make test-all` on TCG (fresh serial logs)
+2. Phase 11: VFIO foundation + framebuffer (restore `/tmp/v2-stash/ABI-v2.md`
+   → `abi/ABI.md` v2.0, bump `engine.cc` + `Makefile` stamping to `0x02`,
+   rebuild all wasm)
+3. Phase 12: Wireless + USB (all via VFIO)
+4. Phase 13: Hypervisor matrix (legacy PS/2 + VFIO E1000/AHCI)
 Gates re-run after EACH step. ALL PHASES COMPLETE only when this list is empty AND VERIFY confirms.
 
 

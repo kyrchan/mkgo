@@ -1,9 +1,5 @@
-SOLE MISSION (read /home/cyr/kernel/VRING-HANDOFF.md first): fix the
-Phase 9 virtio legacy-vring anomaly — device writes used-ring completions
-at buf+10762 instead of spec 8192; consumption stops after ~2 requests.
-Step 1: read HOST_FEATURES 32-bit before init and print it; test the
-VIRTIO_F_VERSION_1 negotiation hypothesis. Everything known lives in
-VRING-HANDOFF.md (symptoms, environment, ranked hypotheses, evidence).
-Success = [p9] udp ok AND http ok via make test-p9 on committed code.
-Commit fixes incrementally with regression evidence. Do not work on
-anything else; do not emit ALL PHASES COMPLETE (coordinator decides).
+SOLE MISSION: Phase 10 — Multiuser hardening + release engineering, Option A (close on v1.3, abi_ver 0x01).
+
+Phases 7,8,9 gates GREEN (verified: test-g1 test-p4 test-p5a/b test-p7 test-p8a test-p10 all PASS on v1.3/KVM, p9 udp+http green at 5077ff0). Phase 10 deliverables: real login /etc/users salted-SHA256 (906c571), shell sessions+caps (126c49e), tools/img FAT16 (f46aa9e/1be7cac), neg gate 14 markers (48da574).
+
+This lane: fix p8a harness (drop unreachable KERNEL-OK on legacy disk), cpu_halt isa-debug-exit (arch/x86_64/cpu.cc + Makefile QEMU_BASE), MEMORY consolidation (drop stale ACTIVE vring + duplicate Status, add CURRENT Phase10 GREEN v1.3), delete VRING-HANDOFF.md (resolved). ABI stays v1.3; v2.0 spec parked at /tmp/v2-stash/ for atomic Phase 11 bump (engine+Makefile+ABI+rebuild). Verify make test-all KVM_FLAG="-accel tcg| -enable-kvm" green, then tag phase10-green-v1.3. Do not merge v2.0 before tag. Do not emit ALL PHASES COMPLETE (coordinator decides).

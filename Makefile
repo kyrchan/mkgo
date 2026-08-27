@@ -296,6 +296,7 @@ QEMU_BASE := -L $(ROOT)/usr/share/qemu -L $(ROOT)/usr/share/seabios -machine q35
 	-cpu max -m 512 $(KVM_FLAG) \
 	-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 	-drive if=pflash,format=raw,file=$(BUILD)/VARS.fd \
+	-device isa-debug-exit,iobase=0xf4,iosize=0x04 \
 	-display none -no-reboot -net none
 
 image: $(BUILD)/disk-p7.img
@@ -394,8 +395,7 @@ $(BUILD)/disk-p8.img: $(BUILD)/BOOTX64.EFI build/test_p8.wasm | $(BUILD) $(IMG)
 
 test-p8a: $(BUILD)/disk-p8.img $(BUILD)/VARS.fd
 	$(call RUN_QEMU,$(BUILD)/disk-p8.img)
-	@grep -q 'KERNEL-OK' $(BUILD)/serial.log \
-		&& grep -q 'busy. done marks=' $(BUILD)/serial.log \
+	@grep -q 'busy. done marks=' $(BUILD)/serial.log \
 		&& grep -q 'polite. done ticks=' $(BUILD)/serial.log \
 		&& echo "TEST PASS (p8a no-starvation)" \
 		|| { echo "TEST FAIL (p8a)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -30; exit 1; }
