@@ -166,6 +166,14 @@ build/test_p10b.wasm: build/test_p10b.raw
 $(BUILD)/BOOTX64.EFI: $(BUILD)/kernel.so scripts/mkpefi.py
 	python3 scripts/mkpefi.py $(BUILD)/kernel.so $@
 
+# /etc/users — name:uid:salt$hex(sha256(salt+password)):capmask
+# capmask 0x18 = FOCUS|FS_ADMIN; 0xff = all bits (admin).
+$(BUILD)/etc_users.txt:
+	@printf '# /etc/users — name:uid:salted-sha256:capmask\n# salted-hash = salt$$hex(sha256(salt + password))\n' > $@
+	@printf 'u1:1001:u1salt$$%s:0x18\n' "$$(echo -n 'u1saltu1' | sha256sum | cut -d' ' -f1)" >> $@
+	@printf 'u2:1002:u2salt$$%s:0x18\n' "$$(echo -n 'u2saltu2' | sha256sum | cut -d' ' -f1)" >> $@
+	@printf 'admin:0:adminsalt$$%s:0xff\n' "$$(echo -n 'adminsaltadmin' | sha256sum | cut -d' ' -f1)" >> $@
+
 # one disk image per payload so gates never boot a stale guest
 IMG := $(BUILD)/../tools/img/img
 $(IMG):
