@@ -9,15 +9,12 @@ BUILD := build
 ROOT  ?= $(HOME)/.local/osdev-root
 
 QEMU    := $(shell command -v qemu-system-x86_64 2>/dev/null || echo $(ROOT)/usr/bin/qemu-system-x86_64)
-MFORMAT := $(shell command -v mformat 2>/dev/null || echo $(ROOT)/usr/bin/mformat)
-MMD     := $(shell command -v mmd 2>/dev/null || echo $(ROOT)/usr/bin/mmd)
-MCOPY   := $(shell command -v mcopy 2>/dev/null || echo $(ROOT)/usr/bin/mcopy)
 
 OVMF_CODE := $(firstword $(foreach d,$(ROOT)/usr/share/OVMF /usr/share/OVMF /usr/share/ovmf,$(wildcard $(d)/OVMF_CODE_4M.fd) $(wildcard $(d)/OVMF_CODE.fd)))
 OVMF_VARS := $(firstword $(foreach d,$(ROOT)/usr/share/OVMF /usr/share/OVMF /usr/share/ovmf,$(wildcard $(d)/OVMF_VARS_4M.fd) $(wildcard $(d)/OVMF_VARS.fd)))
 
 QEMU_ENV := LD_LIBRARY_PATH=$(ROOT)/usr/lib/x86_64-linux-gnu
-KVM_FLAG := $(shell [ -w /dev/kvm ] && echo -enable-kvm || echo -accel tcg)
+KVM_FLAG ?= $(shell [ -w /dev/kvm ] && echo -enable-kvm || echo -accel tcg)
 
 CC      := gcc
 CXX     := g++
@@ -170,12 +167,14 @@ $(BUILD)/BOOTX64.EFI: $(BUILD)/kernel.so scripts/mkpefi.py
 	python3 scripts/mkpefi.py $(BUILD)/kernel.so $@
 
 # one disk image per payload so gates never boot a stale guest
+IMG := $(BUILD)/../tools/img/img
+$(IMG):
+	$(MAKE) -C tools/img img
+
 define MKDISK
-dd if=/dev/zero of=$(1) bs=1M count=0 seek=64 status=none
-$(MFORMAT) -i $(1) ::
-$(MMD) -i $(1) ::/EFI ::/EFI/BOOT ::/vm
-$(MCOPY) -i $(1) $(BUILD)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
-$(MCOPY) -i $(1) $(2) ::/vm/app
+$(IMG) $(1) 64 \
+  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+  $(2):/vm/app
 endef
 
 $(BUILD)/disk-g1.img: $(BUILD)/BOOTX64.EFI build/hello1.wasm | $(BUILD)
@@ -189,13 +188,11 @@ $(BUILD)/disk-g3.img: $(BUILD)/BOOTX64.EFI build/hello3.wasm | $(BUILD)
 
 # Phase 4 disk: payload = test_pp; boot services under /boot/modules
 define MKDISKP4
-dd if=/dev/zero of=$(1) bs=1M count=0 seek=64 status=none
-$(MFORMAT) -i $(1) ::
-$(MMD) -i $(1) ::/EFI ::/EFI/BOOT ::/vm ::/boot ::/boot/modules
-$(MCOPY) -i $(1) $(BUILD)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
-$(MCOPY) -i $(1) build/test_pp.wasm ::/vm/app
-$(MCOPY) -i $(1) services/console/console.wasm ::/boot/modules/console.wasm
-$(MCOPY) -i $(1) services/login/login.wasm ::/boot/modules/login.wasm
+$(IMG) $(1) 64 \
+  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+  build/test_pp.wasm:/vm/app \
+  services/console/console.wasm:/boot/modules/console.wasm \
+  services/login/login.wasm:/boot/modules/login.wasm
 endef
 
 $(BUILD)/disk-p4.img: $(BUILD)/BOOTX64.EFI build/test_pp.wasm \
@@ -204,85 +201,85 @@ $(BUILD)/disk-p4.img: $(BUILD)/BOOTX64.EFI build/test_pp.wasm \
 
 # Phase 5 disks: fs server + two payload slots (app=/vm/app, app2=/vm/app2)
 define MKDISK5
-dd if=/dev/zero of=$(1) bs=1M count=0 seek=64 status=none
-$(MFORMAT) -i $(1) ::
-$(MMD) -i $(1) ::/EFI ::/EFI/BOOT ::/vm ::/boot ::/boot/modules
-$(MCOPY) -i $(1) $(BUILD)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
-$(MCOPY) -i $(1) services/fs/fs.wasm ::/boot/modules/fs.wasm
-$(MCOPY) -i $(1) services/console/console.wasm ::/boot/modules/console.wasm
-$(MCOPY) -i $(1) services/login/login.wasm ::/boot/modules/login.wasm
+$(IMG) $(1) 64 \
+  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+  services/fs/fs.wasm:/boot/modules/fs.wasm \
+  services/console/console.wasm:/boot/modules/console.wasm \
+  services/login/login.wasm:/boot/modules/login.wasm
 endef
 
 $(BUILD)/disk-p5a.img: $(BUILD)/BOOTX64.EFI build/test_p5a.wasm \
                        build/test_p5b.wasm \
                        services/fs/fs.wasm services/console/console.wasm \
                        services/login/login.wasm | $(BUILD)
-	$(call MKDISK5,$@)
-	$(MCOPY) -i $@ build/test_p5a.wasm ::/vm/app
-	$(MCOPY) -i $@ build/test_p5b.wasm ::/vm/app2
+	$(IMG) $@ 64 \
+	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+	  services/fs/fs.wasm:/boot/modules/fs.wasm \
+	  services/console/console.wasm:/boot/modules/console.wasm \
+	  services/login/login.wasm:/boot/modules/login.wasm \
+	  build/test_p5a.wasm:/vm/app \
+	  build/test_p5b.wasm:/vm/app2
 
 $(BUILD)/disk-p5b.img: $(BUILD)/BOOTX64.EFI build/test_p5b.wasm \
                        build/test_p5a.wasm \
                        services/fs/fs.wasm services/console/console.wasm \
                        services/login/login.wasm | $(BUILD)
-	$(call MKDISK5,$@)
-	$(MCOPY) -i $@ build/test_p5b.wasm ::/vm/app
-	$(MCOPY) -i $@ build/test_p5a.wasm ::/vm/app2
+	$(IMG) $@ 64 \
+	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+	  services/fs/fs.wasm:/boot/modules/fs.wasm \
+	  services/console/console.wasm:/boot/modules/console.wasm \
+	  services/login/login.wasm:/boot/modules/login.wasm \
+	  build/test_p5b.wasm:/vm/app \
+	  build/test_p5a.wasm:/vm/app2
 
 # Phase 7 disk: full service set + init.conf, no payload slots
 $(BUILD)/disk-p7.img: $(BUILD)/BOOTX64.EFI services/fs/fs.wasm \
                       services/console/console.wasm services/login/login.wasm \
                       services/init/init.wasm services/shell/shell.wasm \
-                      $(BUILD)/etc_users.txt | $(BUILD)
-	dd if=/dev/zero of=$@ bs=1M count=0 seek=64 status=none
-	$(MFORMAT) -i $@ ::
-	$(MMD) -i $@ ::/EFI ::/EFI/BOOT ::/vm ::/boot ::/boot/modules ::/etc
-	$(MCOPY) -i $@ $(BUILD)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
-	$(MCOPY) -i $@ services/fs/fs.wasm ::/boot/modules/fs.wasm
-	$(MCOPY) -i $@ services/console/console.wasm ::/boot/modules/console.wasm
-	$(MCOPY) -i $@ services/login/login.wasm ::/boot/modules/login.wasm
-	$(MCOPY) -i $@ services/init/init.wasm ::/boot/modules/init.wasm
-	$(MCOPY) -i $@ services/shell/shell.wasm ::/boot/modules/shell.wasm
+                      $(BUILD)/etc_users.txt | $(BUILD) $(IMG)
 	printf 'console console.wasm 0\nfs fs.wasm 10\nlogin login.wasm 8\nshell shell.wasm 8\n' > $(BUILD)/init.conf.tmp
-	$(MCOPY) -i $@ $(BUILD)/init.conf.tmp ::/etc/init.conf
-	$(MCOPY) -i $@ $(BUILD)/etc_users.txt ::/etc/users
+	$(IMG) $@ 64 \
+	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+	  services/fs/fs.wasm:/boot/modules/fs.wasm \
+	  services/console/console.wasm:/boot/modules/console.wasm \
+	  services/login/login.wasm:/boot/modules/login.wasm \
+	  services/init/init.wasm:/boot/modules/init.wasm \
+	  services/shell/shell.wasm:/boot/modules/shell.wasm \
+	  $(BUILD)/init.conf.tmp:/etc/init.conf \
+	  $(BUILD)/etc_users.txt:/etc/users
 
 # Phase 9 disk: services incl. net + the p9 driver guest in /vm/app
 $(BUILD)/disk-p9.img: $(BUILD)/BOOTX64.EFI build/test_p9.wasm \
                       services/fs/fs.wasm services/console/console.wasm \
                       services/login/login.wasm services/init/init.wasm \
                       services/shell/shell.wasm services/net/net.wasm \
-                      $(BUILD)/etc_users.txt | $(BUILD)
-	dd if=/dev/zero of=$@ bs=1M count=0 seek=64 status=none
-	$(MFORMAT) -i $@ ::
-	$(MMD) -i $@ ::/EFI ::/EFI/BOOT ::/vm ::/boot ::/boot/modules ::/etc
-	$(MCOPY) -i $@ $(BUILD)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
-	$(MCOPY) -i $@ services/fs/fs.wasm ::/boot/modules/fs.wasm
-	$(MCOPY) -i $@ services/console/console.wasm ::/boot/modules/console.wasm
-	$(MCOPY) -i $@ services/login/login.wasm ::/boot/modules/login.wasm
-	$(MCOPY) -i $@ services/init/init.wasm ::/boot/modules/init.wasm
-	$(MCOPY) -i $@ services/shell/shell.wasm ::/boot/modules/shell.wasm
-	$(MCOPY) -i $@ services/net/net.wasm ::/boot/modules/net.wasm
-	$(MCOPY) -i $@ build/test_p9.wasm ::/boot/modules/p9.wasm
+                      $(BUILD)/etc_users.txt | $(BUILD) $(IMG)
 	printf 'console console.wasm 0\nnet net.wasm 22\np9 p9.wasm 0 respawn=no\n' > $(BUILD)/init-p9.conf.tmp
-	$(MCOPY) -i $@ $(BUILD)/init-p9.conf.tmp ::/etc/init.conf
-	$(MCOPY) -i $@ $(BUILD)/etc_users.txt ::/etc/users
+	$(IMG) $@ 64 \
+	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+	  services/fs/fs.wasm:/boot/modules/fs.wasm \
+	  services/console/console.wasm:/boot/modules/console.wasm \
+	  services/login/login.wasm:/boot/modules/login.wasm \
+	  services/init/init.wasm:/boot/modules/init.wasm \
+	  services/shell/shell.wasm:/boot/modules/shell.wasm \
+	  services/net/net.wasm:/boot/modules/net.wasm \
+	  build/test_p9.wasm:/boot/modules/p9.wasm \
+	  $(BUILD)/init-p9.conf.tmp:/etc/init.conf \
+	  $(BUILD)/etc_users.txt:/etc/users
 
 # Phase 10 disk: legacy slots carry the two user drivers + /etc/users
 $(BUILD)/disk-p10.img: $(BUILD)/BOOTX64.EFI build/test_p10a.wasm \
                        build/test_p10b.wasm services/fs/fs.wasm \
                        services/console/console.wasm services/login/login.wasm \
-                       $(BUILD)/etc_users.txt | $(BUILD)
-	dd if=/dev/zero of=$@ bs=1M count=0 seek=64 status=none
-	$(MFORMAT) -i $@ ::
-	$(MMD) -i $@ ::/EFI ::/EFI/BOOT ::/vm ::/boot ::/boot/modules ::/etc
-	$(MCOPY) -i $@ $(BUILD)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
-	$(MCOPY) -i $@ services/fs/fs.wasm ::/boot/modules/fs.wasm
-	$(MCOPY) -i $@ services/console/console.wasm ::/boot/modules/console.wasm
-	$(MCOPY) -i $@ services/login/login.wasm ::/boot/modules/login.wasm
-	$(MCOPY) -i $@ build/test_p10a.wasm ::/vm/app
-	$(MCOPY) -i $@ build/test_p10b.wasm ::/vm/app2
-	$(MCOPY) -i $@ $(BUILD)/etc_users.txt ::/etc/users
+                       $(BUILD)/etc_users.txt | $(BUILD) $(IMG)
+	$(IMG) $@ 64 \
+	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+	  services/fs/fs.wasm:/boot/modules/fs.wasm \
+	  services/console/console.wasm:/boot/modules/console.wasm \
+	  services/login/login.wasm:/boot/modules/login.wasm \
+	  build/test_p10a.wasm:/vm/app \
+	  build/test_p10b.wasm:/vm/app2 \
+	  $(BUILD)/etc_users.txt:/etc/users
 
 $(BUILD)/VARS.fd:
 	cp $(OVMF_VARS) $@
@@ -293,10 +290,10 @@ QEMU_BASE := -L $(ROOT)/usr/share/qemu -L $(ROOT)/usr/share/seabios -machine q35
 	-drive if=pflash,format=raw,file=$(BUILD)/VARS.fd \
 	-display none -no-reboot -net none
 
-image: $(BUILD)/disk-g1.img
+image: $(BUILD)/disk-p7.img
 
-run: $(BUILD)/disk-p5a.img $(BUILD)/VARS.fd
-	env $(QEMU_ENV) $(QEMU) $(QEMU_BASE) -drive format=raw,file=$(BUILD)/disk-p5a.img -serial stdio
+run: $(BUILD)/disk-p7.img $(BUILD)/VARS.fd
+	env $(QEMU_ENV) $(QEMU) $(QEMU_BASE) -drive format=raw,file=$(BUILD)/disk-p7.img -serial stdio
 
 # quick smoke gate: smallest wasm guest through engine + WASI
 test: test-g1
@@ -307,7 +304,7 @@ define RUN_QEMU
 endef
 
 # per-guest wasm gates (Phase 3): each guest prints its marker via fd_write
-.PHONY: test-g1 test-g2 test-g3 test-all
+.PHONY: test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10 test-all
 
 test-g1: $(BUILD)/disk-g1.img $(BUILD)/VARS.fd
 	$(call RUN_QEMU,$(BUILD)/disk-g1.img)
@@ -370,31 +367,22 @@ test-p10: $(BUILD)/disk-p10.img $(BUILD)/VARS.fd
 
 .PHONY: test-p9
 test-p9: $(BUILD)/disk-p9.img $(BUILD)/VARS.fd
-	bash scripts/run_p9.sh $(BUILD)/serial.log "$(QEMU)" "$(QEMU_ENV)" -- \
+	bash scripts/run_p9.sh $(BUILD)/serial-p9.log "$(QEMU)" "$(QEMU_ENV)" -- \
 	    -drive format=raw,file=$(BUILD)/disk-p9.img $(QEMU_BASE)
-	@grep -q 'p9. udp ok' $(BUILD)/serial.log \
-	    && grep -q 'p9. http ok' $(BUILD)/serial.log \
+	@grep -q 'p9. udp ok' $(BUILD)/serial-p9.log \
+	    && grep -q 'p9. http ok' $(BUILD)/serial-p9.log \
 	    && echo "TEST PASS (p9 network E2E)" \
-	    || { echo "TEST FAIL (p9)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -40; exit 1; }
+	    || { echo "TEST FAIL (p9)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial-p9.log | tail -40; exit 1; }
 
 # Phase 8: cooperative multitasking — both sessions make progress
-define MKDISKP8
-dd if=/dev/zero of=$(1) bs=1M count=0 seek=64 status=none
-$(MFORMAT) -i $(1) ::
-$(MMD) -i $(1) ::/EFI ::/EFI/BOOT ::/vm ::/boot ::/boot/modules
-$(MCOPY) -i $(1) $(BUILD)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
-$(MCOPY) -i $(1) services/fs/fs.wasm ::/boot/modules/fs.wasm
-$(MCOPY) -i $(1) services/console/console.wasm ::/boot/modules/console.wasm
-$(MCOPY) -i $(1) services/login/login.wasm ::/boot/modules/login.wasm
-endef
-
-$(BUILD)/disk-p8.img: $(BUILD)/BOOTX64.EFI build/test_p8.wasm | $(BUILD)
-	dd if=/dev/zero of=$@ bs=1M count=0 seek=64 status=none
-	$(MFORMAT) -i $@ ::
-	$(MMD) -i $@ ::/EFI ::/EFI/BOOT ::/vm
-	$(MCOPY) -i $@ $(BUILD)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
-	$(MCOPY) -i $@ build/test_p8.wasm ::/vm/app
-	$(MCOPY) -i $@ build/test_p8.wasm ::/vm/app2
+$(BUILD)/disk-p8.img: $(BUILD)/BOOTX64.EFI build/test_p8.wasm | $(BUILD) $(IMG)
+	$(IMG) $@ 64 \
+	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+	  services/fs/fs.wasm:/boot/modules/fs.wasm \
+	  services/console/console.wasm:/boot/modules/console.wasm \
+	  services/login/login.wasm:/boot/modules/login.wasm \
+	  build/test_p8.wasm:/vm/app \
+	  build/test_p8.wasm:/vm/app2
 
 test-p8a: $(BUILD)/disk-p8.img $(BUILD)/VARS.fd
 	$(call RUN_QEMU,$(BUILD)/disk-p8.img)
@@ -446,7 +434,16 @@ $(BUILD)/ht/%.o: core/%.cc $(wildcard core/*.h) | $(BUILD)
 test-kernel: $(BUILD)/hosttest
 	$(BUILD)/hosttest
 
-test-all: test-kernel test-unit test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7
+test-all: test-kernel test-unit test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10
+
+# Phase 10: KVM+TCG matrix — every gate green under both accelerators.
+# KVM_FLAG is overridable ( ?= ) so matrix targets can force an accelerator.
+.PHONY: test-matrix-tcg test-matrix-kvm test-matrix
+test-matrix-tcg:
+	$(MAKE) test-all KVM_FLAG="-accel tcg"
+test-matrix-kvm:
+	$(MAKE) test-all KVM_FLAG="-enable-kvm"
+test-matrix: test-matrix-tcg test-matrix-kvm
 
 
 clean:
