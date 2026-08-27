@@ -412,7 +412,7 @@ test-p8b: $(BUILD)/disk-p7.img $(BUILD)/VARS.fd $(BUILD)/persist.img
 	@timeout 300 env $(QEMU_ENV) $(QEMU) $(QEMU_BASE) \
 	    -drive format=raw,file=$(BUILD)/disk-p7.img \
 	    -drive id=p8b,format=raw,file=$(BUILD)/persist.img,if=none \
-	    -device virtio-blk-pci,disable-modern=on,ioeventfd=off,drive=p8b \
+	    -device virtio-blk-pci,drive=p8b \
 	    -serial file:$(BUILD)/serial.log || true
 	@grep -q 'virtio-blk. ready' $(BUILD)/serial.log 		&& echo "TEST PASS (p8b persistence)" 		|| { echo "TEST FAIL (p8b)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -20; exit 1; }
 

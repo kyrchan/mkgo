@@ -73,9 +73,9 @@ void virtio_blk_init(void) {
     last_used = 0;
     avail_idx = 0;
     g_ready = 1;
-    console_puts("[virtio-blk] modern ready sectors=");
+    console_puts("[virtio-blk] ready sectors=");
     console_hex64(g_sectors);
-    console_puts("\n");
+    console_puts(" modern\n");
 }
 
 int virtio_blk_available(void) { return g_ready; }
