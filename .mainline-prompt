@@ -1,5 +1,13 @@
-SOLE MISSION: Phase 10 — Multiuser hardening + release engineering, Option A (close on v1.3, abi_ver 0x01).
+SOLE MISSION: Phase 11 — VFIO foundation + framebuffer (parallel fleet, v2.0).
 
-Phases 7,8,9 gates GREEN (verified: test-g1 test-p4 test-p5a/b test-p7 test-p8a test-p10 all PASS on v1.3/KVM, p9 udp+http green at 5077ff0). Phase 10 deliverables: real login /etc/users salted-SHA256 (906c571), shell sessions+caps (126c49e), tools/img FAT16 (f46aa9e/1be7cac), neg gate 14 markers (48da574).
+ABI v2.0 bump committed (abi/ABI.md v2.0, core/engine.cc abi_ver 0x02, Makefile stamping 2, all wasm 02, g1/p10 re-verified). Phase 10 tagged f03fa00 on v1.3.
 
-This lane: fix p8a harness (drop unreachable KERNEL-OK on legacy disk), cpu_halt isa-debug-exit (arch/x86_64/cpu.cc + Makefile QEMU_BASE), MEMORY consolidation (drop stale ACTIVE vring + duplicate Status, add CURRENT Phase10 GREEN v1.3), delete VRING-HANDOFF.md (resolved). ABI stays v1.3; v2.0 spec parked at /tmp/v2-stash/ for atomic Phase 11 bump (engine+Makefile+ABI+rebuild). Verify make test-all KVM_FLAG="-accel tcg| -enable-kvm" green, then tag phase10-green-v1.3. Do not merge v2.0 before tag. Do not emit ALL PHASES COMPLETE (coordinator decides).
+MAINLINE scope: core/ arch/ Makefile kernel/ — VFIO foundation ~2k LOC: core/vfio.cc + core/pci.cc (IOMMU, kern_pci_read32/write32/map_bar/unmap_bar/enable_busmaster/bind_irq/flr §12, kern_fb_set_mode/cursor §13, kern_doorbell_wait §14, ASSIGN_PCI §7 op7, caps 8/9, class 10). No per-device shims — generic passthrough.
+
+Fleet parallel (disjoint paths, lanes.conf):
+- SERVICES services/ guests/ — graphics.wasm (LFB compositor) + e1000/ahci/usb/bt/wlan pure Go via VFIO
+- TOOLS tools/ README.md — img VDI/VMDK, README v2.0
+- VERIFY verify/ — freshness ledger 0x02, fuzz 30s, chaos, test-matrix tcg+kvm
+- DOCS docs/ — SDD/IFSPEC v2.0
+
+Commit incrementally with gate evidence (make test-all v2.0). Do not emit ALL PHASES COMPLETE (coordinator decides).

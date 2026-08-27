@@ -83,32 +83,32 @@ $(BUILD)/kernel.so: $(OBJS) kernel/link.ld | $(BUILD)
 build/hello1.raw: guests/hello.wat
 	$(WAT2WASM) $< -o $@
 build/hello1.wasm: build/hello1.raw
-	python3 scripts/add_abiver.py $< $@ 1
+	python3 scripts/add_abiver.py $< $@ 2
 
 build/hello2.raw: guests/hello.rs
 	RUSTUP_HOME=$(HOME)/.local/rustup rustc --target wasm32v1-none \
 	    -C panic=abort -C opt-level=s -C link-arg=--export-memory -o $@ $<
 build/hello2.wasm: build/hello2.raw
-	python3 scripts/add_abiver.py $< $@ 1
+	python3 scripts/add_abiver.py $< $@ 2
 
 build/hello3.raw: guests/hello.go
 	cd guests && GOOS=wasip1 GOARCH=wasm go build -gcflags=all=-N -ldflags=-w -o ../build/hello3.raw hello.go
 build/hello3.wasm: build/hello3.raw
-	python3 scripts/add_abiver.py $< $@ 1
+	python3 scripts/add_abiver.py $< $@ 2
 
 build/test_pp.raw: guests/test_pp.go
 	cd guests && GOOS=wasip1 GOARCH=wasm go build -o ../$@ test_pp.go
 build/test_pp.wasm: build/test_pp.raw
-	python3 scripts/add_abiver.py $< $@ 1
+	python3 scripts/add_abiver.py $< $@ 2
 
-# service modules: build raw then stamp abi_ver=1 custom section (v1.1)
+# service modules: build raw then stamp abi_ver=2 custom section (v2.0)
 services/console/console.wasm.raw: $(wildcard services/console/*.go) $(wildcard guests/lib/*.go)
 	cd services/console && GOOS=wasip1 GOARCH=wasm go build -o console.wasm.raw .
 
 services/net/net.wasm.raw: $(wildcard services/net/*.go)
 	cd services/net && GOOS=wasip1 GOARCH=wasm go build -o net.wasm.raw .
 services/net/net.wasm: services/net/net.wasm.raw
-	python3 scripts/add_abiver.py $< $@ 1
+	python3 scripts/add_abiver.py $< $@ 2
 
 services/login/login.wasm.raw: $(wildcard services/login/*.go) $(wildcard guests/lib/*.go)
 	cd services/login && GOOS=wasip1 GOARCH=wasm go build -o login.wasm.raw .
@@ -117,33 +117,33 @@ services/fs/fs.wasm.raw: $(wildcard services/fs/*.go) $(wildcard guests/lib/*.go
 	cd services/fs && GOOS=wasip1 GOARCH=wasm go build -o fs.wasm.raw .
 
 services/console/console.wasm: services/console/console.wasm.raw
-	python3 scripts/add_abiver.py $< $@ 1
+	python3 scripts/add_abiver.py $< $@ 2
 services/login/login.wasm: services/login/login.wasm.raw
-	python3 scripts/add_abiver.py $< $@ 1
+	python3 scripts/add_abiver.py $< $@ 2
 services/fs/fs.wasm: services/fs/fs.wasm.raw
-	python3 scripts/add_abiver.py $< $@ 1
+	python3 scripts/add_abiver.py $< $@ 2
 
 services/init/init.wasm.raw: $(wildcard services/init/*.go) $(wildcard guests/lib/*.go) services/go.mod
 	cd services/init && GOOS=wasip1 GOARCH=wasm go build -o init.wasm.raw .
-	python3 scripts/add_abiver.py $< $@ 1 || true
+	python3 scripts/add_abiver.py $< $@ 2 || true
 
 services/init/init.wasm: services/init/init.wasm.raw
-	python3 scripts/add_abiver.py $< $@ 1
+	python3 scripts/add_abiver.py $< $@ 2
 
 services/shell/shell.wasm.raw: $(wildcard services/shell/*.go) $(wildcard guests/lib/*.go) services/go.mod
 	cd services/shell && GOOS=wasip1 GOARCH=wasm go build -o shell.wasm.raw .
 
 services/shell/shell.wasm: services/shell/shell.wasm.raw
-	python3 scripts/add_abiver.py $< $@ 1
+	python3 scripts/add_abiver.py $< $@ 2
 
 build/test_p5a.raw: guests/p5a/main.go $(wildcard guests/lib/*.go)
 	cd guests/p5a && GOOS=wasip1 GOARCH=wasm go build -o ../../$@ .
 build/test_p5a.wasm: build/test_p5a.raw
-	python3 scripts/add_abiver.py $< $@ 1
+	python3 scripts/add_abiver.py $< $@ 2
 build/test_p5b.raw: guests/p5b/main.go
 	cd guests/p5b && GOOS=wasip1 GOARCH=wasm go build -o ../../$@ .
 build/test_p5b.wasm: build/test_p5b.raw
-	python3 scripts/add_abiver.py $< $@ 1
+	python3 scripts/add_abiver.py $< $@ 2
 
 build/test_p8.raw: guests/p8/main.go
 	cd guests/p8 && GOOS=wasip1 GOARCH=wasm go build -o ../../$@ .
@@ -154,13 +154,13 @@ build/test_p10a.raw: guests/p10a/main.go $(wildcard guests/lib/*.go)
 build/test_p10b.raw: guests/p10b/main.go $(wildcard guests/lib/*.go)
 	cd guests/p10b && GOOS=wasip1 GOARCH=wasm go build -o ../../$@ .
 build/test_p8.wasm: build/test_p8.raw
-	python3 scripts/add_abiver.py $< $@ 1
+	python3 scripts/add_abiver.py $< $@ 2
 build/test_p9.wasm: build/test_p9.raw
-	python3 scripts/add_abiver.py $< $@ 1
+	python3 scripts/add_abiver.py $< $@ 2
 build/test_p10a.wasm: build/test_p10a.raw
-	python3 scripts/add_abiver.py $< $@ 1
+	python3 scripts/add_abiver.py $< $@ 2
 build/test_p10b.wasm: build/test_p10b.raw
-	python3 scripts/add_abiver.py $< $@ 1
+	python3 scripts/add_abiver.py $< $@ 2
 
 
 $(BUILD)/BOOTX64.EFI: $(BUILD)/kernel.so scripts/mkpefi.py

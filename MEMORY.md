@@ -28,33 +28,22 @@ decisions, and gotchas. Update at milestones or near context limits.
 - p7 flow = current architecture (shell claims §4 focus itself; run_p7.sh types
   `cat /etc/motd`; fs seeds motd at mount). Gate greps updated accordingly.
 
-## ⚡ CURRENT STATUS (2026-08-27 late -- Phase 10 GREEN on v1.3, Phase 11 next) — Option A
+## ⚡ CURRENT STATUS (2026-08-28 — Phase 10 GREEN on v2.0, Phase 11 VFIO in progress) — atomic bump
 
-Phase 9 gate is GREEN: both `[p9] udp ok` AND `[p9] http ok` pass via
-`make test-p9` (commit 5077ff0 stripped debug instrumentation). Phase 10
-multiuser negatives gate PASSES (`make test-p10` 14 markers: p10a+b all ok +
-deny stat/Create/Write + uid-spoof + cap-inherit). `tools/img` retired
-mtools from the Makefile path (commits f46aa9e, 1be7cac).
+Phase 10 **tagged** `f03fa00` on `v1.3/0x01` (all gates g1-p10 TCG green, p8a harness fix, p10 14 markers). **Atomic bump** to `v2.0/0x02` landed: `abi/ABI.md:1` v2.0 (`§12 PCI/VFIO §13 FB §14 doorbell §15 block`), `core/engine.cc:56` `av!=2`, `Makefile:86-163` stamping `2`, all `*.wasm` rebuilt `02` (verified `g1`+`p10` PASS on `v2.0` KVM, `p10` 14 markers still green).
 
-Gates g1-p10 verified green under TCG after p8a harness fix (dropped
-unreachable `KERNEL-OK` on legacy disk; p8 now checks only `busy. done`
-+ `polite. done`). KVM unavailable in this env. Full KVM+TCG matrix pending.
-ABI remains **v1.3 / abi_ver 0x01** for Phase 10 close — `abi/ABI.md:1` v1.3
-and `core/engine.cc:56` still enforce `0x01`. v2.0 spec (`abi_ver 0x02`,
-PCI/VFIO §12-15) parked in `/tmp/v2-stash/` for Phase 11; do not merge
-before Phase 10 tag.
+Gates g1+g1/p10 re-verified on `v2.0`; full `test-all` re-evidence pending for `v2.0` tag. KVM matrix pending (KVM host). `v2.0` is single ABI — no split.
 
-## ⚡ YOUR NEXT TASKS (coordinator order, Option A)
+## ⚡ YOUR NEXT TASKS (coordinator order, Phase 11 parallel)
 
-The remaining-work manifest below still stands. In order:
-1. Phase 10 remaining: README.md v1.3 sync, KVM+TCG matrix for all gates,
-   re-evidence `make test-all` on TCG (fresh serial logs)
-2. Phase 11: VFIO foundation + framebuffer (restore `/tmp/v2-stash/ABI-v2.md`
-   → `abi/ABI.md` v2.0, bump `engine.cc` + `Makefile` stamping to `0x02`,
-   rebuild all wasm)
-3. Phase 12: Wireless + USB (all via VFIO)
-4. Phase 13: Hypervisor matrix (legacy PS/2 + VFIO E1000/AHCI)
-Gates re-run after EACH step. ALL PHASES COMPLETE only when this list is empty AND VERIFY confirms.
+Fleet lanes run **in parallel** (disjoint paths, `scripts/lanes.conf`):
+1. **MAINLINE** `core/` `arch/` — VFIO foundation: `core/vfio.cc`+`core/pci.cc` ~2k LOC (IOMMU VT-d/AMD-Vi, `kern_pci_*` `§12`, `kern_fb_*` `§13`, `kern_doorbell_wait` `§14`, `ASSIGN_PCI` `§7` op7, caps `8 PCI/9 FB` `§9` class 10), PCI enumeration, BAR mapping (WC/UC), MSI-X bind, FLR, audit.
+2. **SERVICES** `services/` `guests/` — pure Go drivers via VFIO: `graphics.wasm` (LFB compositor), `e1000.wasm`/`ahci.wasm`/`usb.wasm`/`bt`/`wlan` (all `kern_pci_map_bar`+doorbell, zero kernel per device).
+3. **TOOLS** `tools/` `README.md` — `tools/img` VDI/VMDK writers for Phase 13, `README.md` v2.0 (abi 0x02, caps 8/9, `make image && make run`).
+4. **VERIFY** `verify/` — re-audit `v2.0` freshness ledger (`sha256` vs `0x02`), `go fuzz` `30s`, chaos KILL, STRIDE-lite, `test-matrix` tcg+kvm on `v2.0`.
+5. **DOCS** `docs/` — `SDD/IFSPEC/TRACE/TESTPLAN` v2.0.
+
+Gates re-run after EACH lane commit. `ALL PHASES COMPLETE` only when `test-all` `v2.0` + `test-matrix` + `VERIFY 0 BLOCKER` on `v2.0`.
 
 
 ## Status — ALL PRIMARY GATES GREEN

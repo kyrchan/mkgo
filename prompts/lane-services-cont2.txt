@@ -1,6 +1,1 @@
-Continue extended lane scope (services/ + guests/ ONLY). Continue
-services/net layer ladder (ARP→IPv4/ICMP→UDP→TCP), fs.wasm uid-rooting
-hardening, guests/lib net helpers. Keep `go test -race` green. Never stop
-while work remains; switch deliverables when blocked >10 min. When all
-extended deliverables are built, tested, wrapped, committed and nothing
-remains in scope, final line exactly: ALL PHASES COMPLETE
+Continue lane SERVICES v2.0 VFIO drivers (services/ guests/ ONLY): graphics.wasm LFB + e1000/ahci/usb/bt/wlan via kern_pci*/doorbell, abi_ver 0x02, go test -race green. Switch when blocked >10m. Final: ALL PHASES COMPLETE

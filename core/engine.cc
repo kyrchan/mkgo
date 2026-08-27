@@ -8,7 +8,7 @@ extern "C" {
 
 static constexpr uint64_t STACK_SLOTS = 8192;
 
-/* abi/ABI.md v1.1: every service module carries a custom section
+/* abi/ABI.md v2.0: every service module carries a custom section
  * "abi_ver" whose first payload byte is the ABI version. Walk top-level
  * sections of the raw blob and verify it before handing to wasm3. */
 static int check_abiver(const uint8_t *b, uint64_t len) {
@@ -53,10 +53,10 @@ static int check_abiver(const uint8_t *b, uint64_t len) {
 int engine_init(struct engine *e, const uint8_t *blob, uint64_t len) {
     e->env = e->rt = e->mod = 0;
     int av = check_abiver(blob, len);
-    if (av != 1) {
+    if (av != 2) {
         console_puts("[engine] refusing module: abi_ver ");
         console_hex64((uint64_t)(uint32_t)(av < 0 ? 0xFFFF : av));
-        console_puts(" != 1\n");
+        console_puts(" != 2\n");
         return 1;
     }
     IM3Environment env = m3_NewEnvironment();

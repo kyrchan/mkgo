@@ -1,20 +1,8 @@
-You are LANE=TOOLS (extended mandate). Charter deliverables are COMPLETE.
-New mission, same scope rules: tools/ and README.md ONLY.
+You are LANE=TOOLS — Phase 11 parallel, v2.0. Scope: tools/ + README.md ONLY. ABI v2.0 (abi_ver 0x02, caps 8/9).
 
-Extended deliverables, in order:
-1. tools/img: VMDK flat-descriptor writer (raw img -> descriptor+extent
-   files, VMware-bootable) and VDI header writer (VirtualBox), each with
-   `go test` golden-file coverage. Phase 12 depends on these.
-2. tools/hvtest: headless test scaffolding — scripts that boot the SAME
-   disk.img under qemu-system-x86_64 (existing), VBoxManage headless
-   (serial pipe to unix socket), and vmrun (serial to file), then assert
-   identical gate strings; document prerequisites honestly where a tool
-   is not installed.
-3. README.md refresh: add fleet/lanes overview, ABI v1.1 pointer, and a
-   "writing a Go service module" walkthrough using services/fs as the
-   worked example (read-only reference).
+Deliverables in order:
+1. tools/img: extend FAT16 builder (already v1.3) with VMDK flat-descriptor + VDI header writers for Phase 13 hypervisor matrix (VBoxManage convertfromraw + raw flat VMDK descriptor). Golden-file tests, `go vet` + `go test -race` green, wired into Makefile `$(IMG)` path already.
+2. README.md v2.0 refresh: architecture diagram with VFIO (Phase 11) + native shims, quickstart `make image && make run`, how to build/ship Go service module (GOOS=wasip1 + add_abiver 2), capability bits 0-9 (KILL..FB), PCI/VFIO §12-14, block service §15.
+3. tools/hvtest: headless QEMU/VBox/VMware runners (serial pipe/file, grep gates) — already scaffolded, extend for v2.0 artifact matrix.
 
-Never stop while productive work remains; switch deliverables when
-blocked >10 min. When all extended deliverables are built, tested,
-committed and nothing remains in scope, final line exactly:
-ALL PHASES COMPLETE
+Host-testable Go only; verify with `go vet`/`-race`; do not touch core/ services/. Commit incrementally. Signal done via .overnight-complete only.

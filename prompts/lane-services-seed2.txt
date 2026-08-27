@@ -1,23 +1,17 @@
-You are LANE=SERVICES (extended mandate). Your charter deliverables are
-COMPLETE and merged-eligible. New mission, same scope rules: services/ and
-guests/ ONLY; abi/ABI.md v1.1 frozen (proposals -> services/ABI-NOTES.md).
+You are LANE=SERVICES — Go→wasm drivers via VFIO (Phase 11 parallel, v2.0). Scope: services/ + guests/ ONLY; ABI is v2.0 (abi/ABI.md §12-15). Do not touch core/ arch/ Makefile/ tools/.
 
-Extended deliverables, in order:
-1. services/net — the Go network stack Phase 9 will consume. Layered,
-   each layer `go test`-verified against loopback harnesses you write:
-   a. Ethernet frame parse/build + ARP cache/resolver (RFC 826)
-   b. IPv4 (checksum, fragmentation-optional), ICMP echo
-   c. UDP sockets with port demux over an injected packet-source iface
-   d. TCP: state machine + sliding window (start simple: single-segment
-      in-flight, grow if tests stay green); socket API via "net" port ops
-   Design for the §6 packet windows: define a PacketSource/PacketSink
-   interface now; the QEMU window adapter arrives with the kernel shim.
-2. fs.wasm hardening pass: implement uid rooting EXACTLY per AGENTS.md
-   multiuser FS model (kernel-stamped {sid,uid}; /home/<u> private;
-   /tmp world-writable; /etc CAP_FS_ADMIN) + tests proving u2 denial.
-3. guests/lib: net client helpers mirroring services/net ops.
+v2.0 imports you consume (kernel already provides, no per-device shim):
+- kern_pci_read32/write32/map_bar/unmap_bar/enable_busmaster/bind_irq/flr §12 (CAP_PCI bit8)
+- kern_fb_set_mode/cursor §13 (CAP_FB bit9)
+- kern_doorbell_wait §14
 
-Never stop while productive work remains; switch deliverables when
-blocked >10 min. When all extended deliverables are built, tested,
-wrapped, committed AND nothing remains in scope, final line exactly:
-ALL PHASES COMPLETE
+Deliverables in order (pure Go, host-testable, then GOOS=wasip1 wrap with abi_ver 0x02):
+1. graphics.wasm — software compositor over VFIO-mapped LFB (BAR0). Modesetting via kern_fb_set_mode, pixel writes direct at window offset, VSYNC via doorbell. Unit-test compositor (clip/alpha) host-side.
+2. e1000.wasm — Intel E1000 NIC via VFIO BAR0 (EEPROM MAC, TX/RX descriptor rings) — VMware/VBox/QEMU -device e1000. No kernel shim.
+3. ahci.wasm — AHCI block via VFIO BAR5 (port reset, command list/FIS, polled) — VBox/VMware SATA. Backs §3 window via §15 block service protocol (port "blk1").
+4. usb.wasm — xHCI via VFIO (transfer rings, doorbells) — optional, Phase 12 prep.
+5. bt/wlan.wasm — HCI-over-UART / offload WLAN via VFIO — Phase 12 prep.
+
+Each driver: host `go test -race` green, `GOOS=wasip1 go vet` clean, `scripts/add_abiver.py X 2` → sha256 ledger for VERIFY. Gate: display `cat /etc/motd` through graphics.wasm LFB (MAINLINE provides VFIO). Commit incrementally per driver with tests.
+
+Never re-litigate ABI; work continuously; signal done via .overnight-complete only.

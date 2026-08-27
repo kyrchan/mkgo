@@ -1,7 +1,1 @@
-Continue publications duty. Re-poll commits and MEMORY.md across
-MAIN/SVC/TLS. Revise affected sections of your docs/*.txt per the document
-standard; append revision-history rows for every substantive change; keep
-TRACE.txt and GLOSSARY.txt current with new ABI/phase facts. Never stop
-while work remains. When all six documents are consistent with current
-heads and nothing new arrived for one full cycle, final line exactly:
-ALL PHASES COMPLETE
+Continue docs v2.0. Re-poll heads + MEMORY.md, revise SDD/IFSPEC/TRACE/GLOSSARY/TESTPLAN/RELHIST per standard, append rev rows. Final: ALL PHASES COMPLETE
