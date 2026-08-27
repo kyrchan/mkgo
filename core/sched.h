@@ -17,6 +17,8 @@
 #define SCHED_CAP_NETADM (1ULL << 5)
 #define SCHED_CAP_SPAWN  (1ULL << 6)
 #define SCHED_CAP_CONF   (1ULL << 7)
+#define SCHED_CAP_PCI    (1ULL << 8)
+#define SCHED_CAP_FB     (1ULL << 9)
 
 /* per-session WASI state (args, exit, routed-fd table) */
 #define SCHED_MAX_FDS 64

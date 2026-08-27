@@ -26,14 +26,15 @@ ASFLAGS :=
 LDFLAGS := -nostdlib -no-pie -Wl,--build-id=none -Wl,-e,efi_main -T kernel/link.ld
 
 CORE_OBJS := $(BUILD)/core/main.o $(BUILD)/core/kmain.o $(BUILD)/core/lib.o \
-             $(BUILD)/core/loader.o $(BUILD)/core/mm.o $(BUILD)/core/rt.o \
-             $(BUILD)/core/engine.o $(BUILD)/core/wasi_glue.o \
-             $(BUILD)/core/sched.o $(BUILD)/core/ports.o $(BUILD)/core/kernsvc.o \
-             $(BUILD)/core/ctx.o $(BUILD)/core/devblk.o $(BUILD)/core/fstransport.o \
-             $(BUILD)/core/virtio_blk.o $(BUILD)/core/virtio_net.o \
-             $(BUILD)/core/virtio_modern.o \
-             $(BUILD)/core/input.o \
-             $(BUILD)/core/fsroute.o
+              $(BUILD)/core/loader.o $(BUILD)/core/mm.o $(BUILD)/core/rt.o \
+              $(BUILD)/core/engine.o $(BUILD)/core/wasi_glue.o \
+              $(BUILD)/core/sched.o $(BUILD)/core/ports.o $(BUILD)/core/kernsvc.o \
+              $(BUILD)/core/ctx.o $(BUILD)/core/devblk.o $(BUILD)/core/fstransport.o \
+              $(BUILD)/core/virtio_blk.o $(BUILD)/core/virtio_net.o \
+              $(BUILD)/core/virtio_modern.o \
+              $(BUILD)/core/input.o \
+              $(BUILD)/core/fsroute.o \
+              $(BUILD)/core/pci.o $(BUILD)/core/vfio.o
 ARCH_OBJS := $(BUILD)/arch/x86_64/uart.o $(BUILD)/arch/x86_64/cpu.o \
              $(BUILD)/arch/x86_64/traps.o $(BUILD)/arch/x86_64/traps_s.o \
              $(BUILD)/arch/x86_64/ctx_s.o $(BUILD)/arch/x86_64/irq0_stub_s.o \
@@ -160,6 +161,12 @@ build/test_p9.wasm: build/test_p9.raw
 build/test_p10a.wasm: build/test_p10a.raw
 	python3 scripts/add_abiver.py $< $@ 2
 build/test_p10b.wasm: build/test_p10b.raw
+	python3 scripts/add_abiver.py $< $@ 2
+
+# Phase 11: VFIO smoke test
+build/test_p11.raw: guests/p11/main.go $(wildcard guests/lib/*.go)
+	cd guests/p11 && GOOS=wasip1 GOARCH=wasm go build -o ../../$@ .
+build/test_p11.wasm: build/test_p11.raw
 	python3 scripts/add_abiver.py $< $@ 2
 
 
@@ -289,6 +296,12 @@ $(BUILD)/disk-p10.img: $(BUILD)/BOOTX64.EFI build/test_p10a.wasm \
 	  build/test_p10b.wasm:/vm/app2 \
 	  $(BUILD)/etc_users.txt:/etc/users
 
+# Phase 11: VFIO smoke test disk (p11.wasm as /vm/app, legacy mode)
+$(BUILD)/disk-p11.img: $(BUILD)/BOOTX64.EFI build/test_p11.wasm | $(BUILD) $(IMG)
+	$(IMG) $@ 64 \
+	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+	  build/test_p11.wasm:/vm/app
+
 $(BUILD)/VARS.fd:
 	cp $(OVMF_VARS) $@
 
@@ -313,7 +326,7 @@ define RUN_QEMU
 endef
 
 # per-guest wasm gates (Phase 3): each guest prints its marker via fd_write
-.PHONY: test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10 test-all
+.PHONY: test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10 test-p11 test-all
 
 test-g1: $(BUILD)/disk-g1.img $(BUILD)/VARS.fd
 	$(call RUN_QEMU,$(BUILD)/disk-g1.img)
@@ -373,6 +386,14 @@ test-p10: $(BUILD)/disk-p10.img $(BUILD)/VARS.fd
 	    && grep -q 'p10b. all ok' $(BUILD)/serial.log \
 	    && echo "TEST PASS (p10 multiuser negatives)" \
 	    || { echo "TEST FAIL (p10)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -30; exit 1; }
+
+# Phase 11: VFIO smoke test — PCI enum, BAR map, FB mode, doorbell
+test-p11: $(BUILD)/disk-p11.img $(BUILD)/VARS.fd
+	$(call RUN_QEMU,$(BUILD)/disk-p11.img)
+	@grep -q 'p11: pci enum found' $(BUILD)/serial.log \
+	    && grep -q 'p11: all ok' $(BUILD)/serial.log \
+	    && echo "TEST PASS (p11 VFIO smoke)" \
+	    || { echo "TEST FAIL (p11)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -40; exit 1; }
 
 .PHONY: test-p9
 test-p9: $(BUILD)/disk-p9.img $(BUILD)/VARS.fd
@@ -442,7 +463,7 @@ $(BUILD)/ht/%.o: core/%.cc $(wildcard core/*.h) | $(BUILD)
 test-kernel: $(BUILD)/hosttest
 	$(BUILD)/hosttest
 
-test-all: test-kernel test-unit test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10
+test-all: test-kernel test-unit test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10 test-p11
 
 # Phase 10: KVM+TCG matrix — every gate green under both accelerators.
 # KVM_FLAG is overridable ( ?= ) so matrix targets can force an accelerator.

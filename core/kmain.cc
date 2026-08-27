@@ -5,6 +5,7 @@
 #include "ports.h"
 #include "fsroute.h"
 #include "devblk.h"
+#include "vfio.h"
 #include "wasi_glue.h"
 #include "loader.h"
 #include "efi.h"
@@ -80,6 +81,7 @@ void kmain(const struct boot_info *bi) {
         virtio_blk_init();
     }
     virtio_net_init();
+    vfio_init();
     devblk_attach();
 
     /* preload service modules so registry SPAWN can resolve them */

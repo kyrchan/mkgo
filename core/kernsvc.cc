@@ -6,6 +6,8 @@
 #include "lib.h"
 #include "sched.h"
 #include "plat.h"
+#include "vfio.h"
+#include "pci.h"
 
 extern "C" {
 int netwin_attach(void *runtime);
@@ -129,12 +131,12 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
             uint64_t mask = sid != 0xFFFFFFFFu ? sched_capmask_of(sid) : 0;
             rn = kbegin(2);
             uint32_t n = 0;
-            for (uint64_t b = 0; b < 7; b++)
+            for (uint64_t b = 0; b < 10; b++)
                 if (mask & (1ULL << b))
                     n++;
             put32(rbuf + rn, n);
             rn += 4;
-            for (uint64_t b = 0; b < 7 && sid != 0xFFFFFFFFu; b++) {
+            for (uint64_t b = 0; b < 10 && sid != 0xFFFFFFFFu; b++) {
                 if (mask & (1ULL << b)) {
                     put32(rbuf + rn, (uint32_t)b);
                     put32(rbuf + rn + 4, (uint32_t)(1ULL << b));
@@ -256,6 +258,25 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
             kernsvc_reply(rbuf, rn + 4);
             return;
         }
+        case 7: { /* ASSIGN_PCI {u8 bus,u8 dev,u8 fn,u32 target_sid} -- CAP_DEVMAN */
+            if (!(sched_capmask_of(from_sid) & SCHED_CAP_DEVMAN)) {
+                console_puts("[audit] sid=");
+                console_hex64(from_sid);
+                console_puts(" op=ASSIGN_PCI reason=cap target=registry\n");
+                knack();
+                return;
+            }
+            if (plen < 7) { knack(); return; }
+            uint8_t bus = payload[0];
+            uint8_t dev = payload[1];
+            uint8_t fn = payload[2];
+            uint32_t tgt = payload[3] | (payload[4] << 8) | (payload[5] << 16) | (payload[6] << 24);
+            int rc = vfio_assign_pci(tgt, bus, dev, fn, from_sid);
+            rn = kbegin(7);
+            put32(rbuf + rn, (uint32_t)rc);
+            kernsvc_reply(rbuf, rn + 4);
+            return;
+        }
         default:
             break;
         }
@@ -303,6 +324,18 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
                     put32(rbuf + o + 12, 0);
                     o += 16;
                     n += 2;
+                }
+            }
+            /* PCI passthrough devices (class 10) — VFIO §12, enumerated for any DEVMAN holder */
+            {
+                struct vfio_pci_info infos[16];
+                int pc = vfio_enumerate(infos, 16);
+                for (int i = 0; i < pc && n < 16; i++) {
+                    put32(rbuf + o, 10); /* class PCI */
+                    put32(rbuf + o + 4, (uint32_t)i);
+                    put32(rbuf + o + 8, 0); // win 0 — BAR via kern_pci_map_bar
+                    put32(rbuf + o + 12, 0);
+                    o += 16; n++;
                 }
             }
             put32(rbuf + rn, n);

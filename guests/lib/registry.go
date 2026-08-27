@@ -249,6 +249,9 @@ const (
 
 	// ClassFramebuffer is the v1.2 §9.FB device class (ABI.md §9.FB).
 	ClassFramebuffer uint32 = 9
+
+	// ClassPCI is the v2.0 §12 VFIO passthrough device class.
+	ClassPCI uint32 = 10
 )
 
 func BindDevman(k Kernel) (*DevmanClient, error) {

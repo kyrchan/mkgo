@@ -55,15 +55,17 @@ const (
 	CapNetAdmin uint64 = 1 << 5
 	CapSpawn    uint64 = 1 << 6
 	CapConf     uint64 = 1 << 7 // v1.1: SETCONF right (init.wasm)
+	CapPCI      uint64 = 1 << 8 // v2.0: VFIO PCI access (graphics/e1000/ahci/usb)
+	CapFB       uint64 = 1 << 9 // v2.0: framebuffer modesetting/cursor
 
 	// CapAll is the admin mask ("admin" holds every bit per AGENTS.md).
 	CapAll = CapKill | CapDevman | CapPower | CapFocus |
-		CapFSAdmin | CapNetAdmin | CapSpawn | CapConf
+		CapFSAdmin | CapNetAdmin | CapSpawn | CapConf | CapPCI | CapFB
 )
 
 var capNames = [...]string{
 	"kill", "devman", "power", "focus", "fs_admin", "net_admin",
-	"spawn", "conf",
+	"spawn", "conf", "pci", "fb",
 }
 
 // CapNames renders a capability mask as bit names (unknown bits hex).
@@ -133,4 +135,34 @@ type Kernel interface {
 	FocusSet(h Handle)
 	// Yield cooperatively reschedules (WASI sched_yield).
 	Yield()
+
+	// === VFIO (ABI §12/§13/§14, v2.0) ===
+	// PciRead32 reads a PCI config dword. Returns -1 on error.
+	PciRead32(bus, dev, fn, offset uint32) int32
+	// PciWrite32 writes a PCI config dword. Returns 0 on success, -1 on error.
+	PciWrite32(bus, dev, fn, offset, val uint32) int32
+	// PciMapBar maps a PCI BAR into guest linear memory. Returns window offset or -1.
+	PciMapBar(bus, dev, fn, bar uint32) int64
+	// PciUnmapBar unmaps a previously mapped BAR.
+	PciUnmapBar(bus, dev, fn, bar uint32) int32
+	// PciEnableBusmaster enables PCI bus mastering for DMA.
+	PciEnableBusmaster(bus, dev, fn uint32) int32
+	// PciBindIrq binds a device IRQ to a session doorbell. Returns handle or -1.
+	PciBindIrq(bus, dev, fn, irqType uint32) (int32, error)
+	// PciFlr issues a Function Level Reset.
+	PciFlr(bus, dev, fn uint32) int32
+	// FbSetMode sets display mode (needs CAP_FB). Returns 0 on success.
+	FbSetMode(w, h, bpp uint32) int32
+	// FbSetCursor sets hardware cursor position (needs CAP_FB).
+	FbSetCursor(x, y uint32) int32
+	// DoorbellWait blocks until doorbell fires or timeout. Returns 0 fired, 1 timeout, -1 err.
+	DoorbellWait(handle, timeoutMs uint32) int32
+	// DevmanEnum returns PCI device info for class 10 (VFIO) devices.
+	DevmanEnum() []PciDeviceInfo
+}
+
+// PciDeviceInfo is a PCI device record from devman ENUM.
+type PciDeviceInfo struct {
+	Bus, Dev, Fn uint8
+	Vendor, Device uint16
 }

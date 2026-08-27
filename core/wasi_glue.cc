@@ -719,6 +719,105 @@ m3ApiRawFunction(kern_focus_set_v) {
     m3ApiSuccess();
 }
 
+/* PCI/VFIO (§12) + FB (§13) + doorbell (§14) — abi/ABI.md v2.0 */
+#include "pci.h"
+#include "vfio.h"
+
+m3ApiRawFunction(kern_pci_read32) {
+    m3ApiReturnType(int32_t)
+    m3ApiGetArg(int32_t, bus)
+    m3ApiGetArg(int32_t, dev)
+    m3ApiGetArg(int32_t, fn)
+    m3ApiGetArg(int32_t, off)
+    uint32_t sid = sched_current_sid();
+    if (!(sched_capmask_of(sid) & SCHED_CAP_PCI)) m3ApiReturn(-1);
+    int32_t v = pci_read32((uint32_t)bus, (uint32_t)dev, (uint32_t)fn, (uint32_t)off);
+    m3ApiReturn(v);
+}
+m3ApiRawFunction(kern_pci_write32) {
+    m3ApiReturnType(int32_t)
+    m3ApiGetArg(int32_t, bus)
+    m3ApiGetArg(int32_t, dev)
+    m3ApiGetArg(int32_t, fn)
+    m3ApiGetArg(int32_t, off)
+    m3ApiGetArg(int32_t, val)
+    uint32_t sid = sched_current_sid();
+    if (!(sched_capmask_of(sid) & SCHED_CAP_PCI)) m3ApiReturn(-1);
+    int32_t r = pci_write32((uint32_t)bus,(uint32_t)dev,(uint32_t)fn,(uint32_t)off,(uint32_t)val);
+    m3ApiReturn(r);
+}
+m3ApiRawFunction(kern_pci_map_bar) {
+    m3ApiReturnType(int64_t)
+    m3ApiGetArg(int32_t, bus)
+    m3ApiGetArg(int32_t, dev)
+    m3ApiGetArg(int32_t, fn)
+    m3ApiGetArg(int32_t, bar)
+    int64_t off = vfio_map_bar(sched_current_sid(), (uint32_t)bus,(uint32_t)dev,(uint32_t)fn,(uint32_t)bar);
+    m3ApiReturn(off);
+}
+m3ApiRawFunction(kern_pci_unmap_bar) {
+    m3ApiReturnType(int32_t)
+    m3ApiGetArg(int32_t, bus)
+    m3ApiGetArg(int32_t, dev)
+    m3ApiGetArg(int32_t, fn)
+    m3ApiGetArg(int32_t, bar)
+    int r = vfio_unmap_bar(sched_current_sid(), (uint32_t)bus,(uint32_t)dev,(uint32_t)fn,(uint32_t)bar);
+    m3ApiReturn(r);
+}
+m3ApiRawFunction(kern_pci_enable_busmaster) {
+    m3ApiReturnType(int32_t)
+    m3ApiGetArg(int32_t, bus)
+    m3ApiGetArg(int32_t, dev)
+    m3ApiGetArg(int32_t, fn)
+    uint32_t sid = sched_current_sid();
+    if (!(sched_capmask_of(sid) & SCHED_CAP_PCI)) m3ApiReturn(-1);
+    int r = pci_enable_busmaster((uint32_t)bus,(uint32_t)dev,(uint32_t)fn);
+    // also allow vfio to track if needed
+    (void)vfio_map_bar; // silence unused
+    m3ApiReturn(r);
+}
+m3ApiRawFunction(kern_pci_bind_irq) {
+    m3ApiReturnType(int32_t)
+    m3ApiGetArg(int32_t, bus)
+    m3ApiGetArg(int32_t, dev)
+    m3ApiGetArg(int32_t, fn)
+    m3ApiGetArg(int32_t, type)
+    int h = vfio_bind_irq(sched_current_sid(), (uint32_t)bus,(uint32_t)dev,(uint32_t)fn,(uint32_t)type);
+    m3ApiReturn(h);
+}
+m3ApiRawFunction(kern_pci_flr) {
+    m3ApiReturnType(int32_t)
+    m3ApiGetArg(int32_t, bus)
+    m3ApiGetArg(int32_t, dev)
+    m3ApiGetArg(int32_t, fn)
+    uint32_t sid = sched_current_sid();
+    if (!(sched_capmask_of(sid) & SCHED_CAP_PCI)) m3ApiReturn(-1);
+    int r = pci_flr((uint32_t)bus,(uint32_t)dev,(uint32_t)fn);
+    m3ApiReturn(r);
+}
+m3ApiRawFunction(kern_fb_set_mode) {
+    m3ApiReturnType(int32_t)
+    m3ApiGetArg(int32_t, w)
+    m3ApiGetArg(int32_t, h)
+    m3ApiGetArg(int32_t, bpp)
+    int r = vfio_fb_set_mode(sched_current_sid(), (uint32_t)w,(uint32_t)h,(uint32_t)bpp);
+    m3ApiReturn(r);
+}
+m3ApiRawFunction(kern_fb_set_cursor) {
+    m3ApiReturnType(int32_t)
+    m3ApiGetArg(int32_t, x)
+    m3ApiGetArg(int32_t, y)
+    int r = vfio_fb_set_cursor(sched_current_sid(), (uint32_t)x,(uint32_t)y);
+    m3ApiReturn(r);
+}
+m3ApiRawFunction(kern_doorbell_wait) {
+    m3ApiReturnType(int32_t)
+    m3ApiGetArg(int32_t, handle)
+    m3ApiGetArg(int32_t, timeout_ms)
+    int r = vfio_doorbell_wait(sched_current_sid(), (uint32_t)handle,(uint32_t)timeout_ms);
+    m3ApiReturn(r);
+}
+
 struct link_entry2 {
     const char *name;
     const char *sig;
@@ -735,6 +834,16 @@ static const link_entry2 kernlinks[] = {
     {"kern_blk_write", "i(iii)", kern_blk_write, 0},
     {"kern_input_recv", "i(ii)", kern_input_recv, 0},
     {"kern_focus_set", "i(i)", kern_focus_set, "v(i)", kern_focus_set_v}, /* lib ships both */
+    {"kern_pci_read32", "i(iiii)", kern_pci_read32, 0},
+    {"kern_pci_write32", "i(iiiii)", kern_pci_write32, 0},
+    {"kern_pci_map_bar", "I(iiii)", kern_pci_map_bar, 0},
+    {"kern_pci_unmap_bar", "i(iiii)", kern_pci_unmap_bar, 0},
+    {"kern_pci_enable_busmaster", "i(iii)", kern_pci_enable_busmaster, 0},
+    {"kern_pci_bind_irq", "i(iiii)", kern_pci_bind_irq, 0},
+    {"kern_pci_flr", "i(iii)", kern_pci_flr, 0},
+    {"kern_fb_set_mode", "i(iii)", kern_fb_set_mode, 0},
+    {"kern_fb_set_cursor", "i(ii)", kern_fb_set_cursor, 0},
+    {"kern_doorbell_wait", "i(ii)", kern_doorbell_wait, 0},
 };
 #define NKERN (sizeof(kernlinks) / sizeof(kernlinks[0]))
 
