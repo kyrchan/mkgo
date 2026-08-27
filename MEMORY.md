@@ -370,3 +370,17 @@ AGENTS.md practice #8. Sequence: commit current tree state NOW as the
 compatibility-fix batch; then merge lane/services; then continue
 hardening incrementally. Do not print the sentinel until the
 remaining-work manifest in this file is closed with committed evidence.
+
+## QA backlog (MINOR/NOTE findings — non-blocking)
+
+- **F7 (MINOR)**: services/tools/addabiver has no tests. It stamps the
+  abi_ver custom section the kernel hard-refuses modules without; silent
+  corruption here bricks boot. Action: golden-file round-trip test
+  (raw wasm in → custom section bytes asserted) when touching tools/.
+- **F19 (NOTE)**: guests/lib/frame.go InboxRequest encodes reply channel
+  as {u16 len, bytes} LStr while ABI v1.1 + kernel parsers use fixed
+  char rname[16]. Noted so the encoding decision isn't lost; resolve when
+  the canonical header is finalized.
+- Resolved this pass: F3 races (block.go mutex, shell_test.go mu,
+  init_test.go recorder.mu), F17 (kernel now implements kern_input_recv +
+  kern_focus_set), F20 (host.go FakeKernel gained LOGIN/SETCONF cases).
