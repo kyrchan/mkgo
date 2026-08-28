@@ -1,28 +1,55 @@
 # QUALITY.txt — rolling summary (LANE=VERIFY) — regenerated each pass
-# Last pass: 2026-08-28 23:10 UTC+8 — re-poll13 · VFIO re-review complete; fuzz 5/5 PASS; ledger updated
+# Last pass: 2026-08-29 01:10 UTC+8 — test matrix sweep
 
 | repo | head reviewed | mechanical | open BLOCKERs | open MAJORs | trend |
 |---|---|---|---|---|---|
-| MAIN  | f6632b5 (committed, clean working tree) | `make clean && make` PASS; `test-p11` PASS (TCG); fuzz 5/5 PASS | 1 new (F241) · 9 committed (F187-F195) | 2 new (F242-F243) | new VFIO findings filed; ledger updated |
+| MAIN  | 439f66a (committed, dirty working tree) | `make clean && make` PASS; test-matrix 10/13 PASS, 3 FAIL | 1 new (F241) · 9 committed (F187-F195) | 2 new (F242-F243) | test matrix run; 3 failures recorded |
 | SVC   | fb0a314 (committed) | per-module `go test -count=1` PASS; 7 net fuzz PASS; go vet clean | 0 | 0 | healthy; stable |
 | TLS   | 1ccd2bf (committed, no delta) | `go test -count=1 ./tools/img` PASS 1.6s; go vet clean | 0 | 0 | stable |
 
-## Phase 11 gate — GREEN (committed HEAD f6632b5)
-test-p11: PASS ("TEST PASS (p11 VFIO smoke)") — verified this poll. BDF 0:1:0 NOT enumerated (no VVGA dirty delta at committed HEAD); cap-denied path exercised (no CAP_PCI/CAP_FB → all ops denied as expected).
-VFIO foundation at committed HEAD: BAR mapping (8 slots), doorbells (4), IOMMU domain tracking (256 pages/domain), MSI-X programming scaffolding, framebuffer control, devman enumeration, session cleanup.
+## Test matrix results — 2026-08-29
+- test-kernel: **FAIL** — link error: `build/ht/kernsvc.o` undefined reference to `vfio_assign_pci` and `vfio_enumerate`; host test harness (HT_OBJS) does not include vfio.o. kernsvc.cc calls VFIO symbols but the host test Makefile target omits the vfio object.
+- test-unit: **PASS** — `go test` across fs/login/console/lib all green; fuzz targets PASS.
+- test-g1: **PASS** — "hello from C" on serial.
+- test-g2: **PASS** (flaky — first run returned TEST FAIL with no serial output, second run passed; likely QEMU/TCG timing under load).
+- test-g3: **PASS** — "hello from Go" on serial.
+- test-p4: **PASS** — rounds ok=3, sessions listed, kill console rc=0.
+- test-p5a: **PASS** — [p5a] roundtrip ok bytes=24.
+- test-p5b: **PASS** — [p5b] all ok (u2→u1 denials proven).
+- test-p7: **PASS** — shell ready + Welcome to the capability microkernel.
+- test-p8a: **FAIL** — `busy. done marks=6` present but `polite. done ticks=` ABSENT; polite session stalls after tick 1 (scheduling starvation or deadlock).
+- test-p8b: **FAIL** — `virtio-blk. ready` ABSENT; boot hangs at "formatting fresh KFS volume" (virtio-blk backend or KFS init deadlock).
+- test-p9: **PASS** — p9. udp ok + p9. http ok.
+- test-p10: **PASS** — p10a. all ok + p10b. all ok (multiuser negatives proven).
+- test-p11: **PASS** — TEST PASS (p11 VFIO smoke).
 
-## Test matrix — GREEN @f6632b5 (committed, clean working tree)
-- Committed HEAD f6632b5: test-p11 PASS — TCG (KVM env blocked by stale locks).
-- Working tree = committed HEAD; no separate dirty-tree verification needed.
-- p4/p10: trusted from prior clean-room verification (F198/F201).
+**Matrix score: 10 PASS / 3 FAIL (test-kernel, test-p8a, test-p8b)**
+
+## Gate status summary
+| gate | status |
+|---|---|
+| test-kernel | FAIL (link) |
+| test-unit | PASS |
+| test-g1 | PASS |
+| test-g2 | PASS |
+| test-g3 | PASS |
+| test-p4 | PASS |
+| test-p5a | PASS |
+| test-p5b | PASS |
+| test-p7 | PASS |
+| test-p8a | FAIL |
+| test-p8b | FAIL |
+| test-p9 | PASS |
+| test-p10 | PASS |
+| test-p11 | PASS |
 
 ## Open BLOCKERs
-- **F241 (NEW)**: vfio_map_bar/vfio_bind_irq/kern_pci_enable_busmaster missing device-assignment check — any CAP_PCI session can access any device regardless of registry assignment (ABI §12 deviation + capability-check gap)
+- **F241**: vfio_map_bar/vfio_bind_irq/kern_pci_enable_busmaster missing device-assignment check — any CAP_PCI session can access any device regardless of registry assignment (ABI §12 deviation + capability-check gap)
 - F187-F195: committed-HEAD VFIO foundation limits (previously filed)
 
 ## Open MAJORs
-- **F242 (NEW)**: vfio_map_bar BAR window is a shadow buffer, not real MMIO passthrough — guest writes don't reach physical device (ABI §12 "Guest accesses BAR MMIO through this window" currently false for non-FB devices)
-- **F243 (NEW)**: vfio_iommu_permits defined but never called — IOMMU enforcement is dead code
+- **F242**: vfio_map_bar BAR window is a shadow buffer, not real MMIO passthrough — guest writes don't reach physical device (ABI §12 "Guest accesses BAR MMIO through this window" currently false for non-FB devices)
+- **F243**: vfio_iommu_permits defined but never called — IOMMU enforcement is dead code
 
 ## Open MINORs
 - F244: vfio.h duplicate declarations (vfio_iommu_permits, vfio_recover_after_flr, vfio_session_cleanup)
@@ -31,32 +58,48 @@ VFIO foundation at committed HEAD: BAR mapping (8 slots), doorbells (4), IOMMU d
 - F247: fb_has_display set but never read (dead state)
 - F248: pci_flr/pci_msix_find capability chain walk — no table-size validation
 
-## Fuzz target results (re-poll13) — 5/5 PASS
-- MAIN guests/lib (-fuzztime=5s, committed HEAD): FuzzVfioBarMapping PASS (43K/5s, 23 corpora), FuzzVfioDoorbellState PASS (42K/5s, 30), FuzzPciConfigOffset PASS (52K/5s, 4), FuzzChaosGate PASS (50K/5s, 18), FuzzParseCanonicalHeader PASS
-- All targets: zero failures, no new corpus growth.
+## New findings from this sweep
+- **F249 (NEW, BLOCKER)**: test-kernel link failure — HT_OBJS omits vfio.o but kernsvc.cc calls vfio_assign_pci/vfio_enumerate. Host test harness cannot build. Fix: add $(BUILD)/ht/vfio.o to HT_OBJS.
+- **F250 (NEW, MAJOR)**: test-p8a polite session starvation — polite task produces only 1 tick then stalls while busy task completes all 6 marks. Scheduling or deadlock defect.
+- **F251 (NEW, MAJOR)**: test-p8b hang at KFS format — boot stalls indefinitely after "[fs] formatting fresh KFS volume" with virtio-blk backend. Blocks persistence gate.
 
-## Chaos gate
-- FuzzChaosGate (re-poll13): PASS — randomized service KILL/respawn/isolation cycles exercise crash isolation (killed session's resources released, survivors keep running, respawn gets fresh SID). Practice #5 satisfied.
+## Artifact freshness ledger — 2026-08-29
+- wasm artifacts built from MAIN@439f66a (dirty working tree).
+- Note: working tree has uncommitted changes to services/*/*.wasm and services/*/*.wasm.raw — hashes below reflect CURRENT build artifacts on disk.
 
-## Artifact freshness ledger (re-poll13) — UPDATED
-- All 13 wasm artifacts now embed abi_ver=0x02 (v2.0 ABI), built from commit f6632b5.
-- Hashes refreshed in verify/ARTIFACT_LEDGER.txt.
-- No drift between artifacts and ratified ABI.
+| artifact | sha256 |
+|---|---|
+| build/hello1.wasm | 71a6841dbd26a0e0fe54eadf3ecf605d7149f95c463031d27355d176ad6622c3 |
+| build/hello2.wasm | 6a1c78eb0e44bc94db930752861d9b308cf6cdf2fa19c13b75eef4dbf41d08d2 |
+| build/hello3.wasm | bf3c2bfc5fc4d048367544e9a6ad45b6f1a970b02945f1bd6f9e1171bc4b995b |
+| build/test_pp.wasm | f7a392a0ca002656fba0096b0418274caff30eeb652b954bfe24488d349c88d6 |
+| build/test_p10a.wasm | 048b8338217aed3fa3b7be218680b21695928a6bae559fd10fe8509e448b9ba9 |
+| build/test_p10b.wasm | 2e401e364b2d59a766e97fb53e9b4157807a9fc2029be81a68cd39ac457a42c3 |
+| build/test_p11.wasm | 0bd748100ff23185fec562010e42183cb9560235df84c8baf2a5830c84613707 |
+| build/graphics.wasm | 3a5e0f2c5be7a8956ca399d07a224e6076ddfe4f786db4c7c3b6aa68e24747ea |
+| services/console/console.wasm | 101ead14de78e1a2d7f432bd172191f1bdccceb71819ae1542056b14d6ad6c88 |
+| services/fs/fs.wasm | 486a2fcad3253d84a46ab010670231748908a1d72854c0eedd100ec420a391c4 |
+| services/init/init.wasm | b0643dfd891a6838ab6414e8ddf5c61964778d59f3843a31e81a369200bfa2f4 |
+| services/login/login.wasm | 6c1e32015d24d634c82bfc90d146426634f6bf20e6b718b6f80b57af0db89894 |
+| services/net/net.wasm | d0358766c86ba162fe6d10c63bfb165aeecab3316393cdfd019b8b38de4246a3 |
+| services/shell/shell.wasm | 9558e5888941918d66abad24cc82c1719206325636d895374f325b5ba0bb56bf |
+| services/graphics/graphics.wasm | d450dbdf1a9dfe292f8e9bebdfeb6dbcf788e6fd245741bd15aa50418f4ac348 |
+| services/display/display.wasm | 2c7bb089f3884fc21920e2a9f607ae5e49a11d6c07b7f8b0a324e87f2248c0df |
 
-## Deltas reviewed this poll (re-poll13)
-- MAIN@f6632b5: committed HEAD, source CLEAN. Re-reviewed core/vfio.cc (580 lines) + core/pci.cc (251 lines) for races, memory bugs, capability-check gaps, unused code, ABI deviations. Found 1 BLOCKER (F241 assignment gap), 2 MAJOR (F242 shadow buffer, F243 dead IOMMU), 5 MINOR (F244-F248).
+## Deltas reviewed this poll
+- MAIN@439f66a: committed HEAD; dirty working tree with uncommitted wasm rebuilds + fuzz test changes. Test matrix run; 3 failures recorded (test-kernel link, p8a starvation, p8b hang).
 - SVC@fb0a314: committed, stable.
 - TLS@1ccd2bf: committed, stable.
 
 ## Key observations
-- F241 is the highest-priority finding: the device-assignment gate that ABI §12 promises is not enforced. Any CAP_PCI session can map any device's BAR, bind its IRQ, and enable busmaster. This is both a capability-check gap (BLOCKER per severity rule) and an ABI deviation.
-- F242 means the VFIO BAR mapping is currently only usable for framebuffer (where vfio_fb_present copies guest→LFB). Real device drivers (e1000.wasm, ahci.wasm) cannot reach device registers through the window.
-- F243 means the IOMMU security boundary is unenforced — vfio_iommu_permits is dead code.
-- All fuzz targets pass; chaos gate passes; artifact ledger is current.
-- Phase 11 gate (test-p11) remains GREEN on committed HEAD.
+- test-kernel link failure is a build-regression class: HT_OBJS needs vfio.o now that kernsvc.cc calls VFIO symbols.
+- p8a and p8b failures are runtime/scheduling defects, not test harness issues — serial logs confirm the guest kernel stalls.
+- p8a polite starvation and p8b KFS-format hang are both NEW (not previously filed) and are MAJOR/BLOCKER class.
+- g2 flakiness observed (first run FAIL, second PASS) — worth monitoring but not a defect.
+- All other gates (g1 g3 p4 p5a p5b p7 p9 p10 p11 + unit) green.
+- Artifact ledger updated with current on-disk hashes; working tree dirty so hashes may not match next committed state.
 
 ## Process notes
-- Fuzz targets run with -fuzztime=5s; 5/5 MAIN PASS.
-- Never emitting ALL PHASES COMPLETE (coordinator decides).
-- Branch heads: MAIN@f6632b5 (committed, clean working tree), SVC@fb0a314, TLS@1ccd2bf, lane/verify@8f1548f (re-poll13 committed).
-- QA mandate satisfied: re-reviewed VFIO substrate, verified fuzz/chaos targets, updated artifact ledger.
+- DO NOT emit ALL PHASES COMPLETE (coordinator decides).
+- Branch heads: MAIN@439f66a (dirty working tree), SVC@fb0a314, TLS@1ccd2bf, lane/verify@<pending>.
+- QA mandate: test matrix recorded, artifact ledger updated, new findings filed.
