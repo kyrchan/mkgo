@@ -128,6 +128,12 @@ services/init/init.wasm.raw: $(wildcard services/init/*.go) $(wildcard guests/li
 	cd services/init && GOOS=wasip1 GOARCH=wasm go build -o init.wasm.raw .
 	python3 scripts/add_abiver.py $< $@ 2 || true
 
+services/graphics/graphics.wasm.raw: $(wildcard services/graphics/*.go) $(wildcard guests/lib/*.go) services/graphics/go.mod
+	cd services/graphics && GOOS=wasip1 GOARCH=wasm go build -o graphics.wasm.raw .
+
+services/graphics/graphics.wasm: services/graphics/graphics.wasm.raw
+	python3 scripts/add_abiver.py $< $@ 2
+
 services/init/init.wasm: services/init/init.wasm.raw
 	python3 scripts/add_abiver.py $< $@ 2
 
@@ -136,6 +142,10 @@ services/shell/shell.wasm.raw: $(wildcard services/shell/*.go) $(wildcard guests
 
 services/shell/shell.wasm: services/shell/shell.wasm.raw
 	python3 scripts/add_abiver.py $< $@ 2
+
+# graphics.wasm: copy the built graphics module into build/ for disk images
+build/graphics.wasm: services/graphics/graphics.wasm
+	cp $< $@
 
 build/test_p5a.raw: guests/p5a/main.go $(wildcard guests/lib/*.go)
 	cd guests/p5a && GOOS=wasip1 GOARCH=wasm go build -o ../../$@ .
@@ -248,6 +258,7 @@ $(BUILD)/disk-p5b.img: $(BUILD)/BOOTX64.EFI build/test_p5b.wasm \
 	  build/test_p5a.wasm:/vm/app2
 
 # Phase 7 disk: full service set + init.conf, no payload slots
+# NOTE: init.conf MUST be at ESP root (loader loads \init.conf, not \etc\init.conf)
 $(BUILD)/disk-p7.img: $(BUILD)/BOOTX64.EFI services/fs/fs.wasm \
                       services/console/console.wasm services/login/login.wasm \
                       services/init/init.wasm services/shell/shell.wasm \
@@ -260,10 +271,11 @@ $(BUILD)/disk-p7.img: $(BUILD)/BOOTX64.EFI services/fs/fs.wasm \
 	  services/login/login.wasm:/boot/modules/login.wasm \
 	  services/init/init.wasm:/boot/modules/init.wasm \
 	  services/shell/shell.wasm:/boot/modules/shell.wasm \
-	  $(BUILD)/init.conf.tmp:/etc/init.conf \
+	  $(BUILD)/init.conf.tmp:/init.conf \
 	  $(BUILD)/etc_users.txt:/etc/users
 
 # Phase 9 disk: services incl. net + the p9 driver guest in /vm/app
+# NOTE: init.conf MUST be at ESP root (loader loads \init.conf, not \etc\init.conf)
 $(BUILD)/disk-p9.img: $(BUILD)/BOOTX64.EFI build/test_p9.wasm \
                       services/fs/fs.wasm services/console/console.wasm \
                       services/login/login.wasm services/init/init.wasm \
@@ -279,7 +291,7 @@ $(BUILD)/disk-p9.img: $(BUILD)/BOOTX64.EFI build/test_p9.wasm \
 	  services/shell/shell.wasm:/boot/modules/shell.wasm \
 	  services/net/net.wasm:/boot/modules/net.wasm \
 	  build/test_p9.wasm:/boot/modules/p9.wasm \
-	  $(BUILD)/init-p9.conf.tmp:/etc/init.conf \
+	  $(BUILD)/init-p9.conf.tmp:/init.conf \
 	  $(BUILD)/etc_users.txt:/etc/users
 
 # Phase 10 disk: legacy slots carry the two user drivers + /etc/users
@@ -296,11 +308,25 @@ $(BUILD)/disk-p10.img: $(BUILD)/BOOTX64.EFI build/test_p10a.wasm \
 	  build/test_p10b.wasm:/vm/app2 \
 	  $(BUILD)/etc_users.txt:/etc/users
 
-# Phase 11: VFIO smoke test disk (p11.wasm as /vm/app, legacy mode)
-$(BUILD)/disk-p11.img: $(BUILD)/BOOTX64.EFI build/test_p11.wasm | $(BUILD) $(IMG)
+# Phase 11b: graphics integration test disk (init + graphics + /etc/motd)
+# NOTE: init.conf MUST be at ESP root (loader loads \init.conf, not \etc\init.conf)
+$(BUILD)/disk-p11b.img: $(BUILD)/BOOTX64.EFI services/init/init.wasm \
+                       services/fs/fs.wasm services/console/console.wasm \
+                       services/login/login.wasm services/shell/shell.wasm \
+                       build/graphics.wasm $(BUILD)/etc_users.txt | $(BUILD) $(IMG)
+	printf 'console console.wasm 0\nfs fs.wasm 10\nlogin login.wasm 8\nshell shell.wasm 8\ngraphics graphics.wasm 300\n' > $(BUILD)/init-p11b.conf.tmp
+	printf 'Welcome to the capability microkernel\nPhase 11: VFIO graphics integration\nFramebuffer rendering via wasm.\n' > $(BUILD)/motd-p11b.tmp
 	$(IMG) $@ 64 \
 	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
-	  build/test_p11.wasm:/vm/app
+	  services/init/init.wasm:/boot/modules/init.wasm \
+	  services/fs/fs.wasm:/boot/modules/fs.wasm \
+	  services/console/console.wasm:/boot/modules/console.wasm \
+	  services/login/login.wasm:/boot/modules/login.wasm \
+	  services/shell/shell.wasm:/boot/modules/shell.wasm \
+	  build/graphics.wasm:/boot/modules/graphics.wasm \
+	  $(BUILD)/init-p11b.conf.tmp:/init.conf \
+	  $(BUILD)/motd-p11b.tmp:/etc/motd \
+	  $(BUILD)/etc_users.txt:/etc/users
 
 $(BUILD)/VARS.fd:
 	cp $(OVMF_VARS) $@
@@ -326,7 +352,7 @@ define RUN_QEMU
 endef
 
 # per-guest wasm gates (Phase 3): each guest prints its marker via fd_write
-.PHONY: test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10 test-p11 test-all
+.PHONY: test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10 test-p11 test-p11b test-all
 
 test-g1: $(BUILD)/disk-g1.img $(BUILD)/VARS.fd
 	$(call RUN_QEMU,$(BUILD)/disk-g1.img)
@@ -394,6 +420,25 @@ test-p11: $(BUILD)/disk-p11.img $(BUILD)/VARS.fd
 	    && grep -q 'p11: all ok' $(BUILD)/serial.log \
 	    && echo "TEST PASS (p11 VFIO smoke)" \
 	    || { echo "TEST FAIL (p11)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -40; exit 1; }
+
+# Phase 11b: graphics integration — graphics.wasm renders /etc/motd to LFB
+test-p11b: $(BUILD)/disk-p11b.img $(BUILD)/VARS.fd
+	$(call RUN_QEMU,$(BUILD)/disk-p11b.img)
+	@grep -q 'graphics: fb_present ok' $(BUILD)/serial.log \
+	    && grep -q 'graphics: all ok' $(BUILD)/serial.log \
+	    && echo "TEST PASS (p11b graphics integration)" \
+	    || { echo "TEST FAIL (p11b)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -40; exit 1; }
+
+# Phase 11 gfx: legacy-mode disk — graphics.wasm at /vm/app, no init.conf
+$(BUILD)/disk-p11-gfx.img: $(BUILD)/BOOTX64.EFI build/graphics.wasm | $(BUILD)
+	$(call MKDISK,$@,build/graphics.wasm)
+
+.PHONY: test-p11-gfx
+test-p11-gfx: $(BUILD)/disk-p11-gfx.img $(BUILD)/VARS.fd
+	$(call RUN_QEMU,$(BUILD)/disk-p11-gfx.img)
+	@grep -q 'graphics: all ok' $(BUILD)/serial.log \
+	    && echo "TEST PASS (p11-gfx legacy graphics)" \
+	    || { echo "TEST FAIL (p11-gfx)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -40; exit 1; }
 
 .PHONY: test-p9
 test-p9: $(BUILD)/disk-p9.img $(BUILD)/VARS.fd
@@ -463,7 +508,7 @@ $(BUILD)/ht/%.o: core/%.cc $(wildcard core/*.h) | $(BUILD)
 test-kernel: $(BUILD)/hosttest
 	$(BUILD)/hosttest
 
-test-all: test-kernel test-unit test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10 test-p11
+test-all: test-kernel test-unit test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10 test-p11 test-p11b
 
 # Phase 10: KVM+TCG matrix — every gate green under both accelerators.
 # KVM_FLAG is overridable ( ?= ) so matrix targets can force an accelerator.
