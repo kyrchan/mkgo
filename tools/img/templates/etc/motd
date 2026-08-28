@@ -1,0 +1,5 @@
+kernel-lane-tools // wasm microkernel
+This is a capability-based microkernel. There is no POSIX here:
+no fork, no exec, no signals, no global namespace.
+Sessions are WebAssembly instances; services talk over message ports.
+Type `sessions` to list live sessions, `devices` for the device tree.
