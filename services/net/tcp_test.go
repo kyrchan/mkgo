@@ -321,3 +321,62 @@ func TestFinWithPayloadDelivered(t *testing.T) {
 	waitForTCP(t, func() bool { return cli.Err() == ErrRemoteClosed },
 		"remote-closed not signaled after drain")
 }
+
+// TestTCPSimultaneousClose pins the case where both sides Close() at
+// roughly the same time: both must reach CLOSED without deadlock.
+func TestTCPSimultaneousClose(t *testing.T) {
+	a, b, stop := tcpPair(t)
+	defer close(stop)
+
+	ln, _ := b.tcp.Listen(testPort)
+	cli, _ := a.tcp.Dial(a.IP, b.IP, testPort)
+	waitForTCP(t, func() bool { return cli.State() == "ESTABLISHED" }, "no est")
+	var srv *TCPConn
+	waitForTCP(t, func() bool { srv, _ = ln.Accept(); return srv != nil }, "no accept")
+
+	// exchange a little data so both sides have something to ack
+	if _, err := cli.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 16)
+	waitForTCP(t, func() bool { return srv.Recv(buf) > 0 }, "srv never got ping")
+
+	// both sides close simultaneously
+	if err := cli.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	waitForTCP(t, func() bool {
+		return cli.State() == "CLOSED" && srv.State() == "CLOSED"
+	}, "simultaneous close never completed: cli="+cli.State()+" srv="+srv.State())
+}
+
+// TestTCPConnectToNoListener verifies that dialing a port with no
+// listener does not hang the stack forever — the SYN is silently
+// dropped (v1 policy) and the connection stays in SYN-SENT.
+func TestTCPConnectToNoListener(t *testing.T) {
+	a, b, stop := tcpPair(t)
+	defer close(stop)
+
+	// no listener on port 9999
+	cli, err := a.tcp.Dial(a.IP, b.IP, 9999)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// give the pumps time to process any response (there is none)
+	time.Sleep(200 * time.Millisecond)
+
+	if got := cli.State(); got != "SYN-SENT" {
+		t.Fatalf("expected SYN-SENT (no listener), got %s", got)
+	}
+	// the stack must still be live: a new good dial should work
+	ln, _ := b.tcp.Listen(testPort)
+	cli2, _ := a.tcp.Dial(a.IP, b.IP, testPort)
+	waitForTCP(t, func() bool { return cli2.State() == "ESTABLISHED" },
+		"stack dead after failed dial")
+	ln.Accept()
+}

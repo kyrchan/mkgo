@@ -316,24 +316,26 @@ func TestHomeListingIsolation(t *testing.T) {
 	}
 	restoreAdmin()
 
-	// u1 lists /home → sees only u1 (their own), NOT u2
+	// u1 lists /home → sees the contents of their OWN home (/home/u1),
+	// NOT a listing of all users' homes (which would leak existence).
 	u1 := newUidClient(t, k, "u1sess", uint32(1001), "u1", lib.CapFocus)
 	scopeU1 := k.As(1001)
 	defer scopeU1()
-	ents, err := u1.List("/home")
+	sub, err := u1.List("/home")
 	if err != nil {
 		t.Fatalf("u1 list /home: %v", err)
 	}
-	if len(ents) != 1 || !strings.EqualFold(ents[0].Name, "u1") {
-		t.Fatalf("u1 /home listing leaked: %+v", ents)
+	if len(sub) != 1 || !strings.EqualFold(sub[0].Name, "SECRET.TXT") {
+		t.Fatalf("u1 /home should show own home contents, got: %+v", sub)
 	}
-	// u1 CAN list their own home contents
-	sub, err := u1.List("/home/u1")
-	if err != nil || len(sub) != 1 || !strings.EqualFold(sub[0].Name, "SECRET.TXT") {
-		t.Fatalf("u1 own listing wrong: %+v err=%v", sub, err)
+	// u1 CAN list their own home contents via the absolute path too
+	subAbs, err := u1.List("/home/u1")
+	if err != nil || len(subAbs) != 1 || !strings.EqualFold(subAbs[0].Name, "SECRET.TXT") {
+		t.Fatalf("u1 own listing wrong: %+v err=%v", subAbs, err)
 	}
 
-	// u2 lists /home → sees only u2, NOT u1
+	// u2 lists /home → sees the contents of their OWN home (/home/u2),
+	// NOT u1's home (existence hidden).
 	u2 := newUidClient(t, k, "u2sess", uint32(1002), "u2", lib.CapFocus)
 	scopeU2 := k.As(1002)
 	defer scopeU2()
@@ -341,8 +343,8 @@ func TestHomeListingIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("u2 list /home: %v", err)
 	}
-	if len(ents2) != 1 || !strings.EqualFold(ents2[0].Name, "u2") {
-		t.Fatalf("u2 /home listing leaked: %+v", ents2)
+	if len(ents2) != 1 || !strings.EqualFold(ents2[0].Name, "NOTES.TXT") {
+		t.Fatalf("u2 /home should show own home contents, got: %+v", ents2)
 	}
 
 	// guest cannot list /home at all

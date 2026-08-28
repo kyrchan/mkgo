@@ -200,13 +200,14 @@ func gateAbsolute(sessions map[uint32]*fsSession, uid uint32, sess *fsSession, c
 			owner = rest[:i]
 		}
 		if owner == "" {
-			// /home itself: listing is allowed but filtered (see dispatch);
-			// mutation admin-only; guests have no home.
+			// /home itself: a registered user sees only their OWN home
+			// (listing /home must not leak other users' existence);
+			// guests have no home — hide /home entirely.
 			if write && uid != 0 && (sess == nil || sess.mask&lib.CapFSAdmin == 0) {
 				return "", FSAccess
 			}
 			if sess != nil {
-				return "/home", lib.FSOK
+				return "/home/" + sess.name, lib.FSOK
 			}
 			return "", lib.FSNoEntry
 		}
