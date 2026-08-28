@@ -409,3 +409,14 @@ remaining-work manifest in this file is closed with committed evidence.
   ListenTCP, NetListener.Accept added to guests/lib/netclient.go.
   Mock-based test (netconn_test.go) verifies the full surface against a
   minimal in-process net endpoint. Yield() delegates to kernel.
+
+- **Wire-format fuzz coverage (AGENTS.md practice #4)**: All wire-format
+  parsers now have `go test -fuzz` targets with >=15s soak PASS:
+  services/net — FuzzParseEth/ARP/IP4/ICMP/UDP/TCP/MAC (7 targets, all
+  net parsers); guests/lib — FuzzParseCanonicalHeader (port header),
+  FuzzDecodeInputEvent (input records, both v1 4-byte + v1.3 6-byte
+  forms); services/login — FuzzLoginAuthPayload (AUTH {u8 len,name,
+  u8 len,pass}); services/fs — FuzzKFSReplay (kfs record stream, already
+  present). Covers every parser listed in AGENTS.md practice #4: port
+  header, LOGIN/AUTH payloads, input records, kfs record stream, plus the
+  net ladder's Eth/ARP/IP/ICMP/UDP/TCP frame parsers.
