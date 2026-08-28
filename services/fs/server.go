@@ -188,17 +188,27 @@ func gateAbsolute(sessions map[uint32]*fsSession, uid uint32, sess *fsSession, c
 		}
 		return "/" + clean, lib.FSOK
 	case "home":
-		rest := strings.TrimPrefix(clean, "home/")
+		// Normalize: "home" or "home/u/..." -> rest is "" or "u/..."
+		var rest string
+		if clean == "home" {
+			rest = ""
+		} else {
+			rest = strings.TrimPrefix(clean, "home/")
+		}
 		owner := rest
 		if i := strings.IndexByte(rest, '/'); i >= 0 {
 			owner = rest[:i]
 		}
 		if owner == "" {
-			// /home itself: listing allowed, mutation admin-only
+			// /home itself: listing is allowed but filtered (see dispatch);
+			// mutation admin-only; guests have no home.
 			if write && uid != 0 && (sess == nil || sess.mask&lib.CapFSAdmin == 0) {
 				return "", FSAccess
 			}
-			return "/home", lib.FSOK
+			if sess != nil {
+				return "/home", lib.FSOK
+			}
+			return "", lib.FSNoEntry
 		}
 		if sess != nil && strings.EqualFold(owner, sess.name) {
 			return "/home/" + rest, lib.FSOK // own subtree
@@ -284,6 +294,22 @@ func dispatch(fat store, sessions map[uint32]*fsSession, req []byte, replies *li
 		if err != nil {
 			status = fsStatus(err)
 		} else {
+			// Filter /home listing for non-admin to hide other users (AGENTS.md
+			// namespace-rooted isolation). Admin (uid 0) sees everything.
+			if hdr.UID != 0 && path == "/home" {
+				if sess, ok := sessions[hdr.UID]; ok && sess != nil {
+					var filtered []StatInfo
+					for _, e := range ents {
+						if strings.EqualFold(e.Name, sess.name) {
+							filtered = append(filtered, e)
+						}
+					}
+					ents = filtered
+				} else {
+					// guest already denied at authorize, but be safe
+					ents = nil
+				}
+			}
 			status = lib.FSOK
 			body = make([]byte, 4, 4+len(ents)*40)
 			lib.Put32(body, uint32(len(ents)))
