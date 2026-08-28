@@ -570,6 +570,8 @@ int vfio_enumerate(struct vfio_pci_info *out, int max) {
 static bool vfio_bdf_assigned_to(uint32_t sid, uint32_t bus, uint32_t dev, uint32_t fn) {
     // Admin (init) can always access any device
     if (has_cap(sid, SCHED_CAP_DEVMAN)) return true;
+    // Virtual framebuffer: kernel-internal, no assignment needed
+    if (pci_is_vfb(bus, dev, fn)) return true;
     for (auto &a : assigns) {
         if (a.used && a.target_sid == sid && a.bus == bus && a.dev == dev && a.fn == fn)
             return true;

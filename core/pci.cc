@@ -1,14 +1,103 @@
 #include "pci.h"
 #include "lib.h"
 #include "io.h"
+#include "mm.h"
+#include "plat.h"
 
 static uint32_t pci_cfg_addr(uint32_t bus, uint32_t dev, uint32_t fn, uint32_t offset) {
     return 0x80000000u | (bus << 16) | (dev << 11) | (fn << 8) | (offset & 0xFCu);
 }
 
+// --- Virtual framebuffer (VFB) PCI device ---
+// Headless VFIO test device at BDF 0:1:0. Provides a memory BAR backed by
+// an allocated framebuffer buffer so graphics.wasm can map and render.
+// Class 0x03 (display controller), vendor 0x1234, device 0x5678.
+static constexpr uint32_t VFB_BUS = 0;
+static constexpr uint32_t VFB_DEV = 1;
+static constexpr uint32_t VFB_FN = 0;
+static constexpr uint32_t VFB_VENDOR = 0x1234;
+static constexpr uint32_t VFB_DEVICE = 0x5678;
+static constexpr uint32_t VFB_CLASS = 0x030000; // display controller, VGA-compatible
+static constexpr uint32_t VFB_BAR_SIZE = 0x400000; // 4 MB (1024x768x4 = 3 MB, round up)
+
+static struct {
+    bool enabled;
+    uint32_t bar0;      // current BAR0 value (physical base + flags)
+    uint32_t base;      // framebuffer physical base address
+    bool probe;         // size-probe mode: next read returns mask
+} g_vfb;
+
+void pci_vfb_init(uint32_t width, uint32_t height) {
+    (void)width; (void)height;
+    if (g_vfb.enabled) return;
+    // Allocate framebuffer buffer from the mm pool (identity-mapped).
+    void *buf = mm_alloc(VFB_BAR_SIZE, 0x1000);
+    if (!buf) {
+        console_puts("[pci] vfb: alloc failed\n");
+        return;
+    }
+    g_vfb.base = (uint32_t)(uintptr_t)buf;
+    g_vfb.bar0 = g_vfb.base; // memory BAR, 32-bit, non-prefetchable (flags=0)
+    g_vfb.probe = false;
+    g_vfb.enabled = true;
+    console_puts("[pci] vfb: fb base=");
+    console_hex64(g_vfb.base);
+    console_puts(" size=");
+    console_hex64(VFB_BAR_SIZE);
+    console_puts("\n");
+}
+
+bool pci_is_vfb(uint32_t bus, uint32_t dev, uint32_t fn) {
+    return g_vfb.enabled && bus == VFB_BUS && dev == VFB_DEV && fn == VFB_FN;
+}
+
+static uint32_t vfb_rd32(uint32_t offset) {
+    switch (offset) {
+    case 0x00: return VFB_VENDOR | (VFB_DEVICE << 16); // vendor | device
+    case 0x04: return 0x00000007; // status=0, command=IO|MEM|BUSMASTER
+    case 0x08: return VFB_CLASS; // class code (display) at bits 24:31
+    case 0x10: // BAR0
+        if (g_vfb.probe) {
+            g_vfb.probe = false;
+            uint32_t size_m1 = (uint32_t)(VFB_BAR_SIZE - 1);
+            uint32_t inverted = (uint32_t)(~size_m1);
+            uint32_t mask = inverted & 0xFFFFFFF0u;
+            return mask;
+        }
+        return g_vfb.bar0;
+    case 0x14: case 0x18: case 0x1C: case 0x20: case 0x24:
+        return 0; // no BARs 1-5
+    case 0x28: return 0; // cardbus CIS
+    case 0x2C: return 0xFFFF0000; // subsys vendor 0, subsys id 0
+    case 0x30: return 0; // expansion ROM
+    case 0x34: return 0; // capabilities pointer
+    case 0x3C: return 0; // interrupt line/pin
+    default: return 0;
+    }
+}
+
+static void vfb_wr32(uint32_t offset, uint32_t val) {
+    switch (offset) {
+    case 0x04: // command register — ignore writes
+        break;
+    case 0x10: // BAR0
+        if (val == 0xFFFFFFFFu) {
+            g_vfb.probe = true; // size probe: next read returns mask
+        } else {
+            g_vfb.bar0 = val & 0xFFFFFFF0u;
+            g_vfb.probe = false;
+        }
+        break;
+    default:
+        break; // ignore writes to other registers
+    }
+}
+
 int32_t pci_read32(uint32_t bus, uint32_t dev, uint32_t fn, uint32_t offset) {
     if (bus > 255 || dev > 31 || fn > 7 || offset > 0xFC || (offset & 3))
         return -1;
+    if (pci_is_vfb(bus, dev, fn))
+        return (int32_t)vfb_rd32(offset);
     // Bounds: offset must be 4-aligned, we mask inside
     outl(0xCF8, pci_cfg_addr(bus, dev, fn, offset));
     return (int32_t)inl(0xCFC);
@@ -17,6 +106,10 @@ int32_t pci_read32(uint32_t bus, uint32_t dev, uint32_t fn, uint32_t offset) {
 int32_t pci_write32(uint32_t bus, uint32_t dev, uint32_t fn, uint32_t offset, uint32_t val) {
     if (bus > 255 || dev > 31 || fn > 7 || offset > 0xFC || (offset & 3))
         return -1;
+    if (pci_is_vfb(bus, dev, fn)) {
+        vfb_wr32(offset, val);
+        return 0;
+    }
     outl(0xCF8, pci_cfg_addr(bus, dev, fn, offset));
     outl(0xCFC, val);
     return 0;
@@ -86,7 +179,9 @@ int pci_bar_info(uint32_t bus, uint32_t dev, uint32_t fn, uint32_t bar, uint64_t
         sz &= 0xFFFFFFF0u;
         if (sz == 0 || sz == 0xFFFFFFF0u)
             return -1;
-        size = (~(uint64_t)sz) + 1;
+        // Invert in 32-bit space, then cast to 64-bit. Casting before
+        // inverting would zero-extend and produce a corrupted size.
+        size = (uint64_t)(~(uint32_t)sz) + 1;
         if (size == 0) size = 0x1000;
     }
     *out_phys = phys;

@@ -308,6 +308,10 @@ $(BUILD)/disk-p10.img: $(BUILD)/BOOTX64.EFI build/test_p10a.wasm \
 	  build/test_p10b.wasm:/vm/app2 \
 	  $(BUILD)/etc_users.txt:/etc/users
 
+# Phase 11: VFIO smoke test disk (p11.wasm as /vm/app, legacy mode)
+$(BUILD)/disk-p11.img: $(BUILD)/BOOTX64.EFI build/test_p11.wasm | $(BUILD) $(IMG)
+	$(call MKDISK,$@,build/test_p11.wasm)
+
 # Phase 11b: graphics integration — graphics.wasm renders /etc/motd to LFB
 # Legacy payload-slot mode: graphics.wasm at /vm/app with gate_mask 0x300
 # (CAP_PCI|CAP_FB). Avoids init.conf multi-file loader path.
