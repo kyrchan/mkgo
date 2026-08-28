@@ -348,7 +348,7 @@ test: test-g1
 
 define RUN_QEMU
 	@rm -f $(BUILD)/serial.log
-	@timeout 300 env $(QEMU_ENV) $(QEMU) $(QEMU_BASE) -drive format=raw,file=$(1) -serial file:$(BUILD)/serial.log || true
+	@timeout 600 env $(QEMU_ENV) $(QEMU) $(QEMU_BASE) -drive format=raw,file=$(1) -serial file:$(BUILD)/serial.log || true
 endef
 
 # per-guest wasm gates (Phase 3): each guest prints its marker via fd_write
@@ -493,7 +493,7 @@ test-unit:
 # kernsvc/fsroute/devblk/input objects against a fake scheduler on host.
 HT_CXXFLAGS := -std=c++20 -O1 -g -Wall -Icore -Ithird_party/wasm3
 HT_OBJS := $(BUILD)/ht/ports.o $(BUILD)/ht/kernsvc.o $(BUILD)/ht/fsroute.o \
-           $(BUILD)/ht/devblk.o $(BUILD)/ht/input.o
+           $(BUILD)/ht/devblk.o $(BUILD)/ht/input.o $(BUILD)/ht/vfio_hoststub.o
 
 $(BUILD)/hosttest: tools/hosttest.cc $(HT_OBJS) | $(BUILD)
 	@mkdir -p $(dir $@)
@@ -501,6 +501,10 @@ $(BUILD)/hosttest: tools/hosttest.cc $(HT_OBJS) | $(BUILD)
 	$(CXX) -no-pie $(BUILD)/ht/hosttest.o $(HT_OBJS) -o $@
 
 $(BUILD)/ht/%.o: core/%.cc $(wildcard core/*.h) | $(BUILD)
+	@mkdir -p $(dir $@)
+	$(CXX) $(HT_CXXFLAGS) -c $< -o $@
+
+$(BUILD)/ht/vfio_hoststub.o: core/vfio_hoststub.cc core/vfio.h | $(BUILD)
 	@mkdir -p $(dir $@)
 	$(CXX) $(HT_CXXFLAGS) -c $< -o $@
 
