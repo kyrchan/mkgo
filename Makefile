@@ -308,25 +308,17 @@ $(BUILD)/disk-p10.img: $(BUILD)/BOOTX64.EFI build/test_p10a.wasm \
 	  build/test_p10b.wasm:/vm/app2 \
 	  $(BUILD)/etc_users.txt:/etc/users
 
-# Phase 11b: graphics integration test disk (init + graphics + /etc/motd)
-# NOTE: init.conf MUST be at ESP root (loader loads \init.conf, not \etc\init.conf)
-$(BUILD)/disk-p11b.img: $(BUILD)/BOOTX64.EFI services/init/init.wasm \
-                       services/fs/fs.wasm services/console/console.wasm \
-                       services/login/login.wasm services/shell/shell.wasm \
-                       build/graphics.wasm $(BUILD)/etc_users.txt | $(BUILD) $(IMG)
-	printf 'console console.wasm 0\nfs fs.wasm 10\nlogin login.wasm 8\nshell shell.wasm 8\ngraphics graphics.wasm 300\n' > $(BUILD)/init-p11b.conf.tmp
+# Phase 11b: graphics integration — graphics.wasm renders /etc/motd to LFB
+# Legacy payload-slot mode: graphics.wasm at /vm/app with gate_mask 0x300
+# (CAP_PCI|CAP_FB). Avoids init.conf multi-file loader path.
+$(BUILD)/disk-p11b.img: $(BUILD)/BOOTX64.EFI build/graphics.wasm | $(BUILD) $(IMG)
+	printf '300\n' > $(BUILD)/gate-p11b.tmp
 	printf 'Welcome to the capability microkernel\nPhase 11: VFIO graphics integration\nFramebuffer rendering via wasm.\n' > $(BUILD)/motd-p11b.tmp
 	$(IMG) $@ 64 \
 	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
-	  services/init/init.wasm:/boot/modules/init.wasm \
-	  services/fs/fs.wasm:/boot/modules/fs.wasm \
-	  services/console/console.wasm:/boot/modules/console.wasm \
-	  services/login/login.wasm:/boot/modules/login.wasm \
-	  services/shell/shell.wasm:/boot/modules/shell.wasm \
-	  build/graphics.wasm:/boot/modules/graphics.wasm \
-	  $(BUILD)/init-p11b.conf.tmp:/init.conf \
-	  $(BUILD)/motd-p11b.tmp:/etc/motd \
-	  $(BUILD)/etc_users.txt:/etc/users
+	  build/graphics.wasm:/vm/app \
+	  $(BUILD)/gate-p11b.tmp:/vm/gate \
+	  $(BUILD)/motd-p11b.tmp:/etc/motd
 
 $(BUILD)/VARS.fd:
 	cp $(OVMF_VARS) $@
