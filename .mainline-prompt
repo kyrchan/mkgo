@@ -1,0 +1,18 @@
+Phase 11 — VFIO foundation completion + graphics.wasm.
+
+Prerequisite: VFIO scaffold is committed (bca4a40): core/pci.cc, core/vfio.cc,
+kern_pci_*/kern_fb_*/kern_doorbell_* imports wired, test-p11 PASS.
+
+REMAINING WORK:
+1. IOMMU page tables: program VT-d/AMD-Vi to restrict guest DMA to assigned
+   pages (security boundary). Replace identity map with per-session domains.
+2. MSI-X programming: allocate vectors, program MSI-X table in PCI config,
+   route interrupts to session doorbells via eventfd.
+3. Graphics window: map LFB BAR into guest linear memory with write-combining
+   attributes. Guest writes pixels directly (zero-copy).
+4. Crash recovery: stub session re-bind for GPU reset (FLR or bus reset).
+5. Integration test: display text through graphics.wasm to a visible console.
+
+Read core/vfio.cc, core/pci.cc, abi/ABI.md §12-§15 first.
+Work continuously per the Autonomy mandate. Commit incrementally.
+Do not emit ALL PHASES COMPLETE (coordinator decides).

@@ -1,13 +1,15 @@
 #include "sched.h"
 #include "lib.h"
 #include "mm.h"
+#include "devblk.h"
+#include "input.h"
 #include "engine.h"
 #include "wasi_glue.h"
 #include "plat.h"
 #include "ctx.h"
 #include "rt.h"
+#include "vfio.h"
 
-static constexpr int MAX_SESSIONS = 12;
 static constexpr int MAX_IMAGES = 8;
 static constexpr uint64_t STACK_BYTES = 1024 * 1024;
 
@@ -42,6 +44,12 @@ static uint64_t *kern_sp;     /* scheduler/boot stack */
 
 sched_wasi_state *sched_wasi_current(void) {
     return cur ? &cur->wctx : 0;
+}
+
+void *sched_runtime_of(uint32_t sid) {
+    if (sid >= MAX_SESSIONS || !sessions[sid].eng_live)
+        return 0;
+    return sessions[sid].eng.rt;
 }
 
 uint32_t sched_current_sid(void) { return cur ? cur->sid : 0; }
@@ -118,6 +126,7 @@ extern "C" void sched_session_main(void) {
     console_puts("\n");
     engine_shutdown(&s->eng);
     s->eng_live = false;
+    vfio_session_cleanup(s->sid);
     s->state = S_ZOMBIE;
     ctx_switch(&s->sp, kern_sp); /* never returns here */
     for (;;)
@@ -126,6 +135,13 @@ extern "C" void sched_session_main(void) {
 
 int sched_spawn_named(const char *name, const uint8_t *blob, uint64_t len,
                       uint32_t uid, uint64_t capmask) {
+    const char *defargv[2] = {name, 0};
+    return sched_spawn_named_argv(name, blob, len, uid, capmask, defargv, 1);
+}
+
+int sched_spawn_named_argv(const char *name, const uint8_t *blob,
+                           uint64_t len, uint32_t uid, uint64_t capmask,
+                           const char *const *argv, int argc) {
     for (int i = 1; i < MAX_SESSIONS; i++) {
         if (sessions[i].state != S_FREE)
             continue;
@@ -152,12 +168,21 @@ int sched_spawn_named(const char *name, const uint8_t *blob, uint64_t len,
             s->eng_live = false;
             return -1;
         }
-        /* per-session WASI state: argv0 = session name */
+        /* per-session WASI state: argv from caller */
         for (int k = 0; k < 16; k++)
             s->wctx.argv[k] = 0;
-        s->wctx.argv[0] = s->name;
+        int na = 0;
+        if (argv) {
+            for (; na < argc && na < 14; na++)
+                s->wctx.argv[na] = argv[na];
+        } else {
+            s->wctx.argv[0] = s->name;
+            na = 1;
+        }
         s->wctx.exited = false;
         s->wctx.exit_code = 0;
+        for (int k = 0; k < SCHED_MAX_FDS; k++)
+            s->wctx.fds[k] = SCHED_FD_EMPTY;
 
         /* make it RUNNABLE: build initial frame entering the trampoline */
         s->sp = ctx_make(s->stack, STACK_BYTES);
@@ -197,6 +222,34 @@ static void audit(const char *op, const char *reason, const char *target) {
     console_puts("\n");
 }
 
+int sched_session_by_name(const char *name) {
+    for (int i = 1; i < MAX_SESSIONS; i++) {
+        if ((sessions[i].state == S_RUNNABLE || sessions[i].state == S_RUNNING) &&
+            !strcmp(sessions[i].name, name))
+            return i;
+    }
+    return -1;
+}
+
+void sched_set_identity(uint32_t sid, uint32_t uid, uint64_t capmask) {
+    if (sid < MAX_SESSIONS && sessions[sid].state != S_FREE) {
+        sessions[sid].uid = uid;
+        sessions[sid].capmask = capmask;
+        console_puts("[sched] identity '");
+        console_puts(sessions[sid].name);
+        console_puts("' uid=");
+        console_hex64(uid);
+        console_puts(" caps=");
+        console_hex64(capmask);
+        console_puts("\n");
+    }
+}
+
+extern "C" bool ports_name_owned_by(uint32_t sid, const char *name);
+bool sched_is_login(uint32_t sid) {
+    return ports_name_owned_by(sid, "login");
+}
+
 int sched_kill(uint32_t sid) {
     if (!sched_alive(sid)) {
         audit("KILL", "nosession", "registry");
@@ -207,6 +260,7 @@ int sched_kill(uint32_t sid) {
         return -1;
     }
     sessions[sid].state = S_ZOMBIE;
+    vfio_session_cleanup(sid);
     console_puts("[sched] killed sid=");
     console_hex64(sid);
     console_puts(" ('");
@@ -237,14 +291,32 @@ static bool all_dead(void) {
     return true;
 }
 
+extern "C" void virtio_net_dbg(void);
+
 void sched_run(void) {
+    extern void devblk_poll(void);
+    extern void input_poll(void);
+    extern void virtio_net_poll(void);
     while (!all_dead()) {
+        input_poll();
+        devblk_poll();
+        virtio_net_poll();
         int picked = -1;
         for (uint32_t k = 0; k < MAX_SESSIONS; k++) {
             uint32_t i = (next_rr + k) % MAX_SESSIONS;
             if (i == 0)
                 continue;
             if (sessions[i].state == S_RUNNABLE) {
+#ifdef HOST_BUILD
+                {
+                    static unsigned long long pc;
+                    if (pc++ < 60) {
+                        console_puts("[pick sid=");
+                        console_hex64(i);
+                        console_puts("]\n");
+                    }
+                }
+#endif
                 picked = (int)i;
                 next_rr = (uint32_t)((i + 1) % MAX_SESSIONS);
                 break;
@@ -257,6 +329,5 @@ void sched_run(void) {
         s->state = S_RUNNING;
         cur = s;
         ctx_switch(&kern_sp, s->sp);
-        cur = 0;
     }
 }

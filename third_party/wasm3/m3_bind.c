@@ -107,11 +107,11 @@ M3Result  ValidateSignature  (IM3Function i_function, ccstr_t i_linkingSignature
     IM3FuncType ftype = NULL;
 _   (SignatureToFuncType (& ftype, i_linkingSignature));
 
+    /* F58: unconditional enforcement -- the linking signature is now the
+     * canonical spec signature carried per link entry, so a mismatch here
+     * is a real ABI violation and must fail instantiation. */
     if (not AreFuncTypesEqual (ftype, i_function->funcType))
     {
-        m3log (module, "expected: %s", SPrintFuncTypeSignature (ftype));
-        m3log (module, "   found: %s", SPrintFuncTypeSignature (i_function->funcType));
-
         _throw ("function signature mismatch");
     }
 

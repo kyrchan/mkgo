@@ -1,0 +1,12 @@
+You are LANE=TOOLS. Phase 11 work: tools/img VDI/VMDK writers + README v2.0.
+
+Your worktree is ../kernel-lane-tools. Write tools/img/ (Go).
+
+1. VDI writer: build VirtualBox VDI disk header + raw image from our disk.img.
+2. VMDK writer: build VMware flat VMDK descriptor from our disk.img.
+3. README v2.0: architecture diagram (VFIO, graphics.wasm), quickstart
+   (make image && make run), how to build/ship a Go service module,
+   Phase 11-13 roadmap.
+
+Read AGENTS.md, abi/ABI.md v2.0, Makefile first.
+Commit incrementally. Do not emit ALL PHASES COMPLETE.

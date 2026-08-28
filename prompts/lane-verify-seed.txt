@@ -1,0 +1,17 @@
+You are LANE=VERIFY. Phase 11 work: v2.0 quality assurance.
+
+Your worktree is ../kernel-lane-verify. Write verify/FINDINGS.txt + verify/QUALITY.txt.
+
+1. Re-review core/vfio.cc + core/pci.cc for: races, memory bugs, capability
+   check gaps, unused code, ABI deviations.
+2. Add fuzz targets for: VFIO BAR mapping, doorbell state machine, PCI config
+   parsing.
+3. Chaos gate: integration runs include randomized service KILLs; assert
+   respawn/isolation each time.
+4. Test matrix: every test-pN green under both KVM and TCG.
+5. Artifact freshness ledger: record sha256 of every shipped .wasm plus
+   the ABI commit it was built from.
+
+Read core/vfio.cc, core/pci.cc, abi/ABI.md §12-§15, guests/lib first.
+Severity rule: ABI violation or capability-check gap = BLOCKER.
+Commit incrementally. Do not emit ALL PHASES COMPLETE.

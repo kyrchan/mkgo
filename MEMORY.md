@@ -4,75 +4,77 @@ Read this first. Source of truth when context is compacted.
 The full phase-by-phase plan lives in `AGENTS.md` — this file is state,
 decisions, and gotchas. Update at milestones or near context limits.
 
-## Status (as of 2026-08-22)
+## Status — ALL 9 GATES GREEN on committed HEAD + substrate blockers closed (2026-08-25)
 
-**Phase 4 gate GREEN (commit 7e7c2dd).** Message ports per ABI §1 in
-'kernel' namespace; kernel-owned registry/devman/power endpoints (§7
-framing {u16 op,u16 seq,payload}, replies to sending port, capability
-bits + [audit] to serial); cooperative coroutine scheduler (ctx.S,
-per-session native stacks + per-session WASI state); console.wasm +
-login.wasm preloaded pre-EBS from /boot/modules; SPAWN resolves from a
-boot preload table until fs exists (documented interim divergence).
-Gate: ping-pong x3 + LIST shows 4 sessions + KILL console rc=0 with
-login heartbeats continuing + KERNEL-OK.
-Host driver tools/hostp4.cc runs the whole scenario pre-QEMU — always
-do that first. Next: **Phase 5** — fs.wasm (Go, FAT16 over §3 block
-window, RAM-disk backend), dual client routing (kernel-routed preview1
-path_open/fd_read/fd_write/fd_close/path_create* AND guests/lib direct
-ports), multiuser stubs (/etc static table, /home/<u> roots),
-abi_ver custom section check; retire kernel/vm+vasm+demo.
+**Gates: g1 g2 g3 p4 p5a p5b p7 p8a p8b ALL PASS + make test-kernel 44/44 + unit tests.**
 
-Allocator lessons (rt.cc): free-list next ptr must NOT clobber hdr.size;
-binned blocks rounded to FULL class size so pops never undersize;
-cls_of returns NCLASS sentinel for oversized → exact alloc, leaked on
-free; Go runtime PANICS at init unless fd_prestat_get returns EBADF;
-host shims must use __libc_malloc aliases (std::malloc resolves to your
-own definition). make test ≈150s each — budget bash timeouts.
-ctx_make: RIP slot is the HIGHEST address of the crafted frame.
+### Blocker-hardening batch landed (each commit = finding + regression test):
+- F13 ports_name_owned_by creator-vs-binder · F18 kernsvc NACK status -1 on all
+  fall-throughs · F32 port_send uid stamping (spoof-proof identity) ·
+  F12+F31 devblk wraparound-safe bounds + CAP_FSADM gate (init.conf fs mask 0x10,
+  ABI.md §3 documented) · F23+F28 fsroute seq-match + conditional interception ·
+  F16 routed_rw clamp+memset · F59 overflow-safe cycles→ns · F58 sig-check bypass
+  DELETED, canonical per-name signatures enforced, void-shape variants
+  (sched_yield_v/focus_set_v) because raw-call layout is [rets...,args...] --
+  linking a v(i)-declared import to an i(i) fn shifts args by one slot ·
+  F21 abi_ver LEB hardening · F37 ppa slot reduced to CAP_KILL · F29 g_last_mem gone.
+- NEW kernel-substrate regression infra: `make test-kernel` (tools/hosttest.cc)
+  links REAL ports/kernsvc/fsroute/devblk/input objects vs fake scheduler.
+- §7 direct-mode RPCs now reply INLINE on the sending handle when rname empty
+  (was: dropped -> full-budget stall for init/console/devman callers).
+- Multiuser flow end-to-end: login grants identity to the AUTHENTICATING session
+  (registry LOGIN by name) + feeds fs REGISTER {uid,name,capmask}; fs provisions
+  /home/<name> on REGISTER; p5a/p5b rewritten on lib.FSClient with u2->u1 denials.
+- p7 flow = current architecture (shell claims §4 focus itself; run_p7.sh types
+  `cat /etc/motd`; fs seeds motd at mount). Gate greps updated accordingly.
 
-Phase-2 notes: C++ has no range designators (vm jump table fills at
-runtime); efi_main needs extern "C" or the linker silently defaults the
-entry point; mm_alloc sits AFTER where mm_pool was in mm.cc (don't
-re-truncate it).
+## ⚡ CURRENT STATUS (2026-08-28 — Phase 10 GREEN on v2.0, Phase 11 VFIO in progress) — atomic bump
 
-**Interface contracts FROZEN: `abi/ABI.md` v1** (ports §1, console §2,
-block window §3, input/focus §4, timer §5, net windows §6, kernel-owned
-service ports §7 — registry/devman/power with capability bits — and the
-two-layer device driver model §8). Kernel AND services code against it
-only; changes = version bump there. Key decisions encoded: fs.wasm Phase 5
-runs on RAM-disk block backend, Phase 8 re-backs same window with virtio-blk
-(no guest change); FS client routing = BOTH kernel-routed preview1 and
-guests/lib direct ports; boot orchestration = kernel spawns only init.wasm,
-which reads /etc/init.conf (Phase 7); admin tools are shell built-ins over
-§7 ports; modules carry abi_ver custom section checked at instantiation.
-Later additions to ABI v1: registry SPAWN op (bit6 CAP_SPAWN) = the ONLY
-program-launch mechanism (no fork/exec); §10 audit trail relays rejected
-ops to console; init.wasm supervises children + respawns per
-/etc/init.conf policy; server inventory table in AGENTS.md.
-Scheduler policy BINDING: round-robin forever (cooperative Phase 3 →
-preemptive Phase 8, quantum via kernel.conf); sole sanctioned future
-refinement = head-of-line bump for sessions with pending port messages;
-priorities/MLFQ/CFS/RT classes explicitly rejected; ≤400 LOC budget.
+Phase 10 **tagged** `f03fa00` on `v1.3/0x01` (all gates g1-p10 TCG green, p8a harness fix, p10 14 markers). **Atomic bump** to `v2.0/0x02` landed: `abi/ABI.md:1` v2.0 (`§12 PCI/VFIO §13 FB §14 doorbell §15 block`), `core/engine.cc:56` `av!=2`, `Makefile:86-163` stamping `2`, all `*.wasm` rebuilt `02` (verified `g1`+`p10` PASS on `v2.0` KVM, `p10` 14 markers still green).
 
-Phase-1 fixes worth remembering:
-- loader regression was REAL: AllocatePool called via FW4 (extra
-  BootServices arg landed in Type slot → INVALID_PARAMETER). Now FW3.
-- vasm pass-1 bug: text labels all resolved to offset 0 (p.text fills in
-  pass 2) → every jz jumped to pc=0, guest spun silently forever. Host
-  harness for vm.c (/tmp pattern: stub serial/mm_alloc) is the fast way
-  to debug guest programs — use it before QEMU.
-- CPUID OSXSAVE bit27 reads 0 until CR4.OSXSAVE set; never gate on it.
-- Gate grep must accept zero-padded hex ('out 0x0000000000000028').
-- make test costs ~150s (kernel halts → QEMU runs to 120s timeout);
-  budget timeouts accordingly.
+Gates g1+g1/p10 re-verified on `v2.0`; full `test-all` re-evidence pending for `v2.0` tag. KVM matrix pending (KVM host). `v2.0` is single ABI — no split.
 
-**Roadmap extended (user-approved pace): Phases 7–10 added to AGENTS.md**
-(interactive shell/userland → preemption+persistent storage → Go network
-stack → multiuser hardening/release eng; 9 is stretch). Completion sentinel
-redefined there: ALL PHASES COMPLETE = every gate in AGENTS.md green (0–10,
-6 optional). The running overnight.sh still carries old "Phases 0-5" wording
-in its CONT prompt — harmless, AGENTS.md overrides completeness semantics;
-rewrite script wording at next idle restart.
+## ⚡ YOUR NEXT TASKS (coordinator order, Phase 11 parallel)
+
+Fleet lanes run **in parallel** (disjoint paths, `scripts/lanes.conf`):
+1. **MAINLINE** `core/` `arch/` — VFIO foundation: `core/vfio.cc`+`core/pci.cc` ~2k LOC (IOMMU VT-d/AMD-Vi, `kern_pci_*` `§12`, `kern_fb_*` `§13`, `kern_doorbell_wait` `§14`, `ASSIGN_PCI` `§7` op7, caps `8 PCI/9 FB` `§9` class 10), PCI enumeration, BAR mapping (WC/UC), MSI-X bind, FLR, audit.
+2. **SERVICES** `services/` `guests/` — pure Go drivers via VFIO: `graphics.wasm` (LFB compositor), `e1000.wasm`/`ahci.wasm`/`usb.wasm`/`bt`/`wlan` (all `kern_pci_map_bar`+doorbell, zero kernel per device).
+3. **TOOLS** `tools/` `README.md` — `tools/img` VDI/VMDK writers for Phase 13, `README.md` v2.0 (abi 0x02, caps 8/9, `make image && make run`).
+4. **VERIFY** `verify/` — re-audit `v2.0` freshness ledger (`sha256` vs `0x02`), `go fuzz` `30s`, chaos KILL, STRIDE-lite, `test-matrix` tcg+kvm on `v2.0`.
+5. **DOCS** `docs/` — `SDD/IFSPEC/TRACE/TESTPLAN` v2.0.
+
+Gates re-run after EACH lane commit. `ALL PHASES COMPLETE` only when `test-all` `v2.0` + `test-matrix` + `VERIFY 0 BLOCKER` on `v2.0`.
+
+
+## Status — ALL PRIMARY GATES GREEN
+
+**PASSING: g1 g2 g3 p4 p8a p8b (7 gates) + unit tests.**
+**FAILING: p5a p5b p7** — test binaries need update to match coordinator's
+restructured service protocols (canonical v1.1 framing, KFS backend).
+Service unit tests all PASS via `make test-unit` (fs KFS fuzz/replay,
+lib canonical header fuzz).
+
+Phase 6 (aarch64/riscv64) optional per AGENTS.md.
+Phase 9 (net.wasm) REQUIRED — coordinator decree 2026-08-25: week continues, stretch provision NOT invoked. Deliverables: virtio-net shim + test-p9 gate + services/net E2E.
+
+### Architecture summary:
+- Kernel boots UEFI → loads modules from ESP → dispatches sessions
+- wasm3 runs Go/Rust/C/WAT guests
+- Message ports: canonical v1.1 framing, kernel-relayed, capability-guarded
+- fs.wasm: KFS log-structured filesystem (coordinator restructured from FAT16)
+- login.wasm: Serve-based auth with /etc/users table support
+- shell.wasm: echo/cat/kill-session built-ins
+- init.wasm: SPAWN-driven boot orchestration
+- virtio-blk PCI driver re-backs kern_blk_* transport
+- Timer/PIC/IRQ0 infrastructure in place; preemptive scheduling
+  implemented but DISABLED (cooperative fallback primary)
+
+### For next session:
+1. Update test_p5a/p5b to use lib.FSClient for fs operations
+   (matches coordinator's KFS protocol; see services/fs/server_test.go)
+2. Update p7 typed-login flow to match new Serve-based login
+3. Enable preempt after debugging wasm3 cross-stack corruption
+4. Phase 10 polish: tools/img integration into Makefile
 
 ## Project vision (endgame, user's words)
 
@@ -148,6 +150,13 @@ GOROOT_BARE make rules, GO_MAGIC markers in main.c, eventually
 - Loader uses raw vtable offsets into EFI protocols (`(char*)sfs+8`,
   `file+56` etc.) — spec-fixed but fragile; keep FW1..FW5 wrappers.
 - Serial log greps: strip ANSI escapes before matching.
+- HOST IS WINDOWS (+WSL2): host sleep/hibernate freezes ALL processes with
+  no log trace; on resume uptime reads low while old PIDs persist
+  (incident 2026-08-22 ~11:53→14:03). Host "sleep after 5 min plugged in"
+  was the culprit — now disabled by user. Watchdog hardened for this:
+  900 s threshold + two-strike debounce (cold starts post-resume look
+  stalled but are fine). Windows Update auto-restart would kill WSL
+  entirely — disable scheduled restarts for true week-long runs.
 - Stale-object danger: after changing kernel sources, rebuild clean; a boot
   log older than its binary is worthless (this bit during the Go era).
 - QEMU TCG supports AVX2 with `-cpu max`; irrelevant post-ISA-retirement.
@@ -168,65 +177,158 @@ chars issue. Do not resurrect; kept here only so future agents don't dig.
    LocateProtocol); gate = KERNEL-OK + out 0x28 + 'E'.
 3. Proceed Phase 2 onward only while gates stay green.
 
-**ABI v1.1 RATIFIED (master b9263a2, 2026-08-22)**: canonical datagram
-header {u16 op,u16 seq,u32 uid,char rname[16]} payload@24 (uid
-kernel-stamped); §3 block offsets pinned + scratch@0x1000 min window
-0x2000; registry ops 5=LOGIN 6=SETCONF (+bit7 CAP_CONF); abi_ver custom
-section byte 0x01 mandatory; managed-runtime guests use kern_blk_read/
-write imports instead of §3 window. ACTION REQUIRED before your next
-commit: `git merge master` in this worktree (disjoint paths => clean),
-then conform code to v1.1. Verify lane: check conformance.
+**QA INTAKE NOW BINDING**: before any commit, read
+/home/cyr/kernel-lane-verify/verify/FINDINGS.txt — fix BLOCKER/MAJOR items
+against this repo first (or rebut in MEMORY.md). Current open BLOCKERs on
+MAIN dirty tree (as of 18:15): #11 ports.cc ring advance-before-read,
+#1 kernsvc getenv() breaks freestanding build, #2 v1.1 reply framing
+diverges across kernsvc/login/fs — canonical header is {op,seq,uid,rname}
+24-byte form per abi/ABI.md. See FINDINGS.txt for details.
 
-**ABI v1.2 RATIFIED (master 8d2c106)**: §9 FRAMEBUFFER class window
-DEFINED — magic 'FBW', geometry@0x04, fb_off@0x10, caps@0x18, mailbox
-SET_MODE/FLIP/UPDATE_RECT @0x20; single-buffer default; width==0 = no
-display. Backends: Bochs DISPI then VMware SVGA II. Merge master before
-next commit.
+**CROSS-LANE CONTRACT NOTES (binding until ABI v1.1 review)**: lane
+SERVICES pinned concrete instantiations in services/ABI-NOTES.md that
+MAINLINE MUST mirror exactly: (a) §3 block window uses naturally-aligned
+offsets — magic@0x00 blk_size@0x04 num_blocks@0x08 next_req_id@0x10
+pad@0x14 op@0x18 lba@0x20 count@0x28 pad@0x2c off@0x30 done_req_id@0x38
+status@0x3c; guest scratch at off=0x1000; min window 0x2000; fs session
+needs CAP_DEVMAN grant at boot. (b) User-server reply convention until
+reply_to lands in v2: client inbox port named <role>.<nssalt> ≤15 chars,
+request carries {op,seq,inboxLen,inbox,payload}, server caches reply book.
+(c) FS port protocol ops 1-9 + status codes per ABI-NOTES §3 — kernel
+preview1 route must translate onto these same ops. Read the full file
+before touching kernsvc/fs framing.
 
-**ABI v1.3 RATIFIED (master 3912a37, 2026-08-23)**: §4 input records now 6 bytes {u8 kind,u8 mods,u16 scan,u16 codepoint} — scan = raw i8042 set-1 scancode; layouts become userland keymaps under /etc/keymaps/ (kernel keeps US default). Merge master before next commit. VERIFY: audit consumers of the old 4-byte record shape.
+**ABI v1.1 RATIFIED — master b9263a2 (2026-08-22).** All port datagrams:
+{u16 op,u16 seq,u32 uid,char rname[16]} payload@24; uid kernel-stamped on
+send (spoof-proof); rname = requester reply-inbox, empty = synchronous.
+§3 block offsets pinned (scratch@0x1000, min window 0x2000); managed-
+runtime guests use kern_blk_read/write imports. §7 ops now: LIST CAPS
+KILL SPAWN LOGIN SETCONF (+devman ENUM, power REBOOT/OFF); bit7=CAP_CONF;
+abi_ver custom section (byte 0x01) mandatory per module. §11 = v2 roadmap
+(reply caps kern_port_reply one-shot; LIST/CAPS gating Phase 10; IRQ arms
+post-P9; §9 class layouts). NOTE b9263a2 also carried MAINLINE's staged
+8-opcode retirement deletions (core/vm/, programs/demo.*, tools/vasm
+go.mod+main.go) — intended by Phase 5, just bundled early. All four lane
+worktrees notified via their MEMORY.md to merge master before next commit.
 
-**URGENT QA DIRECTIVE (owner, via coordinator) — verify the "all gates green" claim:**
-MAIN@3fbb85c claims TEST PASS × 9 (g1 g2 g3 p4 p5a p5b p7 p8a p8b); HEAD now
-2d9c5cb. Independently audit:
-1. Re-run or evidence-check each of the 9 gates against committed HEAD
-   (coordinator runs them in /home/cyr/kernel-gatecheck — read its
-   gatecheck.log as raw evidence when present).
-2. Re-audit every OPEN BLOCKER (F2,F11,F12,F13,F15,F16,F18,F22,F31,F32)
-   against committed HEAD: mark CLOSED-with-evidence (commit hash +
-   file:line) or re-affirm OPEN. No finding may stay open without a
-   fresh verdict.
-3. ROADMAP DELTA VERDICT — confirm or rebut these absences:
-   a. NO Phase 9 gate exists (no virtio-net shim on MAIN, no test-p9)
-   b. Phase 10 negative tests absent (two concurrent users, cross-user
-      denial over BOTH routes, port isolation) and NO KVM/TCG matrix run
-   c. kfs crash-injection suite absent from any gate (Phase 8 requirement)
-   d. lane/services 19 commits unmerged into master (net stack + uid
-      rooting hardening NOT in the tested image?)
-4. Post verdict to verify/QUALITY.txt top: "ALL-GATES-GREEN CLAIM:
-   CONFIRMED | PARTIAL (list missing) | REJECTED" with evidence lines.
-Do not stop until the verdict is posted.
+**PHASE 5 GATE GREEN (da43b41 + 6a22fec) — Phases 0-5 ALL GREEN.**
+NEXT = Phase 7 (interactive userland). COORDINATION NOTE: shell/init/
+console/login .wasm binaries are LANE SERVICES deliverables — merge
+lane/services into master BEFORE starting Phase 7 (15 commits ahead,
+v1.1-conformed per VERIFY ec69edd). After merge, run make test-g* style
+integration with real service modules instead of stubs.
 
-**COORDINATOR AUDIT RESULT (03:5x)**: clean-room reproduction in
-/home/cyr/kernel-gatecheck (HEAD 2d9c5cb + Makefile dep fix 4e5b4fd):
-g1 g2 g3 p4 p8a p8b = PASS VERIFIED; p5a p5b p7 = FAIL.
-Symptoms: p5a/p5b both sessions authenticate uid=1 (LOGIN op divergence);
-p7 typed input garbled ("otd") = 6-byte v1.3 input records vs 4-byte
-consumers. HYPOTHESIS: SVC modules (login/shell/init/console/fs.wasm
-built Aug22 20:44) predate ABI v1.2/v1.3. TASKS: (1) attribute per-finding
-to MAIN kernsvc vs SVC modules w/ file:line; (2) order SERVICES lane to
-rebuild all five modules conformant to v1.3 after merging master;
-(3) re-run p5a/p5b/p7 evidence; (4) verdict in QUALITY.txt.
-Raw evidence: /home/cyr/kernel-gatecheck/gatecheck.log + build/serial.log.
+**GATE AUDIT IN PROGRESS — HOLD SENTINEL.** Coordinator + LANE VERIFY are
+independently auditing the "all 9 gates green" claim (claim = TEST PASS ×
+g1,g2,g3,p4,p5a,p5b,p7,p8a,p8b @3fbb85c; HEAD moved to 2d9c5cb after).
+KNOWN ROADMAP DELTAS before any ALL PHASES COMPLETE may be emitted:
+(1) Phase 9 gate does not exist yet — no virtio-net shim on MAIN, no
+test-p9 target (net.wasm stack ready on lane/services, UNMERGED: 19 commits).
+(2) Phase 10 negative tests absent: two concurrent users, cross-user denial
+over both routes, KVM+TCG matrix not evidenced. (3) kfs crash-injection
+suite absent (Phase 8 requirement). (4) VERIFY re-audit of all open
+BLOCKERs pending. MAINLINE: do NOT print ALL PHASES COMPLETE until this
+audit posts its verdict in lane-verify QUALITY.txt and these deltas close.
+Coordinator gatecheck log: /home/cyr/kernel-gatecheck/gatecheck.log.
 
-VERIFY SWEEP ADDITION: count gate executions vs commits per repo per
-window (parse .overnight.log / .lane.log for 'TEST PASS/FAIL' and git
-heads). Finding class: "gate-rerun-without-commit" (>=3 identical-gate
-runs with no intervening head change = MAJOR; >=10 = BLOCKER — analysis-
-paralysis indicator, observed 2026-08-23: 127 g1 runs / 0 commits).
+**AUDIT VERDICT (coordinator, 03:5x): "all gates green" CLAIM REJECTED AS
+STATED.** Verified on clean-room HEAD: 6/9 pass (g1,g2,g3,p4,p8a,p8b);
+p5a/p5b/p7 FAIL — ABI v1.2/v1.3 ratified AFTER svc *.wasm artifacts were
+frozen (Aug22 20:44): input records 6B-vs-4B garbles p7 input; LOGIN op
+divergence gives both sessions uid=1 in p5a/b. Makefile cross-gate deps
+fixed (4e5b4fd). REMEDIATION ORDERED: SERVICES merges master + rebuilds
+all five modules conformant to v1.3; MAINLINE holds sentinel until VERIFY
+posts fresh p5a/p5b/p7 PASS evidence. Gatecheck evidence preserved at
+/home/cyr/kernel-gatecheck/.
 
-VERDICT UPDATE (coordinator 03:15): gate audit CLOSED — all 9 gates now
-independently verified PASS on committed HEAD (see main MEMORY.md).
-Prior p5a/p5b/p7 failures were infra: Makefile deps (4e5b4fd) + 120s
-timeout flake under load (6367cb6). Re-frame your roadmap-delta findings
-accordingly: the OPEN items remain Phase 9 gate, Phase 10 negative tests +
-KVM/TCG matrix, kfs crash suite — kernel correctness itself is confirmed.
+**URGENT COORDINATION (18:40): MERGE lane/services INTO MASTER BEFORE ANY
+FURTHER GATE RUNS.** Reason: your working tree still carries PRE-v1.3
+service artifacts (services/fs/fs.wasm @Aug23 00:51) while lane/services
+has 24 unmerged commits incl. the v1.3-conformant rebuild of all six
+modules (+display.wasm per ABI v1.2). Every p5a/p5b/p7 failure since
+03:40 traces to this staleness, NOT kernel logic. Steps: commit or stash
+current blocker-fix WIP as appropriate, `git merge lane/services`
+(disjoint-path conflicts unlikely; if services/*.wasm collide take
+theirs), rebuild, rerun test-p5a test-p5b test-p7 — expect PASS with the
+conformant modules. Then resume the six open security BLOCKERs.
+
+**ENGINEERING PRACTICES RATIFIED (2026-08-23)** — six binding additions in
+AGENTS.md: compatibility contract tests (kernel×shipped-artifacts matrix);
+no-fix-without-failing-test; VERIFY artifact freshness ledger (sha256 vs
+ABI commit; stale=MAJOR); go fuzz targets ≥30s soak per QA sweep (port
+header, LOGIN/AUTH, input records, kfs records); chaos gate (randomized
+service KILLs asserting respawn); STRIDE-lite threat model before Phase
+10. Plus blameless post-mortems formalized in MEMORY.md.
+
+**FLEET WIND-DOWN REJECTED & RESTARTED (2026-08-23 23:43).** MAINLINE
+emitted sentinel at 21:26 on UNCOMMITTED work ("Tree at 4e5b4fd all gates
+green") — clean-room audit proved committed HEAD fails p5a/p5b/p7; also
+open: kfs suite, Phase 9 shim+gate, Phase 10 negative tests/KVM-TCG matrix,
+lane/services merge, six security blockers uncommitted. Coordinator removed
+the premature marker, restarted watchdog+runner (session ses_fda1dae…
+continues), re-tasked SERVICES = build kfs (seed4), VERIFY = post the gate-
+audit verdict (marker cleared; URGENT directive in its MEMORY.md stands).
+Remaining-work manifest governs until every item closes WITH COMMITTED
+EVIDENCE.
+
+**TO MAINLINE — DIRECT ORDER (2026-08-23 23:5x): STOP RE-RUNNING GATES.**
+Evidence: 127 g1 runs, 0 failures, 0 commits. Your tree passes all nine
+gates (verified twice: by you 21:27–21:41, and clean-room by coordinator).
+The six security BLOCKERs are negative-path hardening — land them
+INCREMENTALLY as separate commits each with its own regression test, per
+AGENTS.md practice #8. Sequence: commit current tree state NOW as the
+compatibility-fix batch; then merge lane/services; then continue
+hardening incrementally. Do not print the sentinel until the
+remaining-work manifest in this file is closed with committed evidence.
+
+**GATE AUDIT CLOSED (2026-08-24 03:14) — "ALL 9 GATES GREEN" NOW VERIFIED
+TRUE on committed HEAD.** Coordinator clean-room matrix (gatecheck worktree,
+ab269c7 + 6367cb6): test-all rc=0 (g1 g2 g3 p4 p5a p5b p7) + p8a rc=0 +
+p8b rc=0. Root causes of the earlier rejection, both INFRA not kernel:
+(1) Makefile cross-gate deps missing -> fixed 4e5b4fd; (2) RUN_QEMU
+timeout 120s flaked under CPU contention from concurrent fleet lanes ->
+fixed 300s in 6367cb6. The stash-purgatory scare resolved as no-op:
+ab269c7 already contained stash@{1} content. Sentinel remains
+coordinator-decided; remaining-work manifest still governs: Phase 9 shim+
+gate, Phase 10 negative tests + KVM/TCG matrix, kfs (SERVICES re-tasked),
+lane/services merge.
+
+**WSL "CRASH" ROOT CAUSE CONFIRMED (Windows Event Log, 2026-08-24)**:
+NOT a crash — Modern Standby (S0 low-power idle) sessions. Kernel-Power
+506/566 show standby session #103 lasting 4h04m overnight on battery
+(drain to ~25%, then AC), Defender update installing mid-standby 04:56,
+resume on lid-open 13:56 → WSL utility VM torn down during standby and
+cold-rebuilt at resume. Classic "sleep off" settings do NOT disable S0
+idle on this hardware. FIX APPLIED BY USER via admin powercfg:
+standby-timeout-ac 0, hibernate-timeout-ac 0,
+setacvalueindex SCHEME_CURRENT SUB_SLEEP STANDBYIDLE 0. Any future
+multi-hour fleet silence should first check `uptime -p` reset +
+journalctl boot boundary before suspecting agent logic.
+
+**COORDINATOR EXECUTED TASK #1 (2026-08-24 14:4x): merged lane/services →
+master** (display.wasm §9.FB terminal, v1.1–v1.3-conformant six modules,
+net stack, fuzz targets per practice #4). MAINLINE's next-round reality:
+post-merge tree with net.wasm/display.wasm available — proceed to
+virtio-net shim + test-p9 gate (task #2). kfs still worktree-only in
+lane/services awaiting its commit.
+
+**AGENT COGNITIVE HYGIENE (2026-08-25, owner insight)**: agent failures
+were NOT laziness — they were context saturation (giant sessions degrade
+reasoning until opencode aborts) + rule overload (every action risks
+violating some constraint -> paralysis or escape). Countermeasures now
+mechanical: (1) runners proactively rotate sessions every 12 rounds —
+fresh context, state carried by MEMORY.md; (2) MEMORY.md top section =
+current manifest only, lean; laws live in AGENTS.md sections below.
+Treat "agent went weird" as HYGIENE FIRST: rotate session, re-read top
+manifest, only then suspect logic.
+
+**VRING HANDOFF PROTOCOL (owner directive, 2026-08-25 02:5x)**: if by
+next-day checkpoint MAINLINE has NOT closed the Phase 9 vring anomaly
+(used-ring writes at +10762 vs spec 8192; see ee56f00 KNOWN ISSUE +
+796aecb resume notes) AND x-preview upstream timeouts have stopped, the
+coordinator rotates MAINLINE to a FRESH 0x-Alpha session tasked solely
+with that bug, using /home/cyr/kernel/VRING-HANDOFF.md as the briefing.
+Everything known is consolidated there: symptoms, environment, ranked
+hypotheses (#1 accidental modern/VIRTIO_F_VERSION_1 negotiation via
+byte-wide GUEST_FEATURES write), evidence paths, next steps.
+MAINLINE meanwhile continues Phase 10 regression matrix + kfs gate.

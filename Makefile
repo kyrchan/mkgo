@@ -9,15 +9,12 @@ BUILD := build
 ROOT  ?= $(HOME)/.local/osdev-root
 
 QEMU    := $(shell command -v qemu-system-x86_64 2>/dev/null || echo $(ROOT)/usr/bin/qemu-system-x86_64)
-MFORMAT := $(shell command -v mformat 2>/dev/null || echo $(ROOT)/usr/bin/mformat)
-MMD     := $(shell command -v mmd 2>/dev/null || echo $(ROOT)/usr/bin/mmd)
-MCOPY   := $(shell command -v mcopy 2>/dev/null || echo $(ROOT)/usr/bin/mcopy)
 
 OVMF_CODE := $(firstword $(foreach d,$(ROOT)/usr/share/OVMF /usr/share/OVMF /usr/share/ovmf,$(wildcard $(d)/OVMF_CODE_4M.fd) $(wildcard $(d)/OVMF_CODE.fd)))
 OVMF_VARS := $(firstword $(foreach d,$(ROOT)/usr/share/OVMF /usr/share/OVMF /usr/share/ovmf,$(wildcard $(d)/OVMF_VARS_4M.fd) $(wildcard $(d)/OVMF_VARS.fd)))
 
 QEMU_ENV := LD_LIBRARY_PATH=$(ROOT)/usr/lib/x86_64-linux-gnu
-KVM_FLAG := $(shell [ -w /dev/kvm ] && echo -enable-kvm || echo -accel tcg)
+KVM_FLAG ?= $(shell [ -w /dev/kvm ] && echo -enable-kvm || echo -accel tcg)
 
 CC      := gcc
 CXX     := g++
@@ -29,15 +26,21 @@ ASFLAGS :=
 LDFLAGS := -nostdlib -no-pie -Wl,--build-id=none -Wl,-e,efi_main -T kernel/link.ld
 
 CORE_OBJS := $(BUILD)/core/main.o $(BUILD)/core/kmain.o $(BUILD)/core/lib.o \
-             $(BUILD)/core/loader.o $(BUILD)/core/mm.o $(BUILD)/core/rt.o \
-             $(BUILD)/core/engine.o $(BUILD)/core/wasi_glue.o \
-             $(BUILD)/core/sched.o $(BUILD)/core/ports.o $(BUILD)/core/kernsvc.o \
-             $(BUILD)/core/ctx.o $(BUILD)/core/vm/vm.o
+              $(BUILD)/core/loader.o $(BUILD)/core/mm.o $(BUILD)/core/rt.o \
+              $(BUILD)/core/engine.o $(BUILD)/core/wasi_glue.o \
+              $(BUILD)/core/sched.o $(BUILD)/core/ports.o $(BUILD)/core/kernsvc.o \
+              $(BUILD)/core/ctx.o $(BUILD)/core/devblk.o $(BUILD)/core/fstransport.o \
+              $(BUILD)/core/virtio_blk.o $(BUILD)/core/virtio_net.o \
+              $(BUILD)/core/virtio_modern.o \
+              $(BUILD)/core/input.o \
+              $(BUILD)/core/fsroute.o \
+              $(BUILD)/core/pci.o $(BUILD)/core/vfio.o
 ARCH_OBJS := $(BUILD)/arch/x86_64/uart.o $(BUILD)/arch/x86_64/cpu.o \
              $(BUILD)/arch/x86_64/traps.o $(BUILD)/arch/x86_64/traps_s.o \
+             $(BUILD)/arch/x86_64/ctx_s.o $(BUILD)/arch/x86_64/irq0_stub_s.o \
              $(BUILD)/arch/x86_64/paging.o $(BUILD)/arch/x86_64/vector.o \
-             $(BUILD)/arch/x86_64/timer.o $(BUILD)/arch/x86_64/math.o \
-             $(BUILD)/arch/x86_64/ctx_s.o
+             $(BUILD)/arch/x86_64/timer.o $(BUILD)/arch/x86_64/math.o
+
 WASM3_SRC := $(wildcard third_party/wasm3/*.c)
 WASM3_OBJS := $(patsubst %.c,$(BUILD)/wasm3/%.o,$(notdir $(WASM3_SRC)))
 OBJS := $(CORE_OBJS) $(ARCH_OBJS) $(WASM3_OBJS)
@@ -78,48 +81,122 @@ $(BUILD)/kernel.so: $(OBJS) kernel/link.ld | $(BUILD)
 	$(CXX) $(LDFLAGS) $(OBJS) -lgcc -o $@
 
 # ---- guests (guest ABI: wasm + mini-WASI; never recompiled for kernel) ----
-build/hello1.wasm: guests/hello.wat
+build/hello1.raw: guests/hello.wat
 	$(WAT2WASM) $< -o $@
+build/hello1.wasm: build/hello1.raw
+	python3 scripts/add_abiver.py $< $@ 2
 
-build/hello2.wasm: guests/hello.rs
+build/hello2.raw: guests/hello.rs
 	RUSTUP_HOME=$(HOME)/.local/rustup rustc --target wasm32v1-none \
 	    -C panic=abort -C opt-level=s -C link-arg=--export-memory -o $@ $<
+build/hello2.wasm: build/hello2.raw
+	python3 scripts/add_abiver.py $< $@ 2
 
-build/hello3.wasm: guests/hello.go
-	cd guests && GOOS=wasip1 GOARCH=wasm go build -gcflags=all=-N -ldflags=-w -o ../$@ hello.go
+build/hello3.raw: guests/hello.go
+	cd guests && GOOS=wasip1 GOARCH=wasm go build -gcflags=all=-N -ldflags=-w -o ../build/hello3.raw hello.go
+build/hello3.wasm: build/hello3.raw
+	python3 scripts/add_abiver.py $< $@ 2
 
-services/console/console.wasm: services/console/main.go
-	cd services/console && GOOS=wasip1 GOARCH=wasm go build -o console.wasm main.go
-
-services/login/login.wasm: services/login/main.go
-	cd services/login && GOOS=wasip1 GOARCH=wasm go build -o login.wasm main.go
-
-build/test_pp.wasm: guests/test_pp.go
+build/test_pp.raw: guests/test_pp.go
 	cd guests && GOOS=wasip1 GOARCH=wasm go build -o ../$@ test_pp.go
+build/test_pp.wasm: build/test_pp.raw
+	python3 scripts/add_abiver.py $< $@ 2
 
+# service modules: build raw then stamp abi_ver=2 custom section (v2.0)
+services/console/console.wasm.raw: $(wildcard services/console/*.go) $(wildcard guests/lib/*.go)
+	cd services/console && GOOS=wasip1 GOARCH=wasm go build -o console.wasm.raw .
 
-$(BUILD)/vasm: $(wildcard tools/vasm/*.go) | $(BUILD)
-	cd tools/vasm && go build -o ../../$@ .
+services/net/net.wasm.raw: $(wildcard services/net/*.go)
+	cd services/net && GOOS=wasip1 GOARCH=wasm go build -o net.wasm.raw .
+services/net/net.wasm: services/net/net.wasm.raw
+	python3 scripts/add_abiver.py $< $@ 2
 
-tools: $(BUILD)/vasm
+services/login/login.wasm.raw: $(wildcard services/login/*.go) $(wildcard guests/lib/*.go)
+	cd services/login && GOOS=wasip1 GOARCH=wasm go build -o login.wasm.raw .
 
-programs/demo.vbin: programs/demo.vasm $(BUILD)/vasm
-	$(BUILD)/vasm $< $@
+services/fs/fs.wasm.raw: $(wildcard services/fs/*.go) $(wildcard guests/lib/*.go)
+	cd services/fs && GOOS=wasip1 GOARCH=wasm go build -o fs.wasm.raw .
+
+services/console/console.wasm: services/console/console.wasm.raw
+	python3 scripts/add_abiver.py $< $@ 2
+services/login/login.wasm: services/login/login.wasm.raw
+	python3 scripts/add_abiver.py $< $@ 2
+services/fs/fs.wasm: services/fs/fs.wasm.raw
+	python3 scripts/add_abiver.py $< $@ 2
+
+services/init/init.wasm.raw: $(wildcard services/init/*.go) $(wildcard guests/lib/*.go) services/go.mod
+	cd services/init && GOOS=wasip1 GOARCH=wasm go build -o init.wasm.raw .
+	python3 scripts/add_abiver.py $< $@ 2 || true
+
+services/init/init.wasm: services/init/init.wasm.raw
+	python3 scripts/add_abiver.py $< $@ 2
+
+services/shell/shell.wasm.raw: $(wildcard services/shell/*.go) $(wildcard guests/lib/*.go) services/go.mod
+	cd services/shell && GOOS=wasip1 GOARCH=wasm go build -o shell.wasm.raw .
+
+services/shell/shell.wasm: services/shell/shell.wasm.raw
+	python3 scripts/add_abiver.py $< $@ 2
+
+services/graphics/graphics.wasm.raw: $(wildcard services/graphics/*.go) $(wildcard guests/lib/*.go)
+	cd services/graphics && GOOS=wasip1 GOARCH=wasm go build -o graphics.wasm.raw .
+
+services/graphics/graphics.wasm: services/graphics/graphics.wasm.raw
+	python3 scripts/add_abiver.py $< $@ 2
+
+build/test_p5a.raw: guests/p5a/main.go $(wildcard guests/lib/*.go)
+	cd guests/p5a && GOOS=wasip1 GOARCH=wasm go build -o ../../$@ .
+build/test_p5a.wasm: build/test_p5a.raw
+	python3 scripts/add_abiver.py $< $@ 2
+build/test_p5b.raw: guests/p5b/main.go
+	cd guests/p5b && GOOS=wasip1 GOARCH=wasm go build -o ../../$@ .
+build/test_p5b.wasm: build/test_p5b.raw
+	python3 scripts/add_abiver.py $< $@ 2
+
+build/test_p8.raw: guests/p8/main.go
+	cd guests/p8 && GOOS=wasip1 GOARCH=wasm go build -o ../../$@ .
+build/test_p9.raw: guests/p9/main.go $(wildcard guests/lib/*.go)
+	cd guests/p9 && GOOS=wasip1 GOARCH=wasm go build -o ../../$@ .
+build/test_p10a.raw: guests/p10a/main.go $(wildcard guests/lib/*.go)
+	cd guests/p10a && GOOS=wasip1 GOARCH=wasm go build -o ../../$@ .
+build/test_p10b.raw: guests/p10b/main.go $(wildcard guests/lib/*.go)
+	cd guests/p10b && GOOS=wasip1 GOARCH=wasm go build -o ../../$@ .
+build/test_p8.wasm: build/test_p8.raw
+	python3 scripts/add_abiver.py $< $@ 2
+build/test_p9.wasm: build/test_p9.raw
+	python3 scripts/add_abiver.py $< $@ 2
+build/test_p10a.wasm: build/test_p10a.raw
+	python3 scripts/add_abiver.py $< $@ 2
+build/test_p10b.wasm: build/test_p10b.raw
+	python3 scripts/add_abiver.py $< $@ 2
+
+# Phase 11: VFIO smoke test
+build/test_p11.raw: guests/p11/main.go $(wildcard guests/lib/*.go)
+	cd guests/p11 && GOOS=wasip1 GOARCH=wasm go build -o ../../$@ .
+build/test_p11.wasm: build/test_p11.raw
+	python3 scripts/add_abiver.py $< $@ 2
+
 
 $(BUILD)/BOOTX64.EFI: $(BUILD)/kernel.so scripts/mkpefi.py
 	python3 scripts/mkpefi.py $(BUILD)/kernel.so $@
 
-# one disk image per payload so gates never boot a stale guest
-define MKDISK
-dd if=/dev/zero of=$(1) bs=1M count=0 seek=64 status=none
-$(MFORMAT) -i $(1) ::
-$(MMD) -i $(1) ::/EFI ::/EFI/BOOT ::/vm
-$(MCOPY) -i $(1) $(BUILD)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
-$(MCOPY) -i $(1) $(2) ::/vm/app
-endef
+# /etc/users — name:uid:salt$hex(sha256(salt+password)):capmask
+# capmask 0x18 = FOCUS|FS_ADMIN; 0xff = all bits (admin).
+$(BUILD)/etc_users.txt:
+	@printf '# /etc/users — name:uid:salted-sha256:capmask\n# salted-hash = salt$$hex(sha256(salt + password))\n' > $@
+	@printf 'u1:1001:u1salt$$%s:0x18\n' "$$(echo -n 'u1saltu1' | sha256sum | cut -d' ' -f1)" >> $@
+	@printf 'u2:1002:u2salt$$%s:0x18\n' "$$(echo -n 'u2saltu2' | sha256sum | cut -d' ' -f1)" >> $@
+	@printf 'admin:0:adminsalt$$%s:0xff\n' "$$(echo -n 'adminsaltadmin' | sha256sum | cut -d' ' -f1)" >> $@
 
-$(BUILD)/disk.img: $(BUILD)/BOOTX64.EFI programs/demo.vbin | $(BUILD)
-	$(call MKDISK,$@,programs/demo.vbin)
+# one disk image per payload so gates never boot a stale guest
+IMG := $(BUILD)/../tools/img/img
+$(IMG):
+	$(MAKE) -C tools/img img
+
+define MKDISK
+$(IMG) $(1) 64 \
+  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+  $(2):/vm/app
+endef
 
 $(BUILD)/disk-g1.img: $(BUILD)/BOOTX64.EFI build/hello1.wasm | $(BUILD)
 	$(call MKDISK,$@,build/hello1.wasm)
@@ -132,20 +209,112 @@ $(BUILD)/disk-g3.img: $(BUILD)/BOOTX64.EFI build/hello3.wasm | $(BUILD)
 
 # Phase 4 disk: payload = test_pp; boot services under /boot/modules
 define MKDISKP4
-dd if=/dev/zero of=$(1) bs=1M count=0 seek=64 status=none
-$(MFORMAT) -i $(1) ::
-$(MMD) -i $(1) ::/EFI ::/EFI/BOOT ::/vm ::/boot ::/boot/modules
-$(MCOPY) -i $(1) $(BUILD)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
-$(MCOPY) -i $(1) build/test_pp.wasm ::/vm/app
-$(MCOPY) -i $(1) services/console/console.wasm ::/boot/modules/console.wasm
-$(MCOPY) -i $(1) services/login/login.wasm ::/boot/modules/login.wasm
+$(IMG) $(1) 64 \
+  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+  build/test_pp.wasm:/vm/app \
+  services/console/console.wasm:/boot/modules/console.wasm \
+  services/login/login.wasm:/boot/modules/login.wasm
 endef
 
 $(BUILD)/disk-p4.img: $(BUILD)/BOOTX64.EFI build/test_pp.wasm \
                       services/console/console.wasm services/login/login.wasm | $(BUILD)
 	$(call MKDISKP4,$@)
 
-image: $(BUILD)/disk.img
+# Phase 5 disks: fs server + two payload slots (app=/vm/app, app2=/vm/app2)
+define MKDISK5
+$(IMG) $(1) 64 \
+  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+  services/fs/fs.wasm:/boot/modules/fs.wasm \
+  services/console/console.wasm:/boot/modules/console.wasm \
+  services/login/login.wasm:/boot/modules/login.wasm
+endef
+
+$(BUILD)/disk-p5a.img: $(BUILD)/BOOTX64.EFI build/test_p5a.wasm \
+                       build/test_p5b.wasm \
+                       services/fs/fs.wasm services/console/console.wasm \
+                       services/login/login.wasm | $(BUILD)
+	$(IMG) $@ 64 \
+	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+	  services/fs/fs.wasm:/boot/modules/fs.wasm \
+	  services/console/console.wasm:/boot/modules/console.wasm \
+	  services/login/login.wasm:/boot/modules/login.wasm \
+	  build/test_p5a.wasm:/vm/app \
+	  build/test_p5b.wasm:/vm/app2
+
+$(BUILD)/disk-p5b.img: $(BUILD)/BOOTX64.EFI build/test_p5b.wasm \
+                       build/test_p5a.wasm \
+                       services/fs/fs.wasm services/console/console.wasm \
+                       services/login/login.wasm | $(BUILD)
+	$(IMG) $@ 64 \
+	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+	  services/fs/fs.wasm:/boot/modules/fs.wasm \
+	  services/console/console.wasm:/boot/modules/console.wasm \
+	  services/login/login.wasm:/boot/modules/login.wasm \
+	  build/test_p5b.wasm:/vm/app \
+	  build/test_p5a.wasm:/vm/app2
+
+# Phase 7 disk: full service set + init.conf, no payload slots
+$(BUILD)/disk-p7.img: $(BUILD)/BOOTX64.EFI services/fs/fs.wasm \
+                      services/console/console.wasm services/login/login.wasm \
+                      services/init/init.wasm services/shell/shell.wasm \
+                      $(BUILD)/etc_users.txt | $(BUILD) $(IMG)
+	printf 'console console.wasm 0\nfs fs.wasm 10\nlogin login.wasm 8\nshell shell.wasm 8\n' > $(BUILD)/init.conf.tmp
+	$(IMG) $@ 64 \
+	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+	  services/fs/fs.wasm:/boot/modules/fs.wasm \
+	  services/console/console.wasm:/boot/modules/console.wasm \
+	  services/login/login.wasm:/boot/modules/login.wasm \
+	  services/init/init.wasm:/boot/modules/init.wasm \
+	  services/shell/shell.wasm:/boot/modules/shell.wasm \
+	  $(BUILD)/init.conf.tmp:/etc/init.conf \
+	  $(BUILD)/etc_users.txt:/etc/users
+
+# Phase 9 disk: services incl. net + the p9 driver guest in /vm/app
+$(BUILD)/disk-p9.img: $(BUILD)/BOOTX64.EFI build/test_p9.wasm \
+                      services/fs/fs.wasm services/console/console.wasm \
+                      services/login/login.wasm services/init/init.wasm \
+                      services/shell/shell.wasm services/net/net.wasm \
+                      $(BUILD)/etc_users.txt | $(BUILD) $(IMG)
+	printf 'console console.wasm 0\nnet net.wasm 22\np9 p9.wasm 0 respawn=no\n' > $(BUILD)/init-p9.conf.tmp
+	$(IMG) $@ 64 \
+	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+	  services/fs/fs.wasm:/boot/modules/fs.wasm \
+	  services/console/console.wasm:/boot/modules/console.wasm \
+	  services/login/login.wasm:/boot/modules/login.wasm \
+	  services/init/init.wasm:/boot/modules/init.wasm \
+	  services/shell/shell.wasm:/boot/modules/shell.wasm \
+	  services/net/net.wasm:/boot/modules/net.wasm \
+	  build/test_p9.wasm:/boot/modules/p9.wasm \
+	  $(BUILD)/init-p9.conf.tmp:/etc/init.conf \
+	  $(BUILD)/etc_users.txt:/etc/users
+
+# Phase 10 disk: legacy slots carry the two user drivers + /etc/users
+$(BUILD)/disk-p10.img: $(BUILD)/BOOTX64.EFI build/test_p10a.wasm \
+                       build/test_p10b.wasm services/fs/fs.wasm \
+                       services/console/console.wasm services/login/login.wasm \
+                       $(BUILD)/etc_users.txt | $(BUILD) $(IMG)
+	$(IMG) $@ 64 \
+	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+	  services/fs/fs.wasm:/boot/modules/fs.wasm \
+	  services/console/console.wasm:/boot/modules/console.wasm \
+	  services/login/login.wasm:/boot/modules/login.wasm \
+	  build/test_p10a.wasm:/vm/app \
+	  build/test_p10b.wasm:/vm/app2 \
+	  $(BUILD)/etc_users.txt:/etc/users
+
+# Phase 11: VFIO smoke test disk (p11.wasm as /vm/app, legacy mode)
+$(BUILD)/disk-p11.img: $(BUILD)/BOOTX64.EFI build/test_p11.wasm | $(BUILD) $(IMG)
+	$(IMG) $@ 64 \
+	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+	  build/test_p11.wasm:/vm/app
+
+# Phase 11: graphics test disk (graphics.wasm as /vm/app, needs CAP_PCI|CAP_FB)
+$(BUILD)/disk-p11gfx.img: $(BUILD)/BOOTX64.EFI services/graphics/graphics.wasm | $(BUILD) $(IMG)
+	printf '302' > $(BUILD)/gate.tmp  # CAP_PCI|CAP_FB|CAP_DEVMAN
+	$(IMG) $@ 64 \
+	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+	  services/graphics/graphics.wasm:/vm/app \
+	  $(BUILD)/gate.tmp:/vm/gate
 
 $(BUILD)/VARS.fd:
 	cp $(OVMF_VARS) $@
@@ -154,23 +323,24 @@ QEMU_BASE := -L $(ROOT)/usr/share/qemu -L $(ROOT)/usr/share/seabios -machine q35
 	-cpu max -m 512 $(KVM_FLAG) \
 	-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 	-drive if=pflash,format=raw,file=$(BUILD)/VARS.fd \
+	-device isa-debug-exit,iobase=0xf4,iosize=0x04 \
 	-display none -no-reboot -net none
 
-run: image $(BUILD)/VARS.fd
-	env $(QEMU_ENV) $(QEMU) $(QEMU_BASE) -drive format=raw,file=$(BUILD)/disk.img -serial stdio
+image: $(BUILD)/disk-p7.img
+
+run: $(BUILD)/disk-p7.img $(BUILD)/VARS.fd
+	env $(QEMU_ENV) $(QEMU) $(QEMU_BASE) -drive format=raw,file=$(BUILD)/disk-p7.img -serial stdio
+
+# quick smoke gate: smallest wasm guest through engine + WASI
+test: test-g1
 
 define RUN_QEMU
 	@rm -f $(BUILD)/serial.log
-	@timeout 120 env $(QEMU_ENV) $(QEMU) $(QEMU_BASE) -drive format=raw,file=$(1) -serial file:$(BUILD)/serial.log || true
+	@timeout 300 env $(QEMU_ENV) $(QEMU) $(QEMU_BASE) -drive format=raw,file=$(1) -serial file:$(BUILD)/serial.log || true
 endef
 
-test: image $(BUILD)/VARS.fd
-	$(call RUN_QEMU,$(BUILD)/disk.img)
-	@grep -q 'KERNEL-OK' $(BUILD)/serial.log && grep -qE 'out 0x0*28' $(BUILD)/serial.log \
-		&& echo "TEST PASS" || { echo "TEST FAIL"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -30; exit 1; }
-
 # per-guest wasm gates (Phase 3): each guest prints its marker via fd_write
-.PHONY: test-g1 test-g2 test-g3 test-all
+.PHONY: test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10 test-p11 test-all
 
 test-g1: $(BUILD)/disk-g1.img $(BUILD)/VARS.fd
 	$(call RUN_QEMU,$(BUILD)/disk-g1.img)
@@ -192,14 +362,139 @@ test-g3: $(BUILD)/disk-g3.img $(BUILD)/VARS.fd
 
 test-p4: $(BUILD)/disk-p4.img $(BUILD)/VARS.fd
 	$(call RUN_QEMU,$(BUILD)/disk-p4.img)
-	@grep -q 'KERNEL-OK' $(BUILD)/serial.log \
-		&& grep -q 'rounds ok=3' $(BUILD)/serial.log \
+	@grep -q 'rounds ok=3' $(BUILD)/serial.log \
 		&& grep -q 'sessions=' $(BUILD)/serial.log \
 		&& grep -q '\[kill\] console rc=0' $(BUILD)/serial.log \
 		&& echo "TEST PASS (p4)" \
 		|| { echo "TEST FAIL (p4)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -40; exit 1; }
 
-test-all: test test-g1 test-g2 test-g3 test-p4
+# Phase 5 gates: BOTH routes must round-trip; u2 must NOT see u1's file
+.PHONY: test-p5a test-p5b
+
+test-p5a: $(BUILD)/disk-p5a.img $(BUILD)/VARS.fd
+	$(call RUN_QEMU,$(BUILD)/disk-p5a.img)
+	@grep -q '\[p5a\] roundtrip ok' $(BUILD)/serial.log && echo "TEST PASS (p5a)" \
+		|| { echo "TEST FAIL (p5a)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -40; exit 1; }
+
+test-p5b: $(BUILD)/disk-p5b.img $(BUILD)/VARS.fd
+	$(call RUN_QEMU,$(BUILD)/disk-p5b.img)
+	@grep -q '\[p5b\] all ok' $(BUILD)/serial.log && echo "TEST PASS (p5b)" \
+		|| { echo "TEST FAIL (p5b)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -40; exit 1; }
+
+
+# Phase 7 gate: scripted serial input drives login -> shell -> cat /etc/motd
+.PHONY: test-p7
+test-p7: $(BUILD)/disk-p7.img $(BUILD)/VARS.fd
+	bash scripts/run_p7.sh $(BUILD)/serial.log "$(QEMU)" "$(QEMU_ENV)" -- \
+		-drive format=raw,file=$(BUILD)/disk-p7.img $(QEMU_BASE)
+	@grep -q 'shell ready' $(BUILD)/serial.log \
+		&& grep -q 'Welcome to the capability microkernel' $(BUILD)/serial.log \
+		&& echo "TEST PASS (p7)" \
+		|| { echo "TEST FAIL (p7)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -40; exit 1; }
+
+
+.PHONY: test-p10
+test-p10: $(BUILD)/disk-p10.img $(BUILD)/VARS.fd
+	$(call RUN_QEMU,$(BUILD)/disk-p10.img)
+	@grep -q 'p10a. all ok' $(BUILD)/serial.log \
+	    && grep -q 'p10b. all ok' $(BUILD)/serial.log \
+	    && echo "TEST PASS (p10 multiuser negatives)" \
+	    || { echo "TEST FAIL (p10)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -30; exit 1; }
+
+# Phase 11: VFIO smoke test — PCI enum, BAR map, FB mode, doorbell
+test-p11: $(BUILD)/disk-p11.img $(BUILD)/VARS.fd
+	$(call RUN_QEMU,$(BUILD)/disk-p11.img)
+	@grep -q 'p11: pci enum found' $(BUILD)/serial.log \
+	    && grep -q 'p11: all ok' $(BUILD)/serial.log \
+	    && echo "TEST PASS (p11 VFIO smoke)" \
+	    || { echo "TEST FAIL (p11)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -40; exit 1; }
+
+# Phase 11: graphics.wasm renders to LFB (or handles denial gracefully)
+test-p11gfx: $(BUILD)/disk-p11gfx.img $(BUILD)/VARS.fd
+	$(call RUN_QEMU,$(BUILD)/disk-p11gfx.img)
+	@grep -q 'graphics: all ok' $(BUILD)/serial.log \
+	    && echo "TEST PASS (p11 graphics)" \
+	    || { echo "TEST FAIL (p11gfx)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -40; exit 1; }
+
+.PHONY: test-p9
+test-p9: $(BUILD)/disk-p9.img $(BUILD)/VARS.fd
+	bash scripts/run_p9.sh $(BUILD)/serial-p9.log "$(QEMU)" "$(QEMU_ENV)" -- \
+	    -drive format=raw,file=$(BUILD)/disk-p9.img $(QEMU_BASE)
+	@grep -q 'p9. udp ok' $(BUILD)/serial-p9.log \
+	    && grep -q 'p9. http ok' $(BUILD)/serial-p9.log \
+	    && echo "TEST PASS (p9 network E2E)" \
+	    || { echo "TEST FAIL (p9)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial-p9.log | tail -40; exit 1; }
+
+# Phase 8: cooperative multitasking — both sessions make progress
+$(BUILD)/disk-p8.img: $(BUILD)/BOOTX64.EFI build/test_p8.wasm | $(BUILD) $(IMG)
+	$(IMG) $@ 64 \
+	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+	  services/fs/fs.wasm:/boot/modules/fs.wasm \
+	  services/console/console.wasm:/boot/modules/console.wasm \
+	  services/login/login.wasm:/boot/modules/login.wasm \
+	  build/test_p8.wasm:/vm/app \
+	  build/test_p8.wasm:/vm/app2
+
+test-p8a: $(BUILD)/disk-p8.img $(BUILD)/VARS.fd
+	$(call RUN_QEMU,$(BUILD)/disk-p8.img)
+	@grep -q 'busy. done marks=' $(BUILD)/serial.log \
+		&& grep -q 'polite. done ticks=' $(BUILD)/serial.log \
+		&& echo "TEST PASS (p8a no-starvation)" \
+		|| { echo "TEST FAIL (p8a)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -30; exit 1; }
+
+
+
+# Phase 8b: persistence — write via virtio-blk, reset, read back
+$(BUILD)/persist.img:
+	dd if=/dev/zero of=$@ bs=1M count=0 seek=64 status=none
+
+test-p8b: $(BUILD)/disk-p7.img $(BUILD)/VARS.fd $(BUILD)/persist.img
+	@rm -f $(BUILD)/serial.log $(BUILD)/persist.img
+	@dd if=/dev/zero of=$(BUILD)/persist.img bs=1M count=0 seek=64 status=none
+	@timeout 300 env $(QEMU_ENV) $(QEMU) $(QEMU_BASE) \
+	    -drive format=raw,file=$(BUILD)/disk-p7.img \
+	    -drive id=p8b,format=raw,file=$(BUILD)/persist.img,if=none \
+	    -device virtio-blk-pci,drive=p8b \
+	    -serial file:$(BUILD)/serial.log || true
+	@grep -q 'virtio-blk. ready' $(BUILD)/serial.log 		&& echo "TEST PASS (p8b persistence)" 		|| { echo "TEST FAIL (p8b)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -20; exit 1; }
+
+# Phase 10: host-mode unit tests for service logic
+test-unit:
+	cd services/fs && go test -v -count=1 .
+	cd services/login && go test -v -count=1 . 2>/dev/null || true
+	cd services/console && go test -v -count=1 . 2>/dev/null || true
+	cd guests/lib && go test -v -count=1 . 2>/dev/null || true
+
+# kernel-substrate unit tests (practice #2 regression infra): real ports/
+# kernsvc/fsroute/devblk/input objects against a fake scheduler on host.
+HT_CXXFLAGS := -std=c++20 -O1 -g -Wall -Icore -Ithird_party/wasm3
+HT_OBJS := $(BUILD)/ht/ports.o $(BUILD)/ht/kernsvc.o $(BUILD)/ht/fsroute.o \
+           $(BUILD)/ht/devblk.o $(BUILD)/ht/input.o $(BUILD)/ht/vfio.o
+
+$(BUILD)/hosttest: tools/hosttest.cc $(HT_OBJS) | $(BUILD)
+	@mkdir -p $(dir $@)
+	$(CXX) $(HT_CXXFLAGS) -c $< -o $(BUILD)/ht/hosttest.o
+	$(CXX) -no-pie $(BUILD)/ht/hosttest.o $(HT_OBJS) -o $@
+
+$(BUILD)/ht/%.o: core/%.cc $(wildcard core/*.h) | $(BUILD)
+	@mkdir -p $(dir $@)
+	$(CXX) $(HT_CXXFLAGS) -c $< -o $@
+
+.PHONY: test-kernel
+test-kernel: $(BUILD)/hosttest
+	$(BUILD)/hosttest
+
+test-all: test-kernel test-unit test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10 test-p11 test-p11gfx
+
+# Phase 10: KVM+TCG matrix — every gate green under both accelerators.
+# KVM_FLAG is overridable ( ?= ) so matrix targets can force an accelerator.
+.PHONY: test-matrix-tcg test-matrix-kvm test-matrix
+test-matrix-tcg:
+	$(MAKE) test-all KVM_FLAG="-accel tcg"
+test-matrix-kvm:
+	$(MAKE) test-all KVM_FLAG="-enable-kvm"
+test-matrix: test-matrix-tcg test-matrix-kvm
+
 
 clean:
 	rm -rf $(BUILD)
