@@ -48,10 +48,11 @@ extern "C" EFI_STATUS __attribute__((ms_abi)) efi_main(EFI_HANDLE image_handle,
                            'p','9','.','w','a','s','m',0};
     static CHAR16 pconf[] = {'e','t','c','\\','i','n','i','t','.','c','o','n','f',0};
     static CHAR16 papp2[] = {'v','m','\\','a','p','p','2',0};
+    static CHAR16 pgate[] = {'v','m','\\','g','a','t','e',0};
     void *cimg = 0, *limg = 0, *fimg = 0, *a2img = 0, *iimg = 0, *shimg = 0,
-         *cfimg = 0, *nimg = 0, *p9img = 0;
+         *cfimg = 0, *nimg = 0, *p9img = 0, *gateimg = 0;
     uint64_t clen = 0, llen = 0, flen = 0, a2len = 0, ilen = 0, shlen = 0,
-             cflen = 0, nlen = 0, p9len = 0;
+             cflen = 0, nlen = 0, p9len = 0, gatelen = 0;
     load_esp_file(image_handle, systab, pcon, &cimg, &clen);
     load_esp_file(image_handle, systab, plog, &limg, &llen);
     load_esp_file(image_handle, systab, pfs, &fimg, &flen);
@@ -61,6 +62,7 @@ extern "C" EFI_STATUS __attribute__((ms_abi)) efi_main(EFI_HANDLE image_handle,
     load_esp_file(image_handle, systab, pp9, &p9img, &p9len);
     load_esp_file(image_handle, systab, papp2, &a2img, &a2len);
     load_esp_file(image_handle, systab, pconf, &cfimg, &cflen);
+    load_esp_file(image_handle, systab, pgate, &gateimg, &gatelen);
     g_bi.mod_console = (uint64_t)(uintptr_t)cimg;
     g_bi.mod_console_len = clen;
     g_bi.mod_login = (uint64_t)(uintptr_t)limg;
@@ -79,6 +81,21 @@ extern "C" EFI_STATUS __attribute__((ms_abi)) efi_main(EFI_HANDLE image_handle,
     g_bi.conf_len = cflen;
     g_bi.prog2 = (uint64_t)(uintptr_t)a2img;
     g_bi.prog2_len = a2len;
+
+    /* gate mask for legacy payload slots: read hex from vm/gate if present */
+    g_bi.gate_mask = 0;
+    if (gateimg && gatelen > 0) {
+        uint64_t mask = 0;
+        for (uint64_t i = 0; i < gatelen; i++) {
+            char c = ((char *)(uintptr_t)gateimg)[i];
+            mask <<= 4;
+            if (c >= '0' && c <= '9') mask |= (c - '0');
+            else if (c >= 'a' && c <= 'f') mask |= (c - 'a' + 10);
+            else if (c >= 'A' && c <= 'F') mask |= (c - 'A' + 10);
+            else { mask = 0; break; }
+        }
+        g_bi.gate_mask = mask;
+    }
 
     static uint8_t mmapbuf[16384];
     UINTN msize = sizeof(mmapbuf), dsize, key;

@@ -117,9 +117,10 @@ void kmain(const struct boot_info *bi) {
             cpu_halt();
         }
         /* F37: payload slots are gate conveniences, not admins. ppa holds
-         * only what legacy gates exercise (KILL for the crash-isolation
-         * step); POWER/DEVMAN/SPAWN/CONF stay kernel+init-only. */
-        const uint64_t GATE = SCHED_CAP_KILL;
+         * only what legacy gates exercise. gate_mask from bootinfo overrides
+         * the default KILL (used by Phase 11 graphics test which needs
+         * CAP_PCI|CAP_FB). */
+        const uint64_t GATE = bi->gate_mask ? bi->gate_mask : SCHED_CAP_KILL;
         /* boot services from ESP when present (Phase-4 style) */
         const uint8_t *c_ = (const uint8_t *)(uintptr_t)bi->mod_console;
         const uint8_t *l_ = (const uint8_t *)(uintptr_t)bi->mod_login;

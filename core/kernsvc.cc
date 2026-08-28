@@ -332,8 +332,12 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
                 int pc = vfio_enumerate(infos, 16);
                 for (int i = 0; i < pc && n < 16; i++) {
                     put32(rbuf + o, 10); /* class PCI */
-                    put32(rbuf + o + 4, (uint32_t)i);
-                    put32(rbuf + o + 8, 0); // win 0 — BAR via kern_pci_map_bar
+                    /* Encode BDF into inst: bus<<16 | dev<<8 | fn */
+                    uint32_t bdf = ((uint32_t)infos[i].bus << 16) |
+                                   ((uint32_t)infos[i].dev << 8) |
+                                   ((uint32_t)infos[i].fn);
+                    put32(rbuf + o + 4, bdf);
+                    put32(rbuf + o + 8, ((uint32_t)infos[i].vendor << 16) | infos[i].device);
                     put32(rbuf + o + 12, 0);
                     o += 16; n++;
                 }

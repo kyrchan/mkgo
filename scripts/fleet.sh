@@ -40,7 +40,7 @@ while true; do
             last=${LAST_RESTART[$name]:-0}
             if [ $((now - last)) -ge "$MIN_GAP" ]; then
                 echo "[fleet:$name] runner dead; relaunching $(date)" >>"$log"
-                rm -f "$dir/.opencode.pid"
+                rm -f "$dir/.kilo.pid"
                 LANE_DIR="$dir" LANE_NAME="$name" LANE_LOG="$log" \
                     LANE_SID="$sid" LANE_SEED_FILE="$seed" LANE_CONT_FILE="$cont" \
                     setsid nohup ./lane.sh >/dev/null 2>&1 </dev/null &
@@ -49,7 +49,7 @@ while true; do
             fi
         else
             # round in flight? stall check on this lane's log
-            if [ -f "$dir/.opencode.pid" ]; then
+            if [ -f "$dir/.kilo.pid" ]; then
                 now=$(date +%s)
                 mtime=$(stat -c %Y "$log" 2>/dev/null || echo "$now")
                 age=$((now - mtime))
@@ -57,7 +57,7 @@ while true; do
                     strikes=$(( ${STRIKES[$name]:-0} + 1 ))
                     STRIKES[$name]=$strikes
                     if [ "$strikes" -ge 2 ]; then
-                        cp=$(cat "$dir/.opencode.pid" 2>/dev/null)
+                        cp=$(cat "$dir/.kilo.pid" 2>/dev/null)
                         echo "[fleet:$name] stalled ${age}s; killing child $cp $(date)" >>"$log"
                         [ -n "$cp" ] && kill "$cp" 2>/dev/null
                         STRIKES[$name]=0

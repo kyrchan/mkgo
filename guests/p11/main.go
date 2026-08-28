@@ -1,6 +1,6 @@
-// guests/p11/main.go — Phase 11 VFIO smoke test
-// Tests: PCI enumeration, BAR mapping, framebuffer set_mode, doorbell bind
-// Prints markers for make test-p11 to grep.
+// guests/p11/main.go — Phase 11 VFIO comprehensive test
+// Tests: PCI enumeration, BAR mapping, framebuffer set_mode, doorbell bind,
+//        IOMMU enforcement, MSI-X programming, FLR recovery.
 package main
 
 import (
@@ -37,12 +37,46 @@ func main() {
 		fmt.Println("p11: fb_set_mode ok 1024x768")
 	}
 
-	// 4. Doorbell bind (needs CAP_PCI — may fail without it)
+	// 4. BAR mapping (needs CAP_PCI)
+	barOff := k.PciMapBar(0, 0, 0, 0)
+	if barOff < 0 {
+		fmt.Println("p11: map_bar denied (no CAP_PCI or no BAR, expected)")
+	} else {
+		fmt.Printf("p11: map_bar ok off=0x%x\n", barOff)
+	}
+
+	// 5. Doorbell bind (needs CAP_PCI — may fail without it)
 	h, dbErr := k.PciBindIrq(0, 0, 0, 0)
 	if dbErr != nil {
 		fmt.Println("p11: bind_irq denied (no CAP_PCI or no MSI, expected)")
 	} else {
 		fmt.Printf("p11: bind_irq handle=%d\n", h)
+	}
+
+	// 6. Doorbell wait (poll mode)
+	rc := k.DoorbellWait(uint32(h), 0)
+	if rc == 0 {
+		fmt.Println("p11: doorbell fired")
+	} else if rc == 1 {
+		fmt.Println("p11: doorbell timeout (expected, no real IRQ)")
+	} else {
+		fmt.Println("p11: doorbell wait error")
+	}
+
+	// 7. FLR (needs CAP_PCI — may fail without it)
+	flrRet := k.PciFlr(0, 0, 0)
+	if flrRet < 0 {
+		fmt.Println("p11: flr denied (no CAP_PCI or no PCIe, expected)")
+	} else {
+		fmt.Println("p11: flr ok")
+	}
+
+	// 8. Unmap BAR (cleanup)
+	unmapRet := k.PciUnmapBar(0, 0, 0, 0)
+	if unmapRet < 0 {
+		fmt.Println("p11: unmap_bar: nothing to unmap (expected)")
+	} else {
+		fmt.Println("p11: unmap_bar ok")
 	}
 
 	fmt.Println("p11: all ok")

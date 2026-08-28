@@ -1,13 +1,18 @@
-SOLE MISSION: Phase 11 — VFIO foundation + framebuffer (parallel fleet, v2.0).
+Phase 11 — VFIO foundation completion + graphics.wasm.
 
-ABI v2.0 bump committed (abi/ABI.md v2.0, core/engine.cc abi_ver 0x02, Makefile stamping 2, all wasm 02, g1/p10 re-verified). Phase 10 tagged f03fa00 on v1.3.
+Prerequisite: VFIO scaffold is committed (bca4a40): core/pci.cc, core/vfio.cc,
+kern_pci_*/kern_fb_*/kern_doorbell_* imports wired, test-p11 PASS.
 
-MAINLINE scope: core/ arch/ Makefile kernel/ — VFIO foundation ~2k LOC: core/vfio.cc + core/pci.cc (IOMMU, kern_pci_read32/write32/map_bar/unmap_bar/enable_busmaster/bind_irq/flr §12, kern_fb_set_mode/cursor §13, kern_doorbell_wait §14, ASSIGN_PCI §7 op7, caps 8/9, class 10). No per-device shims — generic passthrough.
+REMAINING WORK:
+1. IOMMU page tables: program VT-d/AMD-Vi to restrict guest DMA to assigned
+   pages (security boundary). Replace identity map with per-session domains.
+2. MSI-X programming: allocate vectors, program MSI-X table in PCI config,
+   route interrupts to session doorbells via eventfd.
+3. Graphics window: map LFB BAR into guest linear memory with write-combining
+   attributes. Guest writes pixels directly (zero-copy).
+4. Crash recovery: stub session re-bind for GPU reset (FLR or bus reset).
+5. Integration test: display text through graphics.wasm to a visible console.
 
-Fleet parallel (disjoint paths, lanes.conf):
-- SERVICES services/ guests/ — graphics.wasm (LFB compositor) + e1000/ahci/usb/bt/wlan pure Go via VFIO
-- TOOLS tools/ README.md — img VDI/VMDK, README v2.0
-- VERIFY verify/ — freshness ledger 0x02, fuzz 30s, chaos, test-matrix tcg+kvm
-- DOCS docs/ — SDD/IFSPEC v2.0
-
-Commit incrementally with gate evidence (make test-all v2.0). Do not emit ALL PHASES COMPLETE (coordinator decides).
+Read core/vfio.cc, core/pci.cc, abi/ABI.md §12-§15 first.
+Work continuously per the Autonomy mandate. Commit incrementally.
+Do not emit ALL PHASES COMPLETE (coordinator decides).

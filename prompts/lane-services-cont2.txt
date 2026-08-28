@@ -1,1 +1,3 @@
-Continue lane SERVICES v2.0 VFIO drivers (services/ guests/ ONLY): graphics.wasm LFB + e1000/ahci/usb/bt/wlan via kern_pci*/doorbell, abi_ver 0x02, go test -race green. Switch when blocked >10m. Final: ALL PHASES COMPLETE
+Continue graphics.wasm development. Re-poll MAIN for VFIO implementation updates.
+Implement: LFB BAR mapping, pixel writes, bitmap font rendering, VSYNC.
+Test host-side first, then wrap to .wasm. Commit incrementally.

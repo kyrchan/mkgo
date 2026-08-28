@@ -20,6 +20,8 @@
 #define SCHED_CAP_PCI    (1ULL << 8)
 #define SCHED_CAP_FB     (1ULL << 9)
 
+constexpr int MAX_SESSIONS = 12;
+
 /* per-session WASI state (args, exit, routed-fd table) */
 #define SCHED_MAX_FDS 64
 #define SCHED_FD_EMPTY 0xFFFFFFFFu

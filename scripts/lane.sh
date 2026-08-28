@@ -11,7 +11,7 @@ export PATH="/usr/local/bin:$PATH"
 #   LANE_MAX_ROUNDS rounds cap    [default 200]
 #
 # Supervision contract (used by scripts/fleet.sh):
-#   writes .runner.pid at start, .opencode.pid while a round's child runs,
+#   writes .runner.pid at start, .kilo.pid while a round's child runs,
 #   .overnight-complete when the assistant emits the exact sentinel.
 set -u
 : "${LANE_DIR:?LANE_DIR required}" "${LANE_NAME:?LANE_NAME required}"
@@ -40,6 +40,7 @@ try:
         if not isinstance(t, str):
             continue
         lines = [l.strip() for l in t.strip().splitlines() if l.strip()]
+        if lines and lines[-1] == 'ALL PHASES COMPLETE':
             sys.exit(0)
 except Exception:
     pass
@@ -49,15 +50,15 @@ PYEOF
 
 run_round() { # $1 = prompt ; records child pid for precise supervision
     if [ -f "$LANE_SID" ]; then
-        opencode run --auto --session "$(cat "$LANE_SID")" --format json "$1" &
+        kilo run --auto --session "$(cat "$LANE_SID")" --format json "$1" &
     else
-        opencode run --auto --format json "$1" 2>&1 &
+        kilo run --auto --format json "$1" 2>&1 &
     fi
     local cp=$!
-    echo "$cp" >"$LANE_DIR/.opencode.pid"
+    echo "$cp" >"$LANE_DIR/.kilo.pid"
     wait "$cp"
     local rc=$?
-    rm -f "$LANE_DIR/.opencode.pid"
+    rm -f "$LANE_DIR/.kilo.pid"
     return $rc
 }
 
@@ -82,10 +83,9 @@ while [ "$round" -le "$LANE_MAX_ROUNDS" ]; do
     fi
     echo "[$LANE_NAME] round $round end $(date)" >>"$LANE_LOG"
     rm -f "$CHUNK"
-    rm -f "$CHUNK"
     # proactive context hygiene: force a fresh session every ROTATE_EVERY rounds
     if [ $((round % ROTATE_EVERY)) -eq 0 ] && [ -f "$LANE_SID" ]; then
-        echo "[$LANE_NAME] rotating session (context hygiene) $(date)" >>"$LOG"
+        echo "[$LANE_NAME] rotating session (context hygiene) $(date)" >>"$LANE_LOG"
         rm -f "$LANE_SID"
     fi
     sleep 10

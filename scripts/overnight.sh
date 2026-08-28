@@ -1,17 +1,5 @@
 #!/usr/bin/env bash
 export PATH="/usr/local/bin:$PATH"
-# Overnight autonomous runner for the kernel phase plan.
-#
-# Launch fully detached:
-#   cd /home/cyr/kernel && setsid nohup ./scripts/overnight.sh >/dev/null 2>&1 </dev/null &
-#
-# Early stop:   touch .overnight-stop     Completion: .overnight-complete
-# Progress:     tail -f .overnight.log
-#
-# Owns a dedicated session (.overnight.sid). Completion is signaled ONLY
-# by .overnight-complete, created when the ASSISTANT's own emitted text
-# equals the sentinel exactly — never by grepping the raw log (prompts
-# contain the phrase too; that caused a false-positive livelock once).
 set -u
 cd "$(dirname "$0")/.."
 
@@ -32,68 +20,43 @@ Completion is decided by the COORDINATOR, not by you: keep working until stopped
 PROMPT_OVERRIDE=/home/cyr/kernel/.mainline-prompt
 if [ -f "$PROMPT_OVERRIDE" ]; then
     SEED=$(cat "$PROMPT_OVERRIDE"); CONT=$(cat "$PROMPT_OVERRIDE")
-    echo "[overnight] MISSION OVERRIDE active ($PROMPT_OVERRIDE)" >>"$LOG"
+    echo "[overnight] MISSION OVERRIDE active ($PROMPT_OVERRIDE)">>"$LOG"
 fi
-
-sentinel_in_chunk() { # $1 = chunk file ; true iff a text event's LAST
-    python3 - "$1" <<'PYEOF'      # non-empty line is exactly the sentinel
-import json, sys
-try:
-    for line in open(sys.argv[1], encoding='utf-8', errors='ignore'):
-        try:
-            e = json.loads(line)
-        except Exception:
-            continue
-        if e.get('type') != 'text':
-            continue
-        t = e.get('part', {}).get('text')
-        if not isinstance(t, str):
-            continue
-        lines = [l.strip() for l in t.strip().splitlines() if l.strip()]
-        if lines and lines[-1] == 'ALL PHASES COMPLETE':
-            sys.exit(0)
-except Exception:
-    pass
-sys.exit(1)
-PYEOF
-}
 
 run_round() { # $1 = prompt ; streams JSON events to stdout
     if [ -f .overnight.sid ]; then
-        opencode run --auto --session "$(cat .overnight.sid)" --format json "$1" 2>&1
+        kilo run --auto --session "$(cat .overnight.sid)" --format json "$1" 2>&1
     else
-        opencode run --auto --format json "$1" 2>&1
+        kilo run --auto --format json "$1" 2>&1
     fi
 }
 
 capture_sid() {
     local sid
     sid=$(grep -o '"sessionID"[[:space:]]*:[[:space:]]*"[^"]*"' "$LOG" \
-          | tail -1 | sed 's/.*"\([^"]*\)"$/\1/')
+          | tail -1 | sed 's/.*"\([^"]*\)"//')
     if [ -n "$sid" ]; then printf '%s' "$sid" >.overnight.sid; fi
 }
 
-echo "[overnight] start $(date)" >>"$LOG"
+echo "[overnight] start $(date)">>"$LOG"
 round=1
 while [ "$round" -le "$MAX_ROUNDS" ]; do
-    [ -f .overnight-stop ] && { echo "[overnight] stop requested $(date)" >>"$LOG"; break; }
+    [ -f .overnight-stop ] && { echo "[overnight] stop requested $(date)">>"$LOG"; break; }
     CHUNK=$(mktemp)
-    echo "[overnight] round $round begin $(date)" >>"$LOG"
+    echo "[overnight] round $round begin $(date)">>"$LOG"
     if [ "$round" -eq 1 ]; then
         run_round "$SEED" | tee -a "$LOG" | tee "$CHUNK" >/dev/null
         capture_sid
     else
         run_round "$CONT" | tee -a "$LOG" | tee "$CHUNK" >/dev/null
     fi
-    echo "[overnight] round $round end $(date)" >>"$LOG"
+    echo "[overnight] round $round end $(date)">>"$LOG"
     rm -f "$CHUNK"
-    rm -f "$CHUNK"
-    # proactive context hygiene: force a fresh session every ROTATE_EVERY rounds
-    if [ $((round % ROTATE_EVERY)) -eq 0 ] && [ -f "$LANE_SID" ]; then
-        echo "[$LANE_NAME] rotating session (context hygiene) $(date)" >>"$LOG"
-        rm -f "$LANE_SID"
+    if [ $((round % ROTATE_EVERY)) -eq 0 ] && [ -f .overnight.sid ]; then
+        echo "[overnight] rotating session (context hygiene) $(date)">>"$LOG"
+        rm -f .overnight.sid
     fi
     sleep 10
     round=$((round + 1))
 done
-echo "[overnight] exit $(date)" >>"$LOG"
+echo "[overnight] exit $(date)">>"$LOG"

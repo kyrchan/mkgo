@@ -174,3 +174,78 @@ int pci_enumerate(struct pci_dev *out, int max, int *count) {
     *count = n;
     return 0;
 }
+
+// --- MSI-X ---
+#define PCI_CAP_MSI_X 0x11
+
+int pci_msix_find(uint32_t bus, uint32_t dev, uint32_t fn, struct pci_msix *out) {
+    if (!out) return -1;
+    // Capabilities pointer at 0x34 (bit 0-7), but only if status reg bit 4 set
+    int32_t status = pci_read32(bus, dev, fn, 0x06);
+    if (status == -1) return -1;
+    if (!((status >> 16) & 0x10)) return -1; // no capabilities
+    int32_t cap_ptr = pci_read32(bus, dev, fn, 0x34);
+    if (cap_ptr == -1) return -1;
+    uint8_t ptr = cap_ptr & 0xFF;
+    for (int i = 0; i < 16 && ptr >= 0x40; i++) {
+        int32_t hdr = pci_read32(bus, dev, fn, ptr);
+        if (hdr == -1) break;
+        uint8_t cap_id = hdr & 0xFF;
+        uint8_t next = (hdr >> 8) & 0xFF;
+        if (cap_id == PCI_CAP_MSI_X) {
+            int32_t tbl = pci_read32(bus, dev, fn, ptr + 4);
+            if (tbl == -1) return -1;
+            out->cap_off = ptr;
+            out->bir = tbl & 0x7;
+            out->table_off = (tbl & ~0x7u) >> 3;
+            int32_t ctrl = pci_read32(bus, dev, fn, ptr + 2);
+            if (ctrl == -1) return -1;
+            out->num_vecs = (uint16_t)((ctrl & 0x7FF) + 1);
+            out->table_phys = 0;
+            return 0;
+        }
+        ptr = next;
+    }
+    return -1;
+}
+
+int pci_msix_enable(uint32_t bus, uint32_t dev, uint32_t fn, const struct pci_msix *m, uint16_t num_vecs) {
+    if (!m || m->cap_off < 0x40) return -1;
+    int32_t ctrl = pci_read32(bus, dev, fn, m->cap_off + 2);
+    if (ctrl == -1) return -1;
+    // Table size = num_vecs - 1, keep function mask clear, set enable bit 15
+    uint32_t v = ((uint32_t)(num_vecs - 1) & 0x7FF) | (1u << 15);
+    // Preserve function mask bit 14 clear (0 = enabled)
+    v &= ~(1u << 14);
+    if (pci_write32(bus, dev, fn, m->cap_off + 2, v) != 0) return -1;
+    // Resolve table physical address from BAR
+    uint64_t bar_phys, bar_size;
+    bool is_mem;
+    if (pci_bar_info(bus, dev, fn, m->bir, &bar_phys, &bar_size, &is_mem) != 0)
+        return -1;
+    if (!is_mem) return -1;
+    (void)bar_size;
+    return 0;
+}
+
+int pci_msix_set_vector(uint32_t bus, uint32_t dev, uint32_t fn, const struct pci_msix *m, uint16_t vec, uint64_t addr, uint16_t data) {
+    if (!m || m->cap_off < 0x40) return -1;
+    if (vec >= m->num_vecs) return -1;
+    // Resolve table physical address
+    uint64_t bar_phys, bar_size;
+    bool is_mem;
+    if (pci_bar_info(bus, dev, fn, m->bir, &bar_phys, &bar_size, &is_mem) != 0)
+        return -1;
+    if (!is_mem) return -1;
+    uint64_t tbl_base = bar_phys + m->table_off;
+    uint64_t entry = tbl_base + (uint64_t)vec * 16;
+    if (entry + 16 > bar_phys + bar_size) return -1;
+    // Write MSI-X table entry: {u64 addr_lohi, u16 data, u16 ctrl}
+    // Identity-mapped: physical == virtual in this kernel
+    volatile uint32_t *p = (volatile uint32_t *)(uintptr_t)entry;
+    p[0] = (uint32_t)addr;
+    p[1] = (uint32_t)(addr >> 32);
+    p[2] = (uint32_t)data;
+    p[3] = 0; // unmasked
+    return 0;
+}

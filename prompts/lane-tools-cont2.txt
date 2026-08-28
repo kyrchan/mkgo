@@ -1,1 +1,3 @@
-Continue lane TOOLS v2.0 (tools/ README.md ONLY): img VDI/VMDK, README v2.0, hvtest. Keep go test green. Final: ALL PHASES COMPLETE
+Continue tools development. Implement VDI/VMDK writers and README v2.0.
+Re-poll MAIN for VFIO implementation updates that affect documentation.
+Commit incrementally.

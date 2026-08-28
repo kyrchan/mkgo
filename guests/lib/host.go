@@ -158,16 +158,19 @@ func (b *Bus) Yield() {
 }
 
 // === VFIO stubs (host test) — return success/capability-denied ===
+// hostTestCaps is a package-level capability mask used by host test stubs
+// (b.Cur was removed from Bus; tests that need capability gating set this).
+var hostTestCaps uint64 = CapPCI | CapFB | CapDevman
 
 func (b *Bus) PciRead32(bus, dev, fn, offset uint32) int32 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.Cur == nil || b.Cur.Capmask&CapPCI == 0 {
+	if hostTestCaps&CapPCI == 0 {
 		return -1
 	}
 	// Fake: return a plausible vendor ID for bus 0 dev 0 fn 0 (host bridge)
 	if bus == 0 && dev == 0 && fn == 0 && offset == 0 {
-		return 0x80861234 // Intel host bridge
+		return 0x12345678 // Intel host bridge (fits int32)
 	}
 	return 0x10ec8139 // Realtek NIC (common QEMU dev)
 }
@@ -175,7 +178,7 @@ func (b *Bus) PciRead32(bus, dev, fn, offset uint32) int32 {
 func (b *Bus) PciWrite32(bus, dev, fn, offset, val uint32) int32 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.Cur == nil || b.Cur.Capmask&CapPCI == 0 {
+	if hostTestCaps&CapPCI == 0 {
 		return -1
 	}
 	return 0
@@ -184,7 +187,7 @@ func (b *Bus) PciWrite32(bus, dev, fn, offset, val uint32) int32 {
 func (b *Bus) PciMapBar(bus, dev, fn, bar uint32) int64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.Cur == nil || b.Cur.Capmask&CapPCI == 0 {
+	if hostTestCaps&CapPCI == 0 {
 		return -1
 	}
 	// Return a fake window offset
@@ -194,7 +197,7 @@ func (b *Bus) PciMapBar(bus, dev, fn, bar uint32) int64 {
 func (b *Bus) PciUnmapBar(bus, dev, fn, bar uint32) int32 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.Cur == nil || b.Cur.Capmask&CapPCI == 0 {
+	if hostTestCaps&CapPCI == 0 {
 		return -1
 	}
 	return 0
@@ -203,7 +206,7 @@ func (b *Bus) PciUnmapBar(bus, dev, fn, bar uint32) int32 {
 func (b *Bus) PciEnableBusmaster(bus, dev, fn uint32) int32 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.Cur == nil || b.Cur.Capmask&CapPCI == 0 {
+	if hostTestCaps&CapPCI == 0 {
 		return -1
 	}
 	return 0
@@ -212,7 +215,7 @@ func (b *Bus) PciEnableBusmaster(bus, dev, fn uint32) int32 {
 func (b *Bus) PciBindIrq(bus, dev, fn, irqType uint32) (int32, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.Cur == nil || b.Cur.Capmask&CapPCI == 0 {
+	if hostTestCaps&CapPCI == 0 {
 		return -1, fmt.Errorf("no CAP_PCI")
 	}
 	return 1, nil
@@ -221,7 +224,7 @@ func (b *Bus) PciBindIrq(bus, dev, fn, irqType uint32) (int32, error) {
 func (b *Bus) PciFlr(bus, dev, fn uint32) int32 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.Cur == nil || b.Cur.Capmask&CapPCI == 0 {
+	if hostTestCaps&CapPCI == 0 {
 		return -1
 	}
 	return 0
@@ -230,7 +233,7 @@ func (b *Bus) PciFlr(bus, dev, fn uint32) int32 {
 func (b *Bus) FbSetMode(w, h, bpp uint32) int32 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.Cur == nil || b.Cur.Capmask&CapFB == 0 {
+	if hostTestCaps&CapFB == 0 {
 		return -1
 	}
 	return 0
@@ -239,7 +242,7 @@ func (b *Bus) FbSetMode(w, h, bpp uint32) int32 {
 func (b *Bus) FbSetCursor(x, y uint32) int32 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.Cur == nil || b.Cur.Capmask&CapFB == 0 {
+	if hostTestCaps&CapFB == 0 {
 		return -1
 	}
 	return 0
@@ -248,17 +251,27 @@ func (b *Bus) FbSetCursor(x, y uint32) int32 {
 func (b *Bus) DoorbellWait(handle, timeoutMs uint32) int32 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.Cur == nil || b.Cur.Capmask&CapPCI == 0 {
+	if hostTestCaps&CapPCI == 0 {
 		return -1
 	}
 	// Stub: return timeout (no real IRQ)
 	return 1
 }
 
+func (b *Bus) FbPresent() int32 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if hostTestCaps&CapFB == 0 {
+		return -1
+	}
+	// Stub: present succeeds
+	return 0
+}
+
 func (b *Bus) DevmanEnum() []PciDeviceInfo {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.Cur == nil || b.Cur.Capmask&CapDevman == 0 {
+	if hostTestCaps&CapDevman == 0 {
 		return nil
 	}
 	// Return fake PCI devices for testing

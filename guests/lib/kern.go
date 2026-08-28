@@ -155,6 +155,8 @@ type Kernel interface {
 	FbSetMode(w, h, bpp uint32) int32
 	// FbSetCursor sets hardware cursor position (needs CAP_FB).
 	FbSetCursor(x, y uint32) int32
+	// FbPresent flips the guest framebuffer window to the physical LFB (needs CAP_FB).
+	FbPresent() int32
 	// DoorbellWait blocks until doorbell fires or timeout. Returns 0 fired, 1 timeout, -1 err.
 	DoorbellWait(handle, timeoutMs uint32) int32
 	// DevmanEnum returns PCI device info for class 10 (VFIO) devices.

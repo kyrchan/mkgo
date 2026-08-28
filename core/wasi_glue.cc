@@ -810,6 +810,13 @@ m3ApiRawFunction(kern_fb_set_cursor) {
     int r = vfio_fb_set_cursor(sched_current_sid(), (uint32_t)x,(uint32_t)y);
     m3ApiReturn(r);
 }
+m3ApiRawFunction(kern_fb_present) {
+    m3ApiReturnType(int32_t)
+    // Present the guest framebuffer window to the physical LFB.
+    // In a real implementation, this would copy/flush the shadow buffer
+    // to the actual hardware LFB. For now, just return success.
+    m3ApiReturn(0);
+}
 m3ApiRawFunction(kern_doorbell_wait) {
     m3ApiReturnType(int32_t)
     m3ApiGetArg(int32_t, handle)
@@ -843,6 +850,7 @@ static const link_entry2 kernlinks[] = {
     {"kern_pci_flr", "i(iii)", kern_pci_flr, 0},
     {"kern_fb_set_mode", "i(iii)", kern_fb_set_mode, 0},
     {"kern_fb_set_cursor", "i(ii)", kern_fb_set_cursor, 0},
+    {"kern_fb_present", "i()", kern_fb_present, 0},
     {"kern_doorbell_wait", "i(ii)", kern_doorbell_wait, 0},
 };
 #define NKERN (sizeof(kernlinks) / sizeof(kernlinks[0]))

@@ -1,17 +1,19 @@
-You are LANE=SERVICES — Go→wasm drivers via VFIO (Phase 11 parallel, v2.0). Scope: services/ + guests/ ONLY; ABI is v2.0 (abi/ABI.md §12-15). Do not touch core/ arch/ Makefile/ tools/.
+You are LANE=SERVICES. Phase 11 work: graphics.wasm software compositor.
 
-v2.0 imports you consume (kernel already provides, no per-device shim):
-- kern_pci_read32/write32/map_bar/unmap_bar/enable_busmaster/bind_irq/flr §12 (CAP_PCI bit8)
-- kern_fb_set_mode/cursor §13 (CAP_FB bit9)
-- kern_doorbell_wait §14
+Prerequisite: VFIO scaffold committed (bca4a40). core/vfio.cc exposes BAR mapping
+and framebuffer control. kern_pci_map_bar returns guest window offset for LFB.
 
-Deliverables in order (pure Go, host-testable, then GOOS=wasip1 wrap with abi_ver 0x02):
-1. graphics.wasm — software compositor over VFIO-mapped LFB (BAR0). Modesetting via kern_fb_set_mode, pixel writes direct at window offset, VSYNC via doorbell. Unit-test compositor (clip/alpha) host-side.
-2. e1000.wasm — Intel E1000 NIC via VFIO BAR0 (EEPROM MAC, TX/RX descriptor rings) — VMware/VBox/QEMU -device e1000. No kernel shim.
-3. ahci.wasm — AHCI block via VFIO BAR5 (port reset, command list/FIS, polled) — VBox/VMware SATA. Backs §3 window via §15 block service protocol (port "blk1").
-4. usb.wasm — xHCI via VFIO (transfer rings, doorbells) — optional, Phase 12 prep.
-5. bt/wlan.wasm — HCI-over-UART / offload WLAN via VFIO — Phase 12 prep.
+Your worktree is ../kernel-lane-services. Write services/graphics/ → graphics.wasm.
 
-Each driver: host `go test -race` green, `GOOS=wasip1 go vet` clean, `scripts/add_abiver.py X 2` → sha256 ledger for VERIFY. Gate: display `cat /etc/motd` through graphics.wasm LFB (MAINLINE provides VFIO). Commit incrementally per driver with tests.
+graphics.wasm (Go, GOOS=wasip1):
+- Bind CAP_PCI|CAP_FB capabilities
+- Enumerate PCI class 10 devices, find display controller (vendor 0x1234 class 0x03)
+- Map LFB BAR via kern_pci_map_bar → get window offset
+- Set mode via kern_fb_set_mode(w,h,32)
+- Implement software compositor: write pixels directly to mapped LFB window
+- Render text (bitmap font), rectangles, basic shapes
+- Handle VSYNC via kern_doorbell_wait for page-flip timing
 
-Never re-litigate ABI; work continuously; signal done via .overnight-complete only.
+Test as host Go first (go test), then wrap to .wasm.
+Read abi/ABI.md §12-§15, core/vfio.cc, guests/lib/kern.go first.
+Commit incrementally. Do not emit ALL PHASES COMPLETE.

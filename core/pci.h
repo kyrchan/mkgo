@@ -24,6 +24,18 @@ struct pci_dev {
 };
 int pci_enumerate(struct pci_dev *out, int max, int *count);
 
+// MSI-X (capability ID 0x11)
+struct pci_msix {
+    uint8_t cap_off;    // config offset of MSI-X capability
+    uint8_t bir;        // BAR index holding the table
+    uint32_t table_off; // byte offset within BAR
+    uint16_t num_vecs;  // table size (N)
+    uint64_t table_phys;// host physical address of table
+};
+int pci_msix_find(uint32_t bus, uint32_t dev, uint32_t fn, struct pci_msix *out);
+int pci_msix_enable(uint32_t bus, uint32_t dev, uint32_t fn, const struct pci_msix *m, uint16_t num_vecs);
+int pci_msix_set_vector(uint32_t bus, uint32_t dev, uint32_t fn, const struct pci_msix *m, uint16_t vec, uint64_t addr, uint16_t data);
+
 #ifdef __cplusplus
 }
 #endif

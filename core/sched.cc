@@ -8,8 +8,8 @@
 #include "plat.h"
 #include "ctx.h"
 #include "rt.h"
+#include "vfio.h"
 
-static constexpr int MAX_SESSIONS = 12;
 static constexpr int MAX_IMAGES = 8;
 static constexpr uint64_t STACK_BYTES = 1024 * 1024;
 
@@ -126,6 +126,7 @@ extern "C" void sched_session_main(void) {
     console_puts("\n");
     engine_shutdown(&s->eng);
     s->eng_live = false;
+    vfio_session_cleanup(s->sid);
     s->state = S_ZOMBIE;
     ctx_switch(&s->sp, kern_sp); /* never returns here */
     for (;;)
@@ -259,6 +260,7 @@ int sched_kill(uint32_t sid) {
         return -1;
     }
     sessions[sid].state = S_ZOMBIE;
+    vfio_session_cleanup(sid);
     console_puts("[sched] killed sid=");
     console_hex64(sid);
     console_puts(" ('");

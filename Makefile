@@ -137,6 +137,12 @@ services/shell/shell.wasm.raw: $(wildcard services/shell/*.go) $(wildcard guests
 services/shell/shell.wasm: services/shell/shell.wasm.raw
 	python3 scripts/add_abiver.py $< $@ 2
 
+services/graphics/graphics.wasm.raw: $(wildcard services/graphics/*.go) $(wildcard guests/lib/*.go)
+	cd services/graphics && GOOS=wasip1 GOARCH=wasm go build -o graphics.wasm.raw .
+
+services/graphics/graphics.wasm: services/graphics/graphics.wasm.raw
+	python3 scripts/add_abiver.py $< $@ 2
+
 build/test_p5a.raw: guests/p5a/main.go $(wildcard guests/lib/*.go)
 	cd guests/p5a && GOOS=wasip1 GOARCH=wasm go build -o ../../$@ .
 build/test_p5a.wasm: build/test_p5a.raw
@@ -302,6 +308,14 @@ $(BUILD)/disk-p11.img: $(BUILD)/BOOTX64.EFI build/test_p11.wasm | $(BUILD) $(IMG
 	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
 	  build/test_p11.wasm:/vm/app
 
+# Phase 11: graphics test disk (graphics.wasm as /vm/app, needs CAP_PCI|CAP_FB)
+$(BUILD)/disk-p11gfx.img: $(BUILD)/BOOTX64.EFI services/graphics/graphics.wasm | $(BUILD) $(IMG)
+	printf '302' > $(BUILD)/gate.tmp  # CAP_PCI|CAP_FB|CAP_DEVMAN
+	$(IMG) $@ 64 \
+	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+	  services/graphics/graphics.wasm:/vm/app \
+	  $(BUILD)/gate.tmp:/vm/gate
+
 $(BUILD)/VARS.fd:
 	cp $(OVMF_VARS) $@
 
@@ -395,6 +409,13 @@ test-p11: $(BUILD)/disk-p11.img $(BUILD)/VARS.fd
 	    && echo "TEST PASS (p11 VFIO smoke)" \
 	    || { echo "TEST FAIL (p11)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -40; exit 1; }
 
+# Phase 11: graphics.wasm renders to LFB (or handles denial gracefully)
+test-p11gfx: $(BUILD)/disk-p11gfx.img $(BUILD)/VARS.fd
+	$(call RUN_QEMU,$(BUILD)/disk-p11gfx.img)
+	@grep -q 'graphics: all ok' $(BUILD)/serial.log \
+	    && echo "TEST PASS (p11 graphics)" \
+	    || { echo "TEST FAIL (p11gfx)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -40; exit 1; }
+
 .PHONY: test-p9
 test-p9: $(BUILD)/disk-p9.img $(BUILD)/VARS.fd
 	bash scripts/run_p9.sh $(BUILD)/serial-p9.log "$(QEMU)" "$(QEMU_ENV)" -- \
@@ -448,7 +469,7 @@ test-unit:
 # kernsvc/fsroute/devblk/input objects against a fake scheduler on host.
 HT_CXXFLAGS := -std=c++20 -O1 -g -Wall -Icore -Ithird_party/wasm3
 HT_OBJS := $(BUILD)/ht/ports.o $(BUILD)/ht/kernsvc.o $(BUILD)/ht/fsroute.o \
-           $(BUILD)/ht/devblk.o $(BUILD)/ht/input.o
+           $(BUILD)/ht/devblk.o $(BUILD)/ht/input.o $(BUILD)/ht/vfio.o
 
 $(BUILD)/hosttest: tools/hosttest.cc $(HT_OBJS) | $(BUILD)
 	@mkdir -p $(dir $@)
@@ -463,7 +484,7 @@ $(BUILD)/ht/%.o: core/%.cc $(wildcard core/*.h) | $(BUILD)
 test-kernel: $(BUILD)/hosttest
 	$(BUILD)/hosttest
 
-test-all: test-kernel test-unit test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10 test-p11
+test-all: test-kernel test-unit test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10 test-p11 test-p11gfx
 
 # Phase 10: KVM+TCG matrix — every gate green under both accelerators.
 # KVM_FLAG is overridable ( ?= ) so matrix targets can force an accelerator.

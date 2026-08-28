@@ -58,8 +58,12 @@ func fb_set_mode(w, h, bpp uint32) int32
 //go:wasmimport kernel kern_fb_set_cursor
 func fb_set_cursor(x, y uint32) int32
 
+//go:wasmimport kernel kern_fb_present
+func fb_present() int32
+
 //go:wasmimport kernel kern_doorbell_wait
 func doorbell_wait(handle, timeoutMs uint32) int32
+
 
 type realKernel struct{}
 
@@ -155,9 +159,14 @@ func (realKernel) FbSetCursor(x, y uint32) int32 {
 	return fb_set_cursor(x, y)
 }
 
+func (realKernel) FbPresent() int32 {
+	return fb_present()
+}
+
 func (realKernel) DoorbellWait(handle, timeoutMs uint32) int32 {
 	return doorbell_wait(handle, timeoutMs)
 }
+
 
 func (realKernel) DevmanEnum() []PciDeviceInfo {
 	// Use devman ENUM to count devices; class 10 = PCI (VFIO)
@@ -172,12 +181,13 @@ func (realKernel) DevmanEnum() []PciDeviceInfo {
 	out := make([]PciDeviceInfo, 0, len(devs))
 	for _, d := range devs {
 		if d.Class == 10 { // ClassPCI
+			bdf := d.Inst
 			out = append(out, PciDeviceInfo{
-				Bus:    uint8(d.Inst >> 8),
-				Dev:    uint8(d.Inst),
-				Fn:     0,
-				Vendor: uint16(d.WinOff),
-				Device: uint16(d.WinOff >> 16),
+				Bus:    uint8(bdf >> 16),
+				Dev:    uint8(bdf >> 8),
+				Fn:     uint8(bdf),
+				Vendor: uint16(d.WinOff >> 16),
+				Device: uint16(d.WinOff),
 			})
 		}
 	}

@@ -32,6 +32,8 @@ struct boot_info {
     /* optional second payload slot (/vm/app2); falls back to prog */
     uint64_t prog2;
     uint64_t prog2_len;
+    /* gate mask for legacy payload slots (0 = default KILL) */
+    uint64_t gate_mask;
 };
 
 void kmain(const struct boot_info *bi);

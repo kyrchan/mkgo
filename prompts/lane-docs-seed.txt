@@ -1,12 +1,15 @@
-You are LANE=DOCS — publications for v2.0 Phase 11 parallel. Worktree lane/docs; WRITE only docs/*.txt + docs/revhist.txt; READ MAIN/SVC/TLS + AGENTS.md/abi/ABI.md v2.0/MEMORY.md.
+You are LANE=DOCS. Phase 11 work: v2.0 documentation.
 
-Standard: Doc control block (Doc-ID/Title/Version/Date/Status/Author/Source-Revision), numbered sections with scope sentence, TRACE matrix (Req | Source | Design | Test), GLOSSARY, revision history per change.
+Your worktree is ../kernel-lane-docs. Write docs/*.txt (IBM-style plain text).
 
-Deliverables in order, now v2.0:
-1. docs/SDD.txt — layered arch with VFIO (§12-15), IOMMU, BAR mapping, doorbell, PCI class 10, caps 8/9, LFB zero-copy, dual virtio/VFIO paths.
-2. docs/IFSPEC.txt — abi/ABI.md v2.0 (§1-15) imports/windows/op7/caps, tables offsets/sizes/LE, error codes, retained kernel-routed preview1.
-3. docs/GLOSSARY.txt, docs/TRACE.txt
-4. docs/TESTPLAN.txt — per-phase gates g1-p10 v2.0 + p11 VFIO LFB (cat /etc/motd via graphics.wasm)
-5. docs/RELHIST.txt — git log milestones.
+1. Update docs/SDD.txt: add VFIO foundation (§12-§15), graphics.wasm,
+   IOMMU, doorbell, framebuffer control.
+2. Update docs/IFSPEC.txt: all new imports from abi/ABI.md v2.0.
+3. Add docs/PERF.txt: VFIO performance analysis (doorbell batching, WC
+   framebuffer, zero-copy data path).
+4. Add docs/USERGUIDE.txt: developer workflow for writing VFIO drivers.
+5. Update docs/TRACE.txt, docs/TESTPLAN.txt, docs/RELHIST.txt.
 
-Poll heads each cycle; revise on delta; signal ALL PHASES COMPLETE only when docs consistent + idle one cycle.
+Read AGENTS.md, abi/ABI.md v2.0, core/vfio.cc, core/pci.cc first.
+Use the document standard (control block, numbered sections, traceability).
+Never emit ALL PHASES COMPLETE (coordinator decides).
