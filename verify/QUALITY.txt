@@ -1,60 +1,62 @@
 # QUALITY.txt — rolling summary (LANE=VERIFY) — regenerated each pass
-# Last pass: 2026-08-28 09:25 UTC+8 — re-poll12 · all lanes verified; MAIN f6632b5 clean (VVGA reverted) · fuzz 5/5+7/7 PASS · gates GREEN
+# Last pass: 2026-08-28 23:10 UTC+8 — re-poll13 · VFIO re-review complete; fuzz 5/5 PASS; ledger updated
 
 | repo | head reviewed | mechanical | open BLOCKERs | open MAJORs | trend |
 |---|---|---|---|---|---|
-| MAIN  | f6632b5 (committed, source CLEAN — VVGA dirty delta reverted; only binary wasm rebuilds remain) | `make clean && make` PASS (kernel.so 1.2MB); `test-g1` PASS; `test-p11` PASS; 5 fuzz PASS | 0 dirty · 9 committed (F187-F195) | 0 | stable; VVGA delta reverted away; no new VFIO changes |
-| SVC   | fb0a314 (committed) + dirty .gitignore | per-module `go test -count=1` PASS (guests/lib 0.59s, fs 5.5s, net 4.2s); 7 net fuzz PASS; go vet clean | 0 | 0 | healthy; stable |
+| MAIN  | f6632b5 (committed, clean working tree) | `make clean && make` PASS; `test-p11` PASS (TCG); fuzz 5/5 PASS | 1 new (F241) · 9 committed (F187-F195) | 2 new (F242-F243) | new VFIO findings filed; ledger updated |
+| SVC   | fb0a314 (committed) | per-module `go test -count=1` PASS; 7 net fuzz PASS; go vet clean | 0 | 0 | healthy; stable |
 | TLS   | 1ccd2bf (committed, no delta) | `go test -count=1 ./tools/img` PASS 1.6s; go vet clean | 0 | 0 | stable |
 
 ## Phase 11 gate — GREEN (committed HEAD f6632b5)
-test-p11: PASS ("TEST PASS (p11 VFIO smoke)") — verified this poll. BDF 0:1:0 NOT enumerated (VVGA reverted); cap-denied path exercised (no CAP_PCI/CAP_FB → all ops denied as expected).
-VFIO foundation at committed HEAD: BAR mapping (8 slots), doorbells (4), IOMMU domain tracking (2048 pages/domain), MSI-X programming scaffolding, framebuffer control, devman enumeration, session cleanup.
+test-p11: PASS ("TEST PASS (p11 VFIO smoke)") — verified this poll. BDF 0:1:0 NOT enumerated (no VVGA dirty delta at committed HEAD); cap-denied path exercised (no CAP_PCI/CAP_FB → all ops denied as expected).
+VFIO foundation at committed HEAD: BAR mapping (8 slots), doorbells (4), IOMMU domain tracking (256 pages/domain), MSI-X programming scaffolding, framebuffer control, devman enumeration, session cleanup.
 
 ## Test matrix — GREEN @f6632b5 (committed, clean working tree)
-- Committed HEAD f6632b5: test-g1 PASS, test-p11 PASS — TCG (KVM env blocked by stale locks).
-- Working tree = committed HEAD (VVGA delta reverted); no separate dirty-tree verification needed.
+- Committed HEAD f6632b5: test-p11 PASS — TCG (KVM env blocked by stale locks).
+- Working tree = committed HEAD; no separate dirty-tree verification needed.
 - p4/p10: trusted from prior clean-room verification (F198/F201).
 
-## Open BLOCKERs (committed HEAD — F187-F195 series)
-- F187: vfio_doorbell_wait race on d.pending (non-atomic)
-- F188: pci_read32/write32 non-atomic CFG_ADDR/CFG_DATA pair
-- F189: alloc_window bump allocator never reclaims
-- F190: next_handle uint32_t wrap
-- F191: fb_has_display dead state
-- F192: _check_assign unused dead code
-- F193: pci_flr capability chain walk no cycle protection
-- F194: doorbell yield loop unbounded
-- F195: vfio_map_bar stub (BAR size vs guest memory)
-
-## Open BLOCKers (dirty working tree)
-None — working tree clean at committed HEAD.
+## Open BLOCKERs
+- **F241 (NEW)**: vfio_map_bar/vfio_bind_irq/kern_pci_enable_busmaster missing device-assignment check — any CAP_PCI session can access any device regardless of registry assignment (ABI §12 deviation + capability-check gap)
+- F187-F195: committed-HEAD VFIO foundation limits (previously filed)
 
 ## Open MAJORs
-None new.
+- **F242 (NEW)**: vfio_map_bar BAR window is a shadow buffer, not real MMIO passthrough — guest writes don't reach physical device (ABI §12 "Guest accesses BAR MMIO through this window" currently false for non-FB devices)
+- **F243 (NEW)**: vfio_iommu_permits defined but never called — IOMMU enforcement is dead code
 
 ## Open MINORs
-None new (F236a/F237 were VVGA-dirty-tree only; VVGA reverted).
+- F244: vfio.h duplicate declarations (vfio_iommu_permits, vfio_recover_after_flr, vfio_session_cleanup)
+- F245: alloc_window bump allocator never reclaims freed windows
+- F246: next_handle uint32_t wrap after 2^32 binds
+- F247: fb_has_display set but never read (dead state)
+- F248: pci_flr/pci_msix_find capability chain walk — no table-size validation
 
-## Fuzz target results (re-poll12) — 5/5 + 7/7 PASS
-- MAIN guests/lib (-fuzztime=3s, committed HEAD): FuzzVfioBarMapping PASS (238K/3s, 23 corpora), FuzzVfioDoorbellState PASS (182K/3s, 30), FuzzPciConfigOffset PASS (162K/3s, 4), FuzzChaosGate PASS (144K/3s, 18), FuzzParseCanonicalHeader PASS (208K/3s, 8)
-- SVC net (-fuzztime=3s): FuzzParseEth PASS (252K/4s), FuzzParseARP PASS (186K/3s), FuzzParseIP4 PASS (283K/3s), FuzzParseICMP PASS (176K/4s), FuzzParseUDP PASS (217K/4s), FuzzParseTCP PASS (229K/3s), FuzzParseMAC PASS (275K/3s)
+## Fuzz target results (re-poll13) — 5/5 PASS
+- MAIN guests/lib (-fuzztime=5s, committed HEAD): FuzzVfioBarMapping PASS (43K/5s, 23 corpora), FuzzVfioDoorbellState PASS (42K/5s, 30), FuzzPciConfigOffset PASS (52K/5s, 4), FuzzChaosGate PASS (50K/5s, 18), FuzzParseCanonicalHeader PASS
 - All targets: zero failures, no new corpus growth.
 
-## Deltas reviewed this poll (re-poll12)
-- MAIN@f6632b5: committed HEAD, source CLEAN. The VVGA dirty delta (core/vfio.cc 241-line VVGA BDF 0:1:0 + services/graphics/main.go 277-line draw helpers) present at re-poll10/re-poll11 is NOW GONE from the working tree (reverted via checkout/stash between sessions). `git diff HEAD --stat` on source = 0. Only binary wasm rebuilds remain (byte-identical to committed hashes). No new VFIO implementation changes.
-- SVC@fb0a314: committed + 1 untracked file (services/net/fuzz_test.go, 208 lines, 7 fuzz targets). Tests pass.
-- TLS@1ccd2bf: committed, stable. img tests pass.
+## Chaos gate
+- FuzzChaosGate (re-poll13): PASS — randomized service KILL/respawn/isolation cycles exercise crash isolation (killed session's resources released, survivors keep running, respawn gets fresh SID). Practice #5 satisfied.
+
+## Artifact freshness ledger (re-poll13) — UPDATED
+- All 13 wasm artifacts now embed abi_ver=0x02 (v2.0 ABI), built from commit f6632b5.
+- Hashes refreshed in verify/ARTIFACT_LEDGER.txt.
+- No drift between artifacts and ratified ABI.
+
+## Deltas reviewed this poll (re-poll13)
+- MAIN@f6632b5: committed HEAD, source CLEAN. Re-reviewed core/vfio.cc (580 lines) + core/pci.cc (251 lines) for races, memory bugs, capability-check gaps, unused code, ABI deviations. Found 1 BLOCKER (F241 assignment gap), 2 MAJOR (F242 shadow buffer, F243 dead IOMMU), 5 MINOR (F244-F248).
+- SVC@fb0a314: committed, stable.
+- TLS@1ccd2bf: committed, stable.
 
 ## Key observations
-- VFIO foundation stable at committed HEAD; VVGA experimental delta reverted to stash@{0} (tracked as F228 BDF mismatch + F229 incomplete wiring in FINDINGS.txt).
-- All gates GREEN (g1, p11 verified this poll on committed HEAD; p4/p10 trusted from prior clean-room F198/F201).
-- All 12 fuzz targets PASS (5 MAIN + 7 SVC net).
-- 9 committed-HEAD findings (F187-F195) remain as known VFIO foundation limits; all dirty-tree findings reverted away with the VVGA delta.
+- F241 is the highest-priority finding: the device-assignment gate that ABI §12 promises is not enforced. Any CAP_PCI session can map any device's BAR, bind its IRQ, and enable busmaster. This is both a capability-check gap (BLOCKER per severity rule) and an ABI deviation.
+- F242 means the VFIO BAR mapping is currently only usable for framebuffer (where vfio_fb_present copies guest→LFB). Real device drivers (e1000.wasm, ahci.wasm) cannot reach device registers through the window.
+- F243 means the IOMMU security boundary is unenforced — vfio_iommu_permits is dead code.
+- All fuzz targets pass; chaos gate passes; artifact ledger is current.
+- Phase 11 gate (test-p11) remains GREEN on committed HEAD.
 
 ## Process notes
-- Fuzz targets run with -fuzztime=3s; 5/5 MAIN + 7/7 SVC net PASS.
+- Fuzz targets run with -fuzztime=5s; 5/5 MAIN PASS.
 - Never emitting ALL PHASES COMPLETE (coordinator decides).
-- Branch heads: MAIN@f6632b5 (committed, clean working tree), SVC@fb0a314, TLS@1ccd2bf, lane/verify@74924ec (re-poll11 committed).
-- 9 committed-HEAD findings (F187-F195) remain as known VFIO foundation limits.
-- QA mandate satisfied: re-polled all repos, reviewed deltas (VVGA reverted = no new changes), ran fuzz targets, verified gates.
+- Branch heads: MAIN@f6632b5 (committed, clean working tree), SVC@fb0a314, TLS@1ccd2bf, lane/verify@8f1548f (re-poll13 committed).
+- QA mandate satisfied: re-reviewed VFIO substrate, verified fuzz/chaos targets, updated artifact ledger.

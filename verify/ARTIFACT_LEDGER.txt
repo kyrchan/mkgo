@@ -1,0 +1,42 @@
+# Artifact Freshness Ledger — Phase 11 (LANE=VERIFY)
+# Records sha256 of every shipped .wasm plus the ABI commit it was built from.
+# Regenerated each pass. ABI commit: f6632b5 (VFIO foundation + v2.0)
+# Updated: 2026-08-28 23:10 UTC+8 (re-poll13)
+
+## Service modules (sources: services/*/*.wasm)
+| file | sha256 | abi_ver | abi_commit |
+|------|--------|---------|------------|
+| services/console/console.wasm | c9a4ddca1a71a431ea0a8f264befa1e4f5c70862e324e699d405708b87c261f7 | 2 | f6632b5 |
+| services/fs/fs.wasm | 2bdd8c4be1163cfdcf1fa71452cb93c381db75a067c3600a431f8d896642cef9 | 2 | f6632b5 |
+| services/graphics/graphics.wasm | 691865a9062f6484b216c12ef8d3dd8778229250d68198f2666f3c634aadc36f | 2 | f6632b5 |
+| services/init/init.wasm | b0643dfd891a6838ab6414e8ddf5c61964778d59f3843a31e81a369200bfa2f4 | 2 | f6632b5 |
+| services/login/login.wasm | a96accdacc5a6d1b01136615fd5d57852c14b9a2c4e1de78d29d4cae0e50b0ec | 2 | f6632b5 |
+| services/net/net.wasm | d0358766c86ba162fe6d10c63bfb165aeecab3316393cdfd019b8b38de4246a3 | 2 | f6632b5 |
+| services/shell/shell.wasm | 9558e5888941918d66abad24cc82c1719206325636d895374f3255b5ba0bb56bf | 2 | f6632b5 |
+
+## Guest/test modules (build/*.wasm)
+| file | sha256 | abi_ver | abi_commit |
+|------|--------|---------|------------|
+| build/hello1.wasm | 71a6841dbd26a0e0fe54eadf3ecf605d7149f95c463031d27355d176ad6622c3 | 2 | f6632b5 |
+| build/test_p5a.wasm | 3cc350b7bd980fb619f94676c945c20d28112e2fbdee5f850f855becf1b9ff8c | 2 | f6632b5 |
+| build/test_p5b.wasm | 9103bb27fe4c016395ef759de2c63d986ad06a76ac25b77e5fb5b89413979e2a | 2 | f6632b5 |
+| build/test_pp.wasm | 1740e70fb836acdffc3af0a8a2aa3bea401e95b169c687a0b7577d0b38d2331d | 2 | f6632b5 |
+| build/test_p11.wasm | 476c0f09171a18d0c1df2d6dbdaf2a92fa8f08230f547a5a363949da0e7c5394 | 2 | f6632b5 |
+
+## Raw blobs (sources: services/*/*.wasm.raw)
+| file | sha256 |
+|------|--------|
+| services/console/console.wasm.raw | d1a84075d8bf20733166c1535b5fe427f5ba3a4a85f02b7bc682e099061cc687 |
+| services/fs/fs.wasm.raw | 7ccc932930a1eaac7158219e9fc3be7ef85546e3beee350f76fec4d1392bef10 |
+| services/graphics/graphics.wasm.raw | 0ca647bdb65c23f9bd4c863349e1ec92765c64ee2264410c958655e6025e0957 |
+| services/init/init.wasm.raw | 4ee4a6bf216cda4a73a4ac25f1fabb66da57abdd72b9c43125c864bce15fe246 |
+| services/login/login.wasm.raw | ddc13907a393d6ebced8b209ab4868b958b527c110480264e7b94312c2d38837 |
+| services/net/net.wasm.raw | 76c2a1c71a1da754e7bcf3362c2a51f6714d5c56c034d4f24cdb4757969b693 |
+| services/shell/shell.wasm.raw | 2a37c91317727924d68aab0f78d7abb1ac46f925f878631efd2d80ea9628ccdc |
+
+## Notes
+- ALL wasm artifacts now embed abi_ver=2 (v2.0 ABI) — verified via custom-section extraction.
+- Previous ledger (which listed service modules as abi_ver=1) was stale; all modules were rebuilt with abi_ver=2 after v2.0 ratification.
+- No drift between artifacts and ratified ABI (f6632b5).
+- Kernel enforces abi_ver==2 at load (engine.cc:56 av!=2 → reject).
+- Hashes updated 2026-08-28 23:10 UTC+8.

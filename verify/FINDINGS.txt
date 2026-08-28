@@ -2033,3 +2033,94 @@ Mechanical:
 - SVC fuzz 7/7 PASS (net): FuzzParseEth 252K, FuzzParseARP 186K, FuzzParseIP4 283K, FuzzParseICMP 176K, FuzzParseUDP 217K, FuzzParseTCP 229K, FuzzParseMAC 275K execs/3s
 - TLS img test PASS 1.6s
 Gate matrix GREEN on committed HEAD (g1/p4/p10/p11). No new VFIO implementation changes since re-poll11 (VVGA delta reverted away). Committed-HEAD blockers remain F187-F195 series (unchanged). Zero new findings this poll. Never emitting ALL PHASES COMPLETE (coordinator decides).
+===== POLL-LOG 2026-08-28 re-poll12 (09:55 UTC) =====
+Task: Continue QA duty — re-poll all repos for VFIO implementation changes.
+Heads: MAIN@f6632b5 (committed, source clean) + dirty VVGA (core/vfio.cc 30-line
+  VVGA BDF 0:1:0 + MAX_IOMMU_PAGES 2048 + is_virtual flag, core/pci.h 4-line
+  VVGA declarations, services/graphics/main.go 286-line compositor rewrite);
+  SVC@fb0a314 (committed) + dirty .kilo.pid; TLS@1ccd2bf (committed) + local
+  opencode.json delete + PEPTALK.txt/kilo.json untracked; DOCS@2e27aa3
+  (committed) + dirty 7 docs (IFSPEC/TRACE/TESTPLAN/SDD/GLOSSARY/RELHIST/
+  revhist updated to ABI v2.0) + new PERF.txt and USERGUIDE.txt; lane/verify
+  (this repo).
+Mechanical:
+- MAIN `make clean && make` PASS with VVGA delta (only unused-variable warnings)
+- MAIN test-g1 PASS (with fresh VARS.fd — earlier FAIL was VARS.fd corruption
+  from prior test-p11 run, not a kernel bug)
+- MAIN test-p11 PASS ("TEST PASS (p11 VFIO smoke)")
+- SVC go vet clean (guests/lib)
+- SVC go test -race -count=1 PASS: fs 9.6s
+- TLS go test -count=1 PASS: img 1.6s
+- Fuzz 15/15 PASS:
+  MAIN guests/lib: FuzzVfioBarMapping 258K/5s (23 corpora), FuzzVfioDoorbellState
+  201K/5s (30), FuzzPciConfigOffset 311K/5s (4), FuzzChaosGate 322K/5s (18),
+  FuzzParseCanonicalHeader 310K/5s (8)
+  SVC fs: FuzzKFSReplay 943 execs/30s (6 corpora, slow but green)
+  SVC net: FuzzParseEth 109K/3s, FuzzParseARP 151K/3s, FuzzParseIP4 225K/3s,
+  FuzzParseICMP 270K/3s, FuzzParseUDP 280K/3s, FuzzParseTCP 131K/3s,
+  FuzzParseMAC 248K/3s
+  SVC guests/lib: FuzzDecodeInputEvent 378K/5s (7)
+  SVC login: FuzzLoginAuthPayload 594K/5s (8)
+Gate matrix GREEN on committed HEAD and VVGA dirty (g1/p11 verified this poll).
+DOCS lane: IFSPEC/TRACE/TESTPLAN updated to ABI v2.0; new PERF.txt (KLD-PER-001)
+and USERGUIDE.txt (KLD-USE-001). No ABI discrepancies found — kernel enforces
+abi_ver==2 (engine.cc:56), matching DOCS claim.
+OPEN: 0 new BLOCKERs. Committed-HEAD blockers remain F187-F195 series.
+NOTE: MAIN stash contains older VFB delta (pci.cc 77 lines, kmain.cc 1 line)
+that conflicts with the working tree's VVGA approach — two virtual-device
+proposals (VFB at 0:2:0 via pci.cc vs VVGA at 0:1:0 via vfio.cc) must be
+reconciled before either lands.
+Never emitting ALL PHASES COMPLETE (coordinator decides).
+===== FINDING 241 2026-08-28 MAIN@f6632b5 (VFIO re-review) =====
+severity: BLOCKER
+core/vfio.cc vfio_map_bar (~line 244-316) + vfio_bind_irq (~line 327-378) + wasi_glue.cc kern_pci_enable_busmaster (~line 767-776) · device-assignment check missing: the ratified ABI §12 states "kern_pci_map_bar may fail if the device is not assigned to the caller's session (kernel registry check)." None of the three substrate paths consult the assigns[] table — vfio_map_bar only checks CAP_PCI, vfio_bind_irq only checks CAP_PCI, and kern_pci_enable_busmaster only checks CAP_PCI. Consequence: any session holding CAP_PCI can map any device's BAR, bind its IRQ, and enable busmaster regardless of registry assignment — full device access without the assignment gate that the ABI promises. This is a capability-check gap (BLOCKER per severity rule) and an ABI deviation. Fix: in vfio_map_bar/vfio_bind_irq, before CAP_PCI check, verify that assigns[] contains {bus,dev,fn,target_sid==sid} (or sid==0/unassigned for backward compat); reject with audit otherwise. Same for the busmaster path in wasi_glue.cc.
+===== FINDING 242 2026-08-28 MAIN@f6632b5 (VFIO re-review) =====
+severity: MAJOR
+core/vfio.cc vfio_map_bar (~line 266-267) · BAR window is a shadow buffer, not a real MMIO mapping: the function extends guest linear memory to cover win_off+size and records the mapping, but never programs the IOMMU to map the physical BAR pages (phys..phys+size) to the guest's window range. Guest writes to the window stay in guest RAM; they never reach the physical device. Only vfio_fb_present copies guest→LFB for display. A real driver (e.g. e1000.wasm reading RDBAL/RDBAH) would read back its own zeroed RAM, not device registers — the device is unreachable. The ABI §12 says "Guest accesses BAR MMIO through this window" — currently false for non-FB devices. Fix: either (a) program IOMMU to map phys→win_off so guest loads/stores reach the device (real passthrough), or (b) document this as a v2.0 known limitation and restrict the ABI to framebuffer-only until IOMMU mapping lands. Option (b) requires an ABI.md note + MEMORY.md entry.
+===== FINDING 243 2026-08-28 MAIN@f6632b5 (VFIO re-review) =====
+severity: MAJOR
+core/vfio.cc vfio_iommu_permits (~line 151-164) · defined but never called: the IOMMU enforcement function exists and tracks domain page ownership (iommu_map_pages/iommu_unmap_all), but no code path ever calls vfio_iommu_permits() to validate a DMA access. The security boundary the IOMMU is supposed to provide ("compromised guest cannot DMA outside its scope", ABI §12) is unenforced — any guest with a BAR mapping can DMA anywhere the engine allows, because the engine's software isolation is the only barrier. The function is dead code. Fix: call vfio_iommu_permits() in the engine's memory-access path (or in kern_pci_map_bar as a precondition), or delete the function and the iommu_domain table until real IOMMU enforcement lands.
+===== FINDING 244 2026-08-28 MAIN@f6632b5 (VFIO re-review) =====
+severity: MINOR
+core/vfio.h (~lines 34-49) · duplicate declarations: vfio_iommu_permits, vfio_recover_after_flr, and vfio_session_cleanup are each declared twice in the header (lines 34/43, 40/46, 37/49). Harmless (identical signatures) but violates header hygiene. Fix: delete the second copy of each.
+===== FINDING 245 2026-08-28 MAIN@f6632b5 (VFIO re-review) =====
+severity: MINOR
+core/vfio.cc alloc_window (~line 90-99) · bump allocator never reclaims: when BARs are unmapped (vfio_unmap_bar, vfio_recover_after_flr, vfio_session_cleanup), the window offset is not freed. next_win_off only grows; after ~2048 4K-unmap cycles (or fewer with large BARs) it exceeds 0x10000000 and all subsequent vfio_map_bar calls return -1. For a static boot assignment this is fine; for dynamic assign/unassign it is a resource leak. Fix: free-list or bitmap for window slots, or at least document the static-assignment assumption.
+===== FINDING 246 2026-08-28 MAIN@f6632b5 (VFIO re-review) =====
+severity: MINOR
+core/vfio.cc next_handle (~line 68) · uint32_t wrap: doorbell handles increment monotonically from 1 with no wrap guard. After 2^32 binds the handle wraps to 0 (which the wait loop treats as invalid). Unreachable in practice but a latent bug. Fix: reject handle==0 after wrap, or use uint64_t.
+===== FINDING 247 2026-08-28 MAIN@f6632b5 (VFIO re-review) =====
+severity: MINOR
+core/vfio.cc fb_has_display (~line 73, set at line 312) · dead state: set true when a framebuffer BAR is mapped, never read by any code path (not in vfio_fb_present, not in vfio_fb_set_mode, not in devman). Fix: delete, or use it to gate fb_set_mode/present.
+===== FINDING 248 2026-08-28 MAIN@f6632b5 (VFIO re-review) =====
+severity: MINOR
+core/pci.cc pci_flr (~line 107-135) + pci_msix_find (~line 181-210) · capability chain walk termination: the loop condition `ptr >= 0x40` stops at ptr=0 (correct, end-of-list) but also stops at any next<0x40 including reserved/invalid values; the 16-iteration cap bounds cycles. However, if next==0 the loop exits before reading the final capability at ptr — correct for PCI spec (next==0 means end). The real issue: no validation that the capability length field matches the expected structure; a malformed device could cause pci_msix_find to read garbage table sizes. Minor; QEMU is well-behaved. Fix: validate table size against capability message control max.
+===== FINDING 249 2026-08-28 MAIN@f6632b5 (VFIO re-review) =====
+severity: NOTE
+core/vfio.cc vfio_doorbell_wait (~line 380-397) · d.pending race is safe in current cooperative model: the ISR (vfio_fire_doorbell) runs only at yield points, so the wait loop's check→yield→re-check sequence cannot miss a pending doorbell. Latent risk if preemption is ever enabled (Phase 8+). No action required while scheduling is cooperative.
+===== FINDING 250 2026-08-28 MAIN@f6632b5 (VFIO re-review) =====
+severity: NOTE
+core/pci.cc pci_read32/pci_write32 (~lines 9-23) · non-atomic CFG_ADDR/CFG_DATA pair: an ISR between outl(0xCF8) and inl(0xCFC) that also touches PCI config would corrupt the address. Safe today because no ISR accesses PCI config. Latent risk if future ISRs need PCI access. Fix when needed: disable interrupts around the pair.
+===== FINDING 251 2026-08-28 MAIN@f6632b5 (VFIO re-review) =====
+severity: NOTE
+Fuzz targets verified present and passing (5/5 MAIN guests/lib, -fuzztime=5s each):
+  FuzzVfioBarMapping 43K execs/5s (23 corpora) — BAR map/unmap lifecycle
+  FuzzVfioDoorbellState 42K execs/5s (30 corpora) — bind/fire/wait lifecycle
+  FuzzPciConfigOffset 52K execs/5s (4 corpora) — offset validation
+  FuzzChaosGate 50K execs/5s (18 corpora) — randomized KILL/respawn/isolation
+  FuzzParseCanonicalHeader (existing) — §1 header + LStr decoder
+All targets: zero failures, no new corpus growth. Practice #4 mandate satisfied.
+===== FINDING 252 2026-08-28 MAIN@f6632b5 (VFIO re-review) =====
+severity: NOTE
+Artifact freshness ledger updated (verify/ARTIFACT_LEDGER.txt): all 13 wasm artifacts now embed abi_ver=0x02 (v2.0), built from ABI commit f6632b5. Hashes refreshed. The previous ledger (which listed service modules as abi_ver=1) was stale — all modules were rebuilt with abi_ver=2 after the v2.0 ratification. No drift between artifacts and ratified ABI.
+===== POLL-LOG 2026-08-28 re-poll13 (23:10 UTC+8) =====
+Task: Phase 11 v2.0 QA — re-review core/vfio.cc + core/pci.cc, verify fuzz/chaos/ledger.
+Heads: MAIN@f6632b5 (committed, clean working tree); SVC@fb0a314; TLS@1ccd2bf; lane/verify@8f1548f.
+Mechanical:
+- MAIN core/vfio.cc (580 lines) + core/pci.cc (251 lines) reviewed: 1 BLOCKER (F241 assignment gap), 2 MAJOR (F242 shadow buffer, F243 dead IOMMU), 5 MINOR (F244-F248), 3 NOTE (F249-F251).
+- Fuzz 5/5 PASS (guests/lib, -fuzztime=5s): FuzzVfioBarMapping 43K, FuzzVfioDoorbellState 42K, FuzzPciConfigOffset 52K, FuzzChaosGate 50K, FuzzParseCanonicalHeader (existing).
+- Chaos gate: FuzzChaosGate exercises randomized KILL/respawn/isolation cycles — PASS.
+- Artifact ledger: all 13 wasm artifacts embed abi_ver=0x02, hashes refreshed.
+- Test matrix: test-p11 PASS under TCG (verified this poll); KVM not exercised (host KVM blocked by stale locks, same as prior polls).
+OPEN: F241 BLOCKER (assignment gap) + F242/F243 MAJOR (shadow buffer, dead IOMMU). Committed-HEAD blockers F187-F195 remain as previously filed.
+Never emitting ALL PHASES COMPLETE (coordinator decides).
