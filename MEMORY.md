@@ -4,7 +4,7 @@ Read this first. Source of truth when context is compacted.
 The full phase-by-phase plan lives in `AGENTS.md` — this file is state,
 decisions, and gotchas. Update at milestones or near context limits.
 
-## Status — ALL 9 GATES GREEN on committed HEAD + substrate blockers closed (2026-08-25)
+## Status — Phases 0–11 gates GREEN on committed HEAD (2026-08-29)
 
 **Gates: g1 g2 g3 p4 p5a p5b p7 p8a p8b ALL PASS + make test-kernel 44/44 + unit tests.**
 
@@ -27,6 +27,16 @@ decisions, and gotchas. Update at milestones or near context limits.
   /home/<name> on REGISTER; p5a/p5b rewritten on lib.FSClient with u2->u1 denials.
 - p7 flow = current architecture (shell claims §4 focus itself; run_p7.sh types
   `cat /etc/motd`; fs seeds motd at mount). Gate greps updated accordingly.
+
+## ⚡ Phase 11 GREEN — VFIO foundation + graphics integration (2026-08-29)
+
+Phase 11 gates now PASS on committed HEAD (`a8d6189` + `448b395`):
+- **test-p11 PASS** (VFIO smoke): PCI enum found + `p11: all ok`.
+- **test-p11b PASS** (graphics integration): `graphics: fb_present ok` + `graphics: all ok` — graphics.wasm renders /etc/motd to LFB, maps BAR, `kern_fb_present` copies guest FB window to physical LFB (the M7 fix).
+
+What landed: VFB virtual PCI device at BDF 0:1:0 (`pci.cc`), `pci_is_vfb` bypass in `vfio_bdf_assigned_to` (`vfio.cc`, kernel-internal device needs no assignment), gate_mask parser fix (`main.cc`, stop at non-hex), `kern_fb_present` → real `vfio_fb_present` wiring (`wasi_glue.cc`, closes M7). Both x86_64 TCG verified; KVM matrix still pending (KVM host).
+
+Non-fatal notes: `[vfio] iommu: domain full` (M1 — `iommu_map_pages` return ignored, proceeds anyway); `[bind] no such port: fs` in legacy payload-slot mode (no fs server spawned; motd read fails gracefully, renders placeholder). Phase 10 negative tests / KVM-TCG matrix / Phase 9 net still pending per the phase plan.
 
 ## ⚡ CURRENT STATUS (2026-08-28 — Phase 10 GREEN on v2.0, Phase 11 VFIO in progress) — atomic bump
 

@@ -4,15 +4,16 @@ import "errors"
 
 // §7 request ops (abi/ABI.md; core/kernsvc.cc is the reference server).
 const (
-	OpRegistryList    uint16 = 1
-	OpRegistryCaps    uint16 = 2
-	OpRegistryKill    uint16 = 3
-	OpRegistrySpawn   uint16 = 4
-	OpRegistryLogin   uint16 = 5 // v1.1: issue uid+capmask to a named session
-	OpRegistrySetconf uint16 = 6 // v1.1: kernel knobs {key[16], u64 value}
-	OpDevmanEnum      uint16 = 1
-	OpPowerReboot     uint16 = 1
-	OpPowerOff        uint16 = 2
+	OpRegistryList      uint16 = 1
+	OpRegistryCaps      uint16 = 2
+	OpRegistryKill      uint16 = 3
+	OpRegistrySpawn     uint16 = 4
+	OpRegistryLogin     uint16 = 5 // v1.1: issue uid+capmask to a named session
+	OpRegistrySetconf   uint16 = 6 // v1.1: kernel knobs {key[16], u64 value}
+	OpRegistryAssignPCI uint16 = 7 // v2.0: assign PCI device to session
+	OpDevmanEnum        uint16 = 1
+	OpPowerReboot       uint16 = 1
+	OpPowerOff          uint16 = 2
 )
 
 // SPAWN wire layout (v1, per core/kernsvc.cc): name[16], path[64],
@@ -151,6 +152,30 @@ func (r *RegistryClient) SetConf(key string, value uint64) error {
 	copy(pl[0:16], padName(key))
 	Put64(pl[16:], value)
 	rep, err := r.c.Request(r.rg, OpRegistrySetconf, pl)
+	if err != nil {
+		return err
+	}
+	if len(rep) < 28 {
+		return ErrShort
+	}
+	if st := int32(Get32(rep[24:28])); st != 0 {
+		return ErrRejected
+	}
+	return nil
+}
+
+// AssignPCI assigns a PCI device (bus, dev, fn) to a target session.
+// Requires CapDevman on the caller (intended: init.wasm).
+func (r *RegistryClient) AssignPCI(targetSid uint32, bus, dev, fn uint8) error {
+	pl := make([]byte, 7)
+	pl[0] = bus
+	pl[1] = dev
+	pl[2] = fn
+	pl[3] = uint8(targetSid)
+	pl[4] = uint8(targetSid >> 8)
+	pl[5] = uint8(targetSid >> 16)
+	pl[6] = uint8(targetSid >> 24)
+	rep, err := r.c.Request(r.rg, OpRegistryAssignPCI, pl)
 	if err != nil {
 		return err
 	}
