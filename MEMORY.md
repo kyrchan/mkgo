@@ -384,3 +384,28 @@ remaining-work manifest in this file is closed with committed evidence.
 - Resolved this pass: F3 races (block.go mutex, shell_test.go mu,
   init_test.go recorder.mu), F17 (kernel now implements kern_input_recv +
   kern_focus_set), F20 (host.go FakeKernel gained LOGIN/SETCONF cases).
+
+## Extended lane deliverables (2026-08-28) — ALL COMPLETE
+
+- **services/net layer ladder (ARP→IPv4/ICMP→UDP→TCP)**: All layers
+  implemented and host-tested under -race. ARP request/reply + cache, IPv4
+  parse/build + checksum, ICMP echo, UDP demux, TCP full state machine
+  (handshake, sliding window, simultaneous close, RST, FIN+payload,
+  deferred-FIN drain). NetServer serves "net" port; NetClient + new
+  NetConn/NetListener helpers in guests/lib. Tests: ARP resolve+ping,
+  checksum rejects, UDP demux, TCP handshake/data/close, sliding window,
+  reset, pending-peek, close-drain, FIN+payload, simultaneous close,
+  connect-to-no-listener, net server TCP/UDP round-trip, lib net client
+  E2E + chunking. Phase 9 gate (stretch) dropped per AGENTS.md; net.wasm
+  builds clean (GOOS=wasip1) but not in Makefile image path yet.
+
+- **fs.wasm uid-rooting hardening**: /home listing isolation fixed —
+  registered users listing /home see only their own home (gateAbsolute
+  returns /home/<name>); guests get FSNoEntry. Previously returned /home
+  (leaked all users' homes). TestHomeListingIsolation updated + verified
+  failing-before/passing-after. fs.wasm rebuilt (d789b35).
+
+- **guests/lib net helpers**: NetConn (io.ReadWriteCloser), DialTCP,
+  ListenTCP, NetListener.Accept added to guests/lib/netclient.go.
+  Mock-based test (netconn_test.go) verifies the full surface against a
+  minimal in-process net endpoint. Yield() delegates to kernel.
