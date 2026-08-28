@@ -7,12 +7,6 @@ static EFI_GUID sfs_guid = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
 static const CHAR16 *g_path;
 static CHAR16 def_path[] = {'v','m','\\','a','p','p',0};
 
-/* Cached root handle — OpenVolume per-file fails on OVMF after the first
- * file (the firmware returns a stale handle after Close). Keep the volume
- * open for the whole boot. */
-static void *cached_sfs = 0;
-static void *cached_root = 0;
-
 int load_esp_file(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st,
                   const CHAR16 *path, void **out, uint64_t *out_len) {
     g_path = path;
@@ -27,27 +21,23 @@ int load_program(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st,
     *out_len = 0;
     (void)image_handle;
 
-    /* Open the volume once, cache it for subsequent files */
-    if (!cached_root) {
-        if (!cached_sfs) {
-            if (FW3(st->BootServices->LocateProtocol, (UINTN)&sfs_guid, 0,
-                    (UINTN)&cached_sfs) != EFI_SUCCESS || !cached_sfs) {
-                console_puts("[loader] no SimpleFileSystem protocol\n");
-                return -1;
-            }
-        }
-        EFI_STATUS ovs = FW2(*(void **)((char *)cached_sfs + 8) /* OpenVolume */,
-                             (UINTN)cached_sfs, (UINTN)&cached_root);
-        console_puts("[loader] openvolume st=");
-        console_hex64((uint64_t)ovs);
-        console_puts(" root=");
-        console_hex64((uint64_t)(uintptr_t)cached_root);
-        console_puts("\n");
-        if (ovs != EFI_SUCCESS || !cached_root)
-            return -1;
+    void *sfs = 0;
+    if (FW3(st->BootServices->LocateProtocol, (UINTN)&sfs_guid, 0,
+            (UINTN)&sfs) != EFI_SUCCESS || !sfs) {
+        console_puts("[loader] no SimpleFileSystem protocol\n");
+        return -1;
     }
 
-    void *root = cached_root;
+    void *root = 0;
+    EFI_STATUS ovs = FW2(*(void **)((char *)sfs + 8) /* OpenVolume */,
+                         (UINTN)sfs, (UINTN)&root);
+    console_puts("[loader] openvolume st=");
+    console_hex64((uint64_t)ovs);
+    console_puts(" root=");
+    console_hex64((uint64_t)(uintptr_t)root);
+    console_puts("\n");
+    if (ovs != EFI_SUCCESS || !root)
+        return -1;
 
     void *file = 0;
     /* root->Open(root, &file, path, mode=READ(1), attr=0) */
@@ -92,8 +82,8 @@ int load_program(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st,
         return -1;
     }
 
-    FW1(*(void **)((char *)file + 16), (UINTN)file);          /* Close file */
-    /* Do NOT close root — keep it cached for next file */
+    FW1(*(void **)((char *)file + 16), (UINTN)file);          /* Close */
+    FW1(*(void **)((char *)root + 16), (UINTN)root);
 
     *out = buf;
     *out_len = size;

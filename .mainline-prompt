@@ -1,18 +1,28 @@
-Phase 11 — VFIO foundation completion + graphics.wasm.
+CRITICAL BUG: p10 test hangs because ESP loader only loads the first file.
 
-Prerequisite: VFIO scaffold is committed (bca4a40): core/pci.cc, core/vfio.cc,
-kern_pci_*/kern_fb_*/kern_doorbell_* imports wired, test-p11 PASS.
+SYMPTOM: make test-p10 hangs. Serial log shows:
+  [loader] loaded 0x26306a bytes   <-- first file OK
+  [loader] file not found          <-- ALL subsequent files fail
 
-REMAINING WORK:
-1. IOMMU page tables: program VT-d/AMD-Vi to restrict guest DMA to assigned
-   pages (security boundary). Replace identity map with per-session domains.
-2. MSI-X programming: allocate vectors, program MSI-X table in PCI config,
-   route interrupts to session doorbells via eventfd.
-3. Graphics window: map LFB BAR into guest linear memory with write-combining
-   attributes. Guest writes pixels directly (zero-copy).
-4. Crash recovery: stub session re-bind for GPU reset (FLR or bus reset).
-5. Integration test: display text through graphics.wasm to a visible console.
+ROOT CAUSE investigation points:
+1. core/loader.cc load_program() opens root via OpenVolume, loads one file,
+   then Close(root). The NEXT load_program() call gets a fresh root handle but
+   Open() fails with "file not found" even though files exist (verified via mdir).
+2. The bca4a40 kernel has this bug; p10 never passed with this kernel.
 
-Read core/vfio.cc, core/pci.cc, abi/ABI.md §12-§15 first.
-Work continuously per the Autonomy mandate. Commit incrementally.
-Do not emit ALL PHASES COMPLETE (coordinator decides).
+YOUR TASK:
+1. Read core/loader.cc and core/main.cc thoroughly
+2. Check if FW1(Close) on root invalidates the sfs protocol for subsequent calls
+3. Check if g_path global is being corrupted between calls
+4. Check if the UEFI firmware caches the root handle and returns stale data
+5. Fix the loader so ALL files load (not just the first one)
+6. Rebuild: make clean && make
+7. Verify: make test-p10 MUST PASS with "TEST PASS (p10 multiuser negatives)"
+8. Also verify: make test-g1 PASS, make test-p11 PASS
+
+HINT: The issue might be that LocateProtocol returns a new sfs pointer each call
+but the old root handle is still cached. Or the Close(root) is not actually
+closing and the next OpenVolume returns the same closed handle.
+
+Do NOT modify guests, services, or ABI. Only fix the loader/kernel boot path.
+Commit when all three tests (g1, p10, p11) pass.

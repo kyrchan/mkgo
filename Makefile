@@ -14,9 +14,6 @@ OVMF_CODE := $(firstword $(foreach d,$(ROOT)/usr/share/OVMF /usr/share/OVMF /usr
 OVMF_VARS := $(firstword $(foreach d,$(ROOT)/usr/share/OVMF /usr/share/OVMF /usr/share/ovmf,$(wildcard $(d)/OVMF_VARS_4M.fd) $(wildcard $(d)/OVMF_VARS.fd)))
 
 QEMU_ENV := LD_LIBRARY_PATH=$(ROOT)/usr/lib/x86_64-linux-gnu
-MFORMAT := $(shell command -v mformat 2>/dev/null || echo $(ROOT)/usr/bin/mformat)
-MMD     := $(shell command -v mmd 2>/dev/null || echo $(ROOT)/usr/bin/mmd)
-MCOPY   := $(shell command -v mcopy 2>/dev/null || echo $(ROOT)/usr/bin/mcopy)
 KVM_FLAG ?= $(shell [ -w /dev/kvm ] && echo -enable-kvm || echo -accel tcg)
 
 CC      := gcc
@@ -138,12 +135,6 @@ services/shell/shell.wasm.raw: $(wildcard services/shell/*.go) $(wildcard guests
 	cd services/shell && GOOS=wasip1 GOARCH=wasm go build -o shell.wasm.raw .
 
 services/shell/shell.wasm: services/shell/shell.wasm.raw
-	python3 scripts/add_abiver.py $< $@ 2
-
-services/graphics/graphics.wasm.raw: $(wildcard services/graphics/*.go) $(wildcard guests/lib/*.go)
-	cd services/graphics && GOOS=wasip1 GOARCH=wasm go build -o graphics.wasm.raw .
-
-services/graphics/graphics.wasm: services/graphics/graphics.wasm.raw
 	python3 scripts/add_abiver.py $< $@ 2
 
 build/test_p5a.raw: guests/p5a/main.go $(wildcard guests/lib/*.go)
@@ -295,32 +286,21 @@ $(BUILD)/disk-p9.img: $(BUILD)/BOOTX64.EFI build/test_p9.wasm \
 $(BUILD)/disk-p10.img: $(BUILD)/BOOTX64.EFI build/test_p10a.wasm \
                        build/test_p10b.wasm services/fs/fs.wasm \
                        services/console/console.wasm services/login/login.wasm \
-                       $(BUILD)/etc_users.txt | $(BUILD)
-	dd if=/dev/zero of=$@ bs=1M count=0 seek=64 status=none
-	$(MFORMAT) -i $@ ::
-	$(MMD) -i $@ ::/EFI ::/EFI/BOOT ::/vm ::/boot ::/boot/modules ::/etc
-	$(MCOPY) -i $@ $(BUILD)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
-	$(MCOPY) -i $@ services/fs/fs.wasm ::/boot/modules/fs.wasm
-	$(MCOPY) -i $@ services/console/console.wasm ::/boot/modules/console.wasm
-	$(MCOPY) -i $@ services/login/login.wasm ::/boot/modules/login.wasm
-	$(MCOPY) -i $@ build/test_p10a.wasm ::/vm/app
-	$(MCOPY) -i $@ build/test_p10b.wasm ::/vm/app2
-	printf 'console console.wasm 0\nfs fs.wasm 10\nlogin login.wasm 8\nshell shell.wasm 8\n' | $(MCOPY) -i $@ - ::/init.conf
-	printf 'u1:1001:u1salt$$%s:0x18\n' "$$(echo -n 'u1saltu1' | sha256sum | cut -d' ' -f1)" | $(MCOPY) -i $@ - ::/etc/users
+                       $(BUILD)/etc_users.txt | $(BUILD) $(IMG)
+	$(IMG) $@ 64 \
+	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+	  services/fs/fs.wasm:/boot/modules/fs.wasm \
+	  services/console/console.wasm:/boot/modules/console.wasm \
+	  services/login/login.wasm:/boot/modules/login.wasm \
+	  build/test_p10a.wasm:/vm/app \
+	  build/test_p10b.wasm:/vm/app2 \
+	  $(BUILD)/etc_users.txt:/etc/users
 
 # Phase 11: VFIO smoke test disk (p11.wasm as /vm/app, legacy mode)
 $(BUILD)/disk-p11.img: $(BUILD)/BOOTX64.EFI build/test_p11.wasm | $(BUILD) $(IMG)
 	$(IMG) $@ 64 \
 	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
 	  build/test_p11.wasm:/vm/app
-
-# Phase 11: graphics test disk (graphics.wasm as /vm/app, needs CAP_PCI|CAP_FB)
-$(BUILD)/disk-p11gfx.img: $(BUILD)/BOOTX64.EFI services/graphics/graphics.wasm | $(BUILD) $(IMG)
-	printf '302' > $(BUILD)/gate.tmp  # CAP_PCI|CAP_FB|CAP_DEVMAN
-	$(IMG) $@ 64 \
-	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
-	  services/graphics/graphics.wasm:/vm/app \
-	  $(BUILD)/gate.tmp:/vm/gate
 
 $(BUILD)/VARS.fd:
 	cp $(OVMF_VARS) $@
@@ -415,13 +395,6 @@ test-p11: $(BUILD)/disk-p11.img $(BUILD)/VARS.fd
 	    && echo "TEST PASS (p11 VFIO smoke)" \
 	    || { echo "TEST FAIL (p11)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -40; exit 1; }
 
-# Phase 11: graphics.wasm renders to LFB (or handles denial gracefully)
-test-p11gfx: $(BUILD)/disk-p11gfx.img $(BUILD)/VARS.fd
-	$(call RUN_QEMU,$(BUILD)/disk-p11gfx.img)
-	@grep -q 'graphics: all ok' $(BUILD)/serial.log \
-	    && echo "TEST PASS (p11 graphics)" \
-	    || { echo "TEST FAIL (p11gfx)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -40; exit 1; }
-
 .PHONY: test-p9
 test-p9: $(BUILD)/disk-p9.img $(BUILD)/VARS.fd
 	bash scripts/run_p9.sh $(BUILD)/serial-p9.log "$(QEMU)" "$(QEMU_ENV)" -- \
@@ -475,7 +448,7 @@ test-unit:
 # kernsvc/fsroute/devblk/input objects against a fake scheduler on host.
 HT_CXXFLAGS := -std=c++20 -O1 -g -Wall -Icore -Ithird_party/wasm3
 HT_OBJS := $(BUILD)/ht/ports.o $(BUILD)/ht/kernsvc.o $(BUILD)/ht/fsroute.o \
-           $(BUILD)/ht/devblk.o $(BUILD)/ht/input.o $(BUILD)/ht/vfio.o
+           $(BUILD)/ht/devblk.o $(BUILD)/ht/input.o
 
 $(BUILD)/hosttest: tools/hosttest.cc $(HT_OBJS) | $(BUILD)
 	@mkdir -p $(dir $@)
@@ -490,7 +463,7 @@ $(BUILD)/ht/%.o: core/%.cc $(wildcard core/*.h) | $(BUILD)
 test-kernel: $(BUILD)/hosttest
 	$(BUILD)/hosttest
 
-test-all: test-kernel test-unit test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10 test-p11 test-p11gfx
+test-all: test-kernel test-unit test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10 test-p11
 
 # Phase 10: KVM+TCG matrix — every gate green under both accelerators.
 # KVM_FLAG is overridable ( ?= ) so matrix targets can force an accelerator.
