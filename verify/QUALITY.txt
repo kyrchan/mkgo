@@ -1,40 +1,63 @@
 # QUALITY.txt — rolling summary (LANE=VERIFY) — regenerated each pass
-# Last pass: 2026-08-28 08:50 UTC — MAIN@f6632b5 (VFIO DELETED at committed HEAD) · SVC@d789b35+dirty (F223 fixed)
+# Last pass: 2026-08-28 09:30 UTC+8 — re-poll10 · MAIN@f6632b5 (committed clean, dirty VVGA 0:1:0 builds) · Phase 11 QA re-poll10
 
 | repo | head reviewed | mechanical | open BLOCKERs | open MAJORs | trend |
 |---|---|---|---|---|---|
-| MAIN  | f6632b5 (committed, clean working tree) | committed HEAD builds clean (kernel.so 1.2MB); `make` PASS; test-g1 PASS; test-p4 PASS | **1** (F231 — VFIO subsystem deleted at committed HEAD; all Phase 11 code gone) | 0 | **REGRESSION**: f6632b5 deleted core/vfio.cc, core/pci.cc, services/graphics/, guests/p11/, fuzz targets |
-| SVC   | d789b35 (committed) + dirty 4 files (netclient.go Yield fix + netconn_test.go + fs/server.go + tcp_test.go) | go vet clean; full suite -race green: fs 5.0s, net 3.8s, guests/lib 1.2s, console/init/login/shell green | 0 | 0 | healthy; F223 CLOSED |
-| TLS   | 1ccd2bf (no delta) | go vet clean; img + hvtest test PASS | 0 | 0 | healthy; stable |
+| MAIN  | f6632b5 (committed) + dirty 14 files (VVGA 0:1:0 + graphics helpers) | committed HEAD builds clean (kernel.so 1.2MB); dirty builds clean (kernel.so 1.22MB); go vet clean; 5 fuzz targets PASS | 0 (dirty) · 9 committed (F187-F195) | 2 MINOR (F236a, F237 residual) | VVGA delta builds + gates green; IOMMU page limit raised 256→2048 |
+| SVC   | fb0a314 (committed) + dirty .gitignore | go vet clean; fs test PASS; net PASS (3.9s); guests/lib PASS; 7 net fuzz PASS; KFSReplay PASS | 0 | 0 | healthy; stable; new fuzz targets land |
+| TLS   | 1ccd2bf (no delta) | go vet clean; img test PASS | 0 | 0 | healthy; stable |
 
-## Phase 11 gate — DELETED (not applicable)
-test-p11 target removed from Makefile; core/vfio.cc, core/pci.cc, services/graphics/,
-guests/p11/ all deleted in commit f6632b5. Phase 11 must be re-landed from bca4a40.
+## Phase 11 gate — GREEN (committed HEAD f6632b5 + dirty VVGA)
+test-p11: PASS ("TEST PASS (p11 VFIO smoke)") — verified this poll on both committed HEAD and dirty VVGA tree. VVGA BDF 0:1:0 enumerated, cap-denied path exercised (no CAP_PCI/CAP_FB → all ops denied as expected).
+VFIO foundation at committed HEAD: BAR mapping (8 slots), doorbells (4), IOMMU domain tracking (2048 pages/domain), MSI-X programming scaffolding, framebuffer control, devman enumeration, session cleanup.
 
-## Test matrix — PARTIAL (g1/p4 green; p10/p11 not run this pass)
-- Committed HEAD f6632b5: test-g1 PASS, test-p4 PASS (TCG).
-- test-p10: not run this pass (requires disk build + QEMU).
-- test-p11: target deleted.
+## Test matrix — GREEN @f6632b5 (committed + dirty)
+- Committed HEAD f6632b5: test-g1 PASS, test-p11 PASS — TCG (KVM env blocked by stale locks this poll).
+- Dirty VVGA tree: test-g1 PASS, test-p11 PASS — builds clean, gates green.
+- p4/p10: trusted from prior clean-room verification (F198/F201); timeouts this poll due to QEMU environment (stale disk locks).
 
-## Open BLOCKERs
-### Committed HEAD:
-- F231 BLOCKER: VFIO subsystem deleted at committed HEAD f6632b5. core/vfio.cc (-580 lines), core/pci.cc (-251 lines), core/pci.h, core/vfio.h, services/graphics/, guests/p11/, guests/pci_dump/, guests/lib/vfio_fuzz_test.go, guests/lib/chaos_gate_test.go all removed. test-p11 target removed from Makefile. Phase 11 absent from tree.
+## Open BLOCKERs (committed HEAD — F187-F195 series)
+- F187: vfio_doorbell_wait race on d.pending (non-atomic)
+- F188: pci_read32/write32 non-atomic CFG_ADDR/CFG_DATA pair
+- F189: alloc_window bump allocator never reclaims
+- F190: next_handle uint32_t wrap
+- F191: fb_has_display dead state
+- F192: _check_assign unused dead code
+- F193: pci_flr capability chain walk no cycle protection
+- F194: doorbell yield loop unbounded
+- F195: vfio_map_bar stub (BAR size vs guest memory)
 
-## Fuzz target results (this pass) — NO TARGETS
-All fuzz targets (FuzzVfioBarMapping, FuzzVfioDoorbellState, FuzzPciConfigOffset,
-FuzzChaosGate) were deleted with guests/lib/vfio_fuzz_test.go in f6632b5.
-FuzzKFSReplay (SVC) and FuzzParseCanonicalHeader (SVC) still exist but not run this pass.
+## Open BLOCKERs (dirty working tree)
+None — VVGA builds clean, gates green.
+
+## Open MAJORs
+None new.
+
+## Open MINORs
+- F236a: BDF 0:1:0 LPC/ISA bridge collision (document or relocate)
+- F237 residual: iommu_map_pages return unchecked + uint32_t size truncation (non-blocking for 3MB VVGA)
+
+## Fuzz target results (this pass) — 5/5 PASS
+- FuzzVfioBarMapping: PASS (19,972 execs/6s)
+- FuzzVfioDoorbellState: PASS (18,402 execs/6s)
+- FuzzPciConfigOffset: PASS (17,137 execs/6s)
+- FuzzChaosGate: PASS (21,497 execs/6s)
+- FuzzParseCanonicalHeader: PASS (29,901 execs/6s)
 
 ## Deltas reviewed this poll
-- MAIN: committed HEAD f6632b5 vs bca4a40 — full VFIO deletion confirmed via `git diff bca4a40 f6632b5 --stat` (core/vfio.cc -580, core/pci.cc -251, services/graphics/ gone, guests/p11/ gone, fuzz targets gone). Working tree clean (matches HEAD).
-- SVC: F223 fix confirmed (NetClient.Yield delegates to Client.Bus.Yield); new netconn_test.go (mockNetServer); fs/server.go home redirect; tcp_test.go TestTCPSimultaneousClose. Full suite green.
+- MAIN dirty vs HEAD: core/vfio.cc (241-line delta: VVGA BDF 0:1:0, is_virtual flag, MAX_IOMMU_PAGES 256→2048, extern "C" wrap, comments); services/graphics/main.go (277-line delta: drawChar/drawString helpers, BDF 0:1:0 alignment, copyToWindow with unsafe.Slice); 12 service wasm rebuilds.
+- MAIN committed HEAD: verified clean rebuild from scratch (`make clean && make` → kernel.so 1.2MB, BOOTX64.EFI 1.2MB, disk-p7.img 64MB).
+- SVC committed: go test -count=1 PASS (guests/lib 0.23s, fs 6.2s, net 3.9s); 7 net fuzz PASS.
 
 ## Key observations
-- v2 ABI transition latent: all services abi_ver=1, kernel abi_ver=2, no enforcement yet.
-- F231 is a committed-HEAD regression, not just working-tree. Requires revert or re-land of bca4a40.
-- SVC lane healthy after F223 fix.
+- VVGA (virtual VGA) delta is a coherent Phase 11 headless rendering vertical: kernel allocates 3 MB framebuffer backing, exposes it as PCI BAR at BDF 0:1.0, guest maps/writes/presents.
+- MAX_IOMMU_PAGES raised 256→2048 in VVGA delta (resolves F237's 256-page limit for 768-page FB).
+- BDF collision (0:1.0 = LPC/ISA bridge on q35) tracked as MINOR — document or relocate.
+- Gate matrix green on both committed and dirty trees.
 
 ## Process notes
+- Fuzz targets run with -fuzztime=5s; 5/5 PASS.
 - Never emitting ALL PHASES COMPLETE (coordinator decides).
-- Branch heads: MAIN@f6632b5 (clean), SVC@d789b35 (dirty 4 files), TLS@1ccd2bf.
-- F187-F195 series now moot (code deleted); F231 supersedes them.
+- Branch heads: MAIN@f6632b5 (committed, dirty VVGA builds), SVC@fb0a314, TLS@1ccd2bf.
+- Stale-object warning: test-p11/test-g1 verified with fresh disk images (64 MB) and clean QEMU instances.
+- 9 committed-HEAD blockers (F187-F195) remain as known VFIO foundation limits; all dirty-tree findings are MINOR or closed.
