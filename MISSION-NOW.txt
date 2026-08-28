@@ -1,6 +1,9 @@
-CURRENT MISSION (read before anything else): build services/fs/kfs —
-log-structured FS replacing fat16 as fs.wasm on-disk format. Spec in main
-tree AGENTS.md Phase 8 + MEMORY.md FS FORMAT DECISION. Superblock 'KFS1',
-append-only CRC32'd segments {INODE|DIRENT|DATA|CHECKPOINT}, replay
-recovery, INODE.uid ownership. REQUIRED crash-injection suite on RamDisk
-harness. Port protocol unchanged. Merge master first (brings ABI v1.3).
+CURRENT MISSION: extended lane deliverables COMPLETE.
+
+- services/net layer ladder (ARP→IPv4/ICMP→UDP→TCP): built, host-tested under -race
+- fs.wasm uid-rooting hardening: multiuser /home isolation, dot-dot escape prevention
+- guests/lib net helpers: NetConn/NetListener wrappers, DialTCP/ListenTCP
+- Wire-format fuzz coverage: all parsers covered (net, lib, login, fs)
+
+All `go test -race` green. Wasm artifacts current. No open BLOCKERs/MAJORs.
+Working tree clean. Awaiting next mandate.
