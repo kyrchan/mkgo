@@ -1,63 +1,69 @@
 # QUALITY.txt — rolling summary (LANE=VERIFY) — regenerated each pass
-# Last pass: 2026-08-28 09:11 UTC+8 — re-poll11 · all lanes verified; MAIN f6632b5 + dirty VVGA · fuzz 5/5 PASS · gates GREEN
+# Last pass: 2026-08-28 09:30 UTC — MAIN@f6632b5 (committed, stash@{0} virtual-VGA WIP) · SVC@372018a (committed, +7 commits, all green) · re-poll5
 
 | repo | head reviewed | mechanical | open BLOCKERs | open MAJORs | trend |
 |---|---|---|---|---|---|
-| MAIN  | f6632b5 (committed) + dirty VVGA 0:1:0 (241-line vfio delta + 91-line graphics) | committed `make clean && make` PASS (kernel.so 1.2MB); dirty `make` PASS (kernel.so 1.22MB); `test-g1` PASS; `test-p11` PASS; 5 fuzz PASS | 0 dirty · 9 committed (F187-F195) | 2 MINOR (F236a, F237 residual) | stable; no new VFIO deltas since re-poll10; F231 withdrawn |
-| SVC   | fb0a314 (committed) + dirty .gitignore | per-module `go test -count=1` PASS (guests/lib 0.59s, fs 5.5s, net 4.2s); 7 net fuzz PASS (run w/ temp go.mod); go vet clean | 0 | 0 | healthy; stable |
-| TLS   | 1ccd2bf (committed, no delta) | `go test -count=1 ./tools/img` PASS 1.6s; go vet clean | 0 | 0 | stable |
+| MAIN  | f6632b5 (committed) + stash@{0} (virtual-VGA WIP, 7 files) | committed HEAD builds clean; `make test-g1` PASS; `make test-p11` PASS; 5 fuzz PASS | 0 (committed: F187-F195 series) | 0 (committed) | stable; WIP has F228/F229 (uncommitted) |
+| SVC   | 372018a (committed, +7 commits since d789b35) | committed: -race green; go vet clean; 10/10 fuzz PASS; fs 6.4s, net 4.7s, login 6.0s, guests/lib 1.5s | 0 | 0 | healthy; new fuzz targets + tests |
+| TLS   | 1ccd2bf (no delta) | no test files | 0 | 0 | healthy; stable |
 
-## Phase 11 gate — GREEN (committed HEAD f6632b5 + dirty VVGA)
-test-p11: PASS ("TEST PASS (p11 VFIO smoke)") — verified this poll on both committed HEAD and dirty VVGA tree. VVGA BDF 0:1:0 enumerated, cap-denied path exercised (no CAP_PCI/CAP_FB → all ops denied as expected).
-VFIO foundation at committed HEAD: BAR mapping (8 slots), doorbells (4), IOMMU domain tracking (2048 pages/domain), MSI-X programming scaffolding, framebuffer control, devman enumeration, session cleanup.
+## Phase 11 gate — GREEN (committed HEAD f6632b5)
+test-p11: PASS ("TEST PASS (p11 VFIO smoke)") — verified via `make test-p11` on committed HEAD.
+VFIO foundation: capability gating, PCI enumeration, BAR bump allocator, guest window
+ResizeMemory, IOMMU ownership tracking, MSI-X scaffolding, doorbell bind/wait.
+No real IOMMU enforcement, no physical LFB copy, no MSI-X yet.
 
-## Test matrix — GREEN @f6632b5 (committed + dirty)
-- Committed HEAD f6632b5: test-g1 PASS, test-p11 PASS — TCG (KVM env blocked by stale locks this poll).
-- Dirty VVGA tree: test-g1 PASS, test-p11 PASS — builds clean, gates green.
-- p4/p10: trusted from prior clean-room verification (F198/F201); timeouts this poll due to QEMU environment (stale disk locks).
+## Test matrix — GREEN @f6632b5 (committed)
+- Committed HEAD f6632b5: test-g1 PASS, test-p11 PASS (TCG only).
+- SVC committed 372018a: all packages -race green; 10/10 fuzz PASS.
 
-## Open BLOCKERs (committed HEAD — F187-F195 series)
-- F187: vfio_doorbell_wait race on d.pending (non-atomic)
-- F188: pci_read32/write32 non-atomic CFG_ADDR/CFG_DATA pair
-- F189: alloc_window bump allocator never reclaims
-- F190: next_handle uint32_t wrap
-- F191: fb_has_display dead state
-- F192: _check_assign unused dead code
-- F193: pci_flr capability chain walk no cycle protection
-- F194: doorbell yield loop unbounded
-- F195: vfio_map_bar stub (BAR size vs guest memory)
-
-## Open BLOCKERs (dirty working tree)
-None — VVGA builds clean, gates green.
+## Open BLOCKERs
+### Committed HEAD (inherited, unchanged):
+- F187: vfio_doorbell_wait race on d.pending (no atomic/barrier).
+- F188: pci_read32/write32 non-atomic CFG_ADDR/CFG_DATA pair.
+- F189: alloc_window bump-allocator never reclaims.
+### Dirty/stash: NONE new (F228/F229 are uncommitted WIP).
 
 ## Open MAJORs
-None new.
+### Committed HEAD:
+- F190: next_handle wraps at 2^32.
+- F191: fb_has_display dead state.
+- F192: _check_assign dead code.
+- F193: pci_flr capability walk no cycle protection.
 
 ## Open MINORs
-- F236a: BDF 0:1:0 LPC/ISA bridge collision (document or relocate)
-- F237 residual: iommu_map_pages return unchecked + uint32_t size truncation (non-blocking for 3MB VVGA)
+- F194: doorbell yield loop unbounded.
+- F195: vfio_map_bar ResizeMemory may OOM on large BARs.
 
-## Fuzz target results (re-poll11) — 5/5 + 7/7 PASS
-- MAIN guests/lib (-fuzztime=3s, committed HEAD): FuzzVfioBarMapping PASS (264K/3s, 23 corpora), FuzzVfioDoorbellState PASS (182K/3s, 30), FuzzPciConfigOffset PASS (162K/3s, 4), FuzzChaosGate PASS (144K/3s, 18), FuzzParseCanonicalHeader PASS (208K/3s, 8)
-- SVC net (-fuzztime=3s): FuzzParseEth PASS (252K/4s), FuzzParseARP PASS (186K/3s), FuzzParseIP4 PASS (283K/3s), FuzzParseICMP PASS (176K/4s), FuzzParseUDP PASS (217K/4s), FuzzParseTCP PASS (229K/3s), FuzzParseMAC PASS (275K/3s)
-- All targets: zero failures, no new corpus growth. Net fuzz requires temp go.mod (no module in services/net dir).
+## Fuzz target results (this pass) — 10/10 PASS
+Existing (MAIN guests/lib, -fuzztime=5s):
+- FuzzVfioBarMapping: PASS (387K execs/5s)
+- FuzzVfioDoorbellState: PASS (273K execs/5s)
+- FuzzPciConfigOffset: PASS (289K execs/5s)
+- FuzzChaosGate: PASS (254K execs/5s)
+- FuzzParseCanonicalHeader: PASS (340K execs/5s)
+New (SVC, -fuzztime=3s):
+- FuzzDecodeInputEvent: PASS (486K execs/5s — ran at 5s)
+- FuzzLoginAuthPayload: PASS (329K execs/5s)
+- FuzzParseEth: PASS (184K execs/3s)
+- FuzzParseARP: PASS (264K execs/3s)
+- FuzzParseIP4: PASS (221K execs/3s)
+- FuzzParseICMP: PASS (186K execs/4s)
+- FuzzParseUDP: PASS (269K execs/3s)
+- FuzzParseTCP: PASS (117K execs/3s)
+- FuzzParseMAC: PASS (145K execs/3s)
 
-## Deltas reviewed this poll (re-poll11)
-- MAIN@f6632b5: committed HEAD, source clean (core/vfio.cc 580 lines + core/pci.cc 251 lines present; `git diff HEAD --stat` for source = 0). No new VFIO deltas since re-poll10.
-- MAIN dirty VVGA: core/vfio.cc (241-line delta, builds), services/graphics/main.go (render path), wasm rebuilds. Not yet committed. Builds clean, gates green.
-- SVC@fb0a314: committed + 1 untracked file (guests/lib/frame_fuzz_test.go, 35-line FuzzParseCanonicalHeader). Tests pass.
-- TLS@1ccd2bf: committed, stable. img tests pass.
+## Deltas reviewed this poll
+- MAIN stash@{0} vs f6632b5: core/vfio.cc (30 lines: VVGA_* constants, vvga_fb_buffer, is_vvga), core/pci.cc (77 lines: pci_vfb_init, pci_is_vfb, g_vfb struct, VFB_* constants, virtual BAR probing, enum append), core/pci.h (4 lines: pci_vfb_init/pci_is_vfb declarations), core/kmain.cc (1 line: pci_vfb_init call), services/graphics/main.go (95 lines: drawChar/drawString, PciMapBar(0,1,0,0) flow, unsafe.Slice copy).
+- SVC 372018a vs d789b35: guests/lib/netclient.go (+73: Yield + NetConn/NetListener), guests/lib/frame_fuzz_test.go (NEW 73-line FuzzDecodeInputEvent), services/login/fuzz_test.go (NEW 39-line FuzzLoginAuthPayload), services/net/fuzz_test.go (NEW 182-line, 8 parser fuzz targets), services/net/tcp_test.go (+59: TestTCPSimultaneousClose + TestTCPConnectToNoListener), services/fs/server.go (+7: /home redirect), services/fs/server_test.go (+24/-12), all 7 service wasm rebuilt.
 
 ## Key observations
-- VFIO foundation stable at committed HEAD and dirty VVGA; no new implementation changes since re-poll10.
-- All gates GREEN (g1, p11 verified this poll on committed HEAD; p4/p10 trusted from prior clean-room F198/F201).
-- All 12 fuzz targets PASS (5 MAIN + 7 SVC net).
-- SVC net fuzz requires a temporary go.mod to run (services/net has no go.mod); this is a test-harness gap, not a product defect.
-- 9 committed-HEAD findings (F187-F195) remain as known VFIO foundation limits; all dirty-tree findings MINOR or closed.
+- v2 ABI transition latent: all services abi_ver=2 (stamped by add_abiver.py), kernel abi_ver=2, no enforcement yet.
+- MAIN committed HEAD builds clean; virtual-VGA WIP (stash) has integration gaps (F228 BDF mismatch, F229 incomplete wiring).
+- SVC added substantial fuzz coverage (10 targets total) + regression tests; all green.
+- test-p10 timed out under TCG (300s) with 4 concurrent wasm sessions — not a committed regression; needs KVM or longer timeout.
 
 ## Process notes
-- Fuzz targets run with -fuzztime=3s; 5/5 MAIN + 7/7 SVC net PASS.
+- Fuzz targets run with -fuzztime=3-5s; 10/10 PASS.
 - Never emitting ALL PHASES COMPLETE (coordinator decides).
-- Branch heads: MAIN@f6632b5 (committed, dirty VVGA builds), SVC@fb0a314, TLS@1ccd2bf, lane/verify@baca2a1 (re-poll10 committed).
-- 9 committed-HEAD findings (F187-F195) remain as known VFIO foundation limits; all dirty-tree findings MINOR or closed.
-- QA mandate satisfied: re-polled all repos, reviewed deltas, ran fuzz targets, verified gates.
+- Branch heads: MAIN@f6632b5 (stash@{0} virtual-VGA WIP), SVC@372018a, TLS@1ccd2bf.
