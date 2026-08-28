@@ -91,6 +91,7 @@ void vfio_init(void) {
     msi_vector_bitmap = 0;
     fb_w = 1024; fb_h = 768; fb_bpp = 32;
     fb_has_display = false;
+    pci_vfb_init(1024, 768);
 }
 
 // --- Guest window allocator ---
@@ -246,11 +247,21 @@ static int program_msix(uint32_t bus, uint32_t dev, uint32_t fn, uint32_t vector
     return -1; // no MSI-X capability
 }
 
+// Forward declaration: checks that a PCI BDF is assigned to the calling session.
+// Closes the assignment gap: CAP_PCI alone is not enough to touch a device.
+static bool vfio_bdf_assigned_to(uint32_t sid, uint32_t bus, uint32_t dev, uint32_t fn);
+
 // --- BAR mapping ---
 
 int64_t vfio_map_bar(uint32_t sid, uint32_t bus, uint32_t dev, uint32_t fn, uint32_t bar) {
     if (!has_cap(sid, SCHED_CAP_PCI)) {
         console_puts("[vfio] map_bar: no CAP_PCI sid=");
+        console_hex64(sid);
+        console_puts("\n");
+        return -1;
+    }
+    if (!vfio_bdf_assigned_to(sid, bus, dev, fn)) {
+        console_puts("[vfio] map_bar: BDF not assigned to sid=");
         console_hex64(sid);
         console_puts("\n");
         return -1;
@@ -333,6 +344,12 @@ int vfio_unmap_bar(uint32_t sid, uint32_t bus, uint32_t dev, uint32_t fn, uint32
 
 int vfio_bind_irq(uint32_t sid, uint32_t bus, uint32_t dev, uint32_t fn, uint32_t type) {
     if (!has_cap(sid, SCHED_CAP_PCI)) return -1;
+    if (!vfio_bdf_assigned_to(sid, bus, dev, fn)) {
+        console_puts("[vfio] bind_irq: BDF not assigned to sid=");
+        console_hex64(sid);
+        console_puts("\n");
+        return -1;
+    }
     if (type > 2) return -1;
     // Check device exists
     int32_t vend = pci_read32(bus, dev, fn, 0);
@@ -491,6 +508,10 @@ int vfio_fb_present(uint32_t sid) {
 
 int vfio_recover_after_flr(uint32_t sid, uint32_t bus, uint32_t dev, uint32_t fn) {
     if (!has_cap(sid, SCHED_CAP_PCI)) return -1;
+    if (!vfio_bdf_assigned_to(sid, bus, dev, fn)) {
+        console_puts("[vfio] flr: BDF not assigned\n");
+        return -1;
+    }
     console_puts("[vfio] recover_after_flr sid=");
     console_hex64(sid);
     console_puts(" for ");
@@ -541,6 +562,19 @@ int vfio_enumerate(struct vfio_pci_info *out, int max) {
         o++;
     }
     return o;
+}
+
+// Check that a PCI BDF is assigned to the calling session (or caller is admin).
+// This closes the assignment gap: CAP_PCI alone is not enough to touch a device;
+// the device must be explicitly assigned to the caller's session.
+static bool vfio_bdf_assigned_to(uint32_t sid, uint32_t bus, uint32_t dev, uint32_t fn) {
+    // Admin (init) can always access any device
+    if (has_cap(sid, SCHED_CAP_DEVMAN)) return true;
+    for (auto &a : assigns) {
+        if (a.used && a.target_sid == sid && a.bus == bus && a.dev == dev && a.fn == fn)
+            return true;
+    }
+    return false;
 }
 
 int vfio_assign_pci(uint32_t target_sid, uint8_t bus, uint8_t dev, uint8_t fn, uint32_t caller_sid) {
