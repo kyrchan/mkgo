@@ -119,14 +119,14 @@ services/login/login.wasm: services/login/login.wasm.raw
 services/fs/fs.wasm: services/fs/fs.wasm.raw
 	python3 scripts/add_abiver.py $< $@ 1
 
-services/init/init.wasm.raw: $(wildcard services/init/*.go) services/go.mod services/lib/kern.go
+services/init/init.wasm.raw: $(wildcard services/init/*.go) services/go.mod $(wildcard guests/lib/*.go)
 	cd services/init && GOOS=wasip1 GOARCH=wasm go build -o init.wasm.raw .
 	python3 scripts/add_abiver.py $< $@ 1 || true
 
 services/init/init.wasm: services/init/init.wasm.raw
 	python3 scripts/add_abiver.py $< $@ 1
 
-services/shell/shell.wasm.raw: $(wildcard services/shell/*.go) services/go.mod services/lib/kern.go
+services/shell/shell.wasm.raw: $(wildcard services/shell/*.go) services/go.mod $(wildcard guests/lib/*.go)
 	cd services/shell && GOOS=wasip1 GOARCH=wasm go build -o shell.wasm.raw .
 
 services/shell/shell.wasm: services/shell/shell.wasm.raw
