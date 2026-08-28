@@ -312,7 +312,7 @@ $(BUILD)/disk-p10.img: $(BUILD)/BOOTX64.EFI build/test_p10a.wasm \
 # Legacy payload-slot mode: graphics.wasm at /vm/app with gate_mask 0x300
 # (CAP_PCI|CAP_FB). Avoids init.conf multi-file loader path.
 $(BUILD)/disk-p11b.img: $(BUILD)/BOOTX64.EFI build/graphics.wasm | $(BUILD) $(IMG)
-	printf '300\n' > $(BUILD)/gate-p11b.tmp
+	printf '300' > $(BUILD)/gate-p11b.tmp
 	printf 'Welcome to the capability microkernel\nPhase 11: VFIO graphics integration\nFramebuffer rendering via wasm.\n' > $(BUILD)/motd-p11b.tmp
 	$(IMG) $@ 64 \
 	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
