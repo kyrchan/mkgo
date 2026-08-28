@@ -352,7 +352,7 @@ define RUN_QEMU
 endef
 
 # per-guest wasm gates (Phase 3): each guest prints its marker via fd_write
-.PHONY: test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10 test-p11 test-p11b test-all
+.PHONY: test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10 test-p11 test-p11b test-p11-gfx test-all
 
 test-g1: $(BUILD)/disk-g1.img $(BUILD)/VARS.fd
 	$(call RUN_QEMU,$(BUILD)/disk-g1.img)
