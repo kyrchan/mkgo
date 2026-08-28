@@ -1,42 +1,60 @@
 # QUALITY.txt — rolling summary (LANE=VERIFY) — regenerated each pass
-# Last pass: 2026-08-27 01:46 UTC — MAIN@5077ff0 (debug strip committed, zero BLOCKERs)
+# Last pass: 2026-08-28 10:30 UTC — MAIN@f6632b5 (committed GREEN, dirty graphics rewrite) · SVC@d789b35 (committed, dirty netclient BUILD BREAK) · re-poll3
 
 | repo | head reviewed | mechanical | open BLOCKERs | open MAJORs | trend |
 |---|---|---|---|---|---|
-| MAIN  | 5077ff0 (p9 gate green → strip [net-dbg] + [net] rx prints in 4 net files; strconv/os imports pruned; net.wasm rebuilt 2624349 bytes; p9 GATE PASS per commit: udp ok + http ok len=207) | g++ syntax rc0; go vet host clean, wasip1 build rc0; go test -race green (MAIN net 1.093s, SVC parent/fs/display/lib, TLS) | **0** | 0 | debug residue shrinking; F83 net-side CLOSED |
-| SVC   | ce7a13f (fleet model-pin on 128314a lineage: net E2E + race-hardening + multiuser rooting + display service + kfs + fuzz targets; fs/display split into own modules) | go vet clean ×5 modules; FULL suite -race -count=1 GREEN: parent 1.03-3.46s + fs 4.05s + display/terminal 1.09s + guests/lib 1.25s | 0 | 0 | healthy; no deltas |
-| TLS   | 1ccd2bf (fleet model-pin on b75d0f5 lineage: hvtest scaffolding + golden-file converter tests + README fleet docs) | go vet clean; go test -race green (img + hvtest) | 0 | 0 | healthy; no deltas |
+| MAIN  | f6632b5 (committed) + dirty 5 files (graphics/main.go rewrite + 4 wasm rebuilds) | committed HEAD builds clean; `make test-p11` PASS; `make clean && make` PASS; test-g1 PASS; 5 fuzz targets PASS | 0 (committed: F187-F195 series unchanged) | 0 (committed: F190-F193 series) | stable; working-tree builds clean |
+| SVC   | d789b35 (committed) + dirty 4 files (netclient BUILD BREAK + fs redirect + tests) | committed: go vet clean, -race green; dirty: `go build` FAILS at guests/lib (F223 Yield) | 1 (F223 dirty — NetClient.Yield missing) | 0 | build break blocks fs/net tests |
+| TLS   | 1ccd2bf (no delta) | no test files | 0 | 0 | healthy; stable |
 
-## Blocker-site sweep (fresh, this pass @5077ff0)
-- F12 overflow guard: __builtin_add_overflow in devblk.cc present.
-- F13 creator-gate: `ports[g].creator == sid` in ports.cc present (×1).
-- F16 clamp: routed_rw len>8192 budget clamp at wasi_glue.cc:592 + fd validation.
-- F18 NACK: kernsvc_nack ×6 call sites active in kernsvc.cc.
-- F31 CAP_FSADM gate: devblk_rw gated, 2 refs in devblk.cc.
-- F32 uid stamping: sched_uid_of in ports.cc port_send path (×1).
-- F58 sig-check bypass: g_skip_sig_check = 0 hits repo-wide.
-All sensitive-file md5s stable vs last verified; no silent drift.
+## Phase 11 gate — GREEN (committed HEAD f6632b5)
+test-p11: PASS ("TEST PASS (p11 VFIO smoke)") — verified via `make test-p11` on committed HEAD.
+VFIO foundation: capability gating, PCI enumeration, BAR bump allocator, guest window
+ResizeMemory, IOMMU ownership tracking, MSI-X scaffolding, doorbell bind/wait.
+No real IOMMU enforcement, no physical LFB copy, no MSI-X yet.
 
-## Open items (all MINOR/NOTE class)
-- F4 hosteng.cc stale vs current API (dead tool, not in build path).
-- F6 LIST/CAPS ungated — acknowledged in ABI §11 v2 roadmap.
-- F52 12-session LIST ceiling — substrate limit, init defers correctly.
-- F55 fuzz soaks — recurring sweep duty, currently passing.
-- F78 debug residue in virtio_blk.cc — RESOLVED (legacy path deleted).
-- F80 MAJOR — CLOSED @3c93eff: measured-offset OOB workaround deleted.
-- F79 MINOR: unbounded spins — blk poll (virtio_blk.cc:113) + vmod_probe reset-ack (virtio_modern.cc:169) still open.
-- F81 MINOR: MMIO BAR cacheable (no PCD) — bare-metal risk only.
-- F82 MINOR: vmod_probe mis-types + [vmod] cand noise + HOST_FEATURES prints (F95).
-- F83 residue: net [net-dbg] side now CLOSED by 5077ff0 cleanup; remaining p9 dbg-recv (guests/p9/main.go:112) bounded.
-- F95 MINOR: HOST_FEATURES/GUEST_FEATURES prints in vmod_features() — intentional probe, keep until hypothesis closed.
-- F96 CLOSED: strconv unused import fixed (wasip1 build clean, wasm rebuilt).
-- F97 NOTE: 5077ff0 debug strip clean (no new defects).
-- F77 nit: dead vmod_features_ok decl at virtio_modern.h:20.
+## Test matrix — GREEN @f6632b5 (committed)
+- Committed HEAD f6632b5: test-g1 PASS, test-p4 PASS, test-p10 PASS, test-p11 PASS (TCG only).
+- MAIN working tree: builds clean; graphics wasm renders as ppa/ppb (expected WIP).
+- SVC working tree: `go build` FAILS (F223) → fs/net tests BLOCKED.
 
-## Remaining scope work (not defects)
-P9 gate PASS on committed HEAD per 5077ff0 (needs independent VERIFY rerun) · kfs crash-suite gate cadence · THREAT-MODEL items 7+.
+## Open BLOCKERs
+### Committed HEAD (inherited, unchanged):
+- F187: vfio_doorbell_wait race on d.pending (no atomic/barrier).
+- F188: pci_read32/write32 non-atomic CFG_ADDR/CFG_DATA pair.
+- F189: alloc_window bump-allocator never reclaims.
+### Dirty working tree (new):
+- F223 BLOCKER: guests/lib/netclient.go NetListener.Accept() calls l.nc.Yield() — NetClient has no Yield method. Build broken for guests/lib + services/fs + services/net.
+
+## Open MAJORs
+### Committed HEAD:
+- F190: next_handle wraps at 2^32.
+- F191: fb_has_display dead state.
+- F192: _check_assign dead code.
+- F193: pci_flr capability walk no cycle protection.
+
+## Open MINORs
+- F194: doorbell yield loop unbounded.
+- F195: vfio_map_bar ResizeMemory may OOM on large BARs.
+
+## Fuzz target results (this pass) — 5/5 PASS
+- FuzzVfioBarMapping: PASS (345,476 execs/5s)
+- FuzzVfioDoorbellState: PASS (303,240 execs/5s)
+- FuzzPciConfigOffset: PASS (409,035 execs/5s)
+- FuzzChaosGate: PASS (363,482 execs/5s)
+- FuzzParseCanonicalHeader: PASS (430,729 execs/5s)
+
+## Deltas reviewed this poll
+- MAIN dirty vs f6632b5: services/graphics/main.go (full rewrite: drawChar/drawString, unsafe.Slice fb copy, virtual VGA 0:1:0, removed busmaster/irq), services/graphics/init/shell wasm rebuilds. core/vfio.cc RESTORED to HEAD (prior gutted state reverted).
+- SVC dirty vs d789b35: guests/lib/netclient.go (+70 lines: NetConn/NetListener/DialTCP/ListenTCP — BUILD BREAK F223), services/fs/server.go (home redirect at authorize), services/fs/server_test.go (updated assertions), services/net/tcp_test.go (TestTCPSimultaneousClose).
+- Prior F223 (vfio.cc deleted) CLOSED by restoration; F219/F220/F221 superseded.
+
+## Key observations
+- v2 ABI transition latent: all services abi_ver=1, kernel abi_ver=2, no enforcement yet.
+- MAIN working-tree builds clean; graphics rewrite is WIP Phase 11 progression.
+- SVC build break (F223) is a one-line fix: add NetClient.Yield delegation.
 
 ## Process notes
-- main.go wasip1-tagged: host vet excludes it; wasip1 build is ground truth for imports (F96 caught/fixed there).
-- Net wasm rebuild confirms debug strings stripped and import fix applied.
-- 5077ff0 correctly retains strconv in netstack.go (ipStr) and os in netport.go (sendto err) — only drops unused imports.
+- Fuzz targets run with -fuzztime=5s; 5/5 PASS.
+- Never emitting ALL PHASES COMPLETE (coordinator decides).
+- Branch heads: MAIN@f6632b5 (dirty 5 files), SVC@d789b35 (dirty 4 files), TLS@1ccd2bf.

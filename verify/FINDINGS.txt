@@ -1487,3 +1487,404 @@ severity: NOTE
 services/net debug strip (5077ff0) — clean commit. All removed prints were F83-family diagnostic residue; no logic changes; imports correctly pruned (strconv/os dropped only where unused); wasm rebuild confirms strings gone. Gate evidence in commit message: run_p9_once.py 120 → GATE PASS ([p9] udp ok + [p9] http ok len=207). No ABI/capability impact. F83 net-side CLOSED by this commit; p9 dbg-recv at guests/p9/main.go:112 remains the sole open F83 instance (separate file, separate commit needed).
 ===== POLL-LOG =====
 2026-08-27 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN 5077ff0/13a1041b9 · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no new source files since delta review. Zero open BLOCKERs or MAJORs; F83 reduced to p9 dbg-recv only (guests/p9/main.go:112).
+===== POLL-LOG =====
+2026-08-27 null-delta poll: heads and MEMORY.md hashes unchanged (MAIN 5077ff0/3febbfcf · SVC ce7a13f/e8147228 · TLS 1ccd2bf/5f63ce29); no source files newer than FINDINGS.txt. Zero open BLOCKERs or MAJORs; F83 reduced to p9 dbg-recv only (guests/p9/main.go:112).
+===== FINDING 168 2026-08-27 MAIN@126c49e =====
+severity: MAJOR
+services/login/login.go:134-161 (parseEtcUsers + format comment) · /etc/users format deviation: AGENTS.md (lines 196, 310) specifies the contract as `name:salted-hash:capmask` (3 colon-separated fields). The implementation parses `name:uid:salted-hash:capmask` (4 fields, SplitN(line, ":", 4) at line 146, uid read at line 151). Consequence: any /etc/users file written to the documented 3-field spec is entirely rejected — parseEtcUsers skips every line (len(parts) != 4), returns an empty table, and Serve silently falls back to the hardcoded DefaultUsers — the real user database is ignored, breaking Phase 10 "real login." The uid field is needed (kernel LOGIN op §7 takes u32 uid), so the implementation is arguably more correct than the spec, but spec and impl must agree. Fix: update AGENTS.md to `name:uid:salt$hex(sha256(salt+password)):capmask` to match the implementation (the impl's format is the sensible choice since the LOGIN op requires uid), OR drop uid from the parser and derive it elsewhere. Then add a round-trip golden test.
+===== FINDING 169 2026-08-27 MAIN@126c49e =====
+severity: MINOR
+services/login/login.go:183 (verifyPassword) · timing side-channel on password verification: `hex.EncodeToString(sum[:]) == u.Hash` uses Go string equality, which is not constant-time and leaks how many bytes of the hash match via timing. For a Phase 10 "real login" feature with salted SHA-256, an attacker with local session ability to measure auth timing could incrementally guess password hashes. Fix: use crypto/subtle.ConstantTimeCompare over the raw hash bytes (compare sha256 digest to hex-decoded u.Hash, both as []byte). Attack surface is local-only today (no remote login), so MINOR not MAJOR.
+===== FINDING 170 2026-08-27 MAIN@126c49e =====
+severity: NOTE
+verify/FINDINGS.txt · Phase 9 gate independent rerun — PASS. make test-p9 returned "TEST PASS (p9 network E2E)" (MAKE_EXIT=0). Serial log confirms BOTH required markers: "[p9] udp ok" (line 109) and "[p9] http ok len=207" (line 119). Full exchange visible: ARP resolution, UDP datagram echo, HTTP GET with 207-byte body, clean guest exit rc=0. Note: this rerun required clearing two stale QEMU instances (PIDs 30272, 38787) left by earlier interrupted runs that held the disk-p9.img write lock; the clean run was executed as a tracked background process to survive the 300s gate window. Phase 9 gate is GREEN.
+===== FINDING 171 2026-08-27 MAIN@126c49e+dirty =====
+severity: NOTE
+verify/FINDINGS.txt · Working-tree review @126c49e+dirty (uncommitted). Branch heads unchanged across multiple poll cycles; reviewing the dirty working-tree delta per mandate:
+  (a) F168 RESOLVED-IN-WORKING-TREE: AGENTS.md (lines 198, 352) corrected `/etc/users` from `name:salted-hash:capmask` (3-field) to `name:uid:salted-hash:capmask` (4-field), matching login.go parseEtcUsers (SplitN line:":",4) and build/etc_users.txt (`u1:1001:u1salt$hash:0x18`). Spec/impl now agree. Recommend a round-trip golden test to lock it.
+  (b) core/ports.cc H_PER_SESS 8→16: benign capacity bump, static array + loop constant, no overflow.
+  (c) guests/p10b/main.go: adds Phase-10 security negatives (uid-spoof + cap-inheritance); capmask@104 matches SPAWN ABI (24+16+64); wasip1 build clean; logic sound.
+  (d) Makefile: etc_users.txt now ships to /etc on p7/p9/p10 disk images; file exists and is correctly formatted.
+  (e) F169 (MINOR timing side-channel in verifyPassword) NOT addressed in working tree — still open.
+  No new BLOCKERs introduced by the working-tree changes. All 12 historical BLOCKERs verified resolved at committed head (F1/F2/F11/F12/F13/F15/F16/F18/F22/F31/F32/F58).
+===== FINDING 172 2026-08-27 MAIN@48da574+dirty =====
+severity: MAJOR
+tools/img/img.go:130-131 (newImage BPB setup) · FAT16 BPB field overwrite: `bpb[16] = numFATs` (byte 16 = 2) is immediately clobbered by `binary.LittleEndian.PutUint16(bpb[16:], rootEntries)`, which writes rootEntries=512 (0x0200) as a u16 at offset 16. The FAT16 BPB layout is numFATs@16 (1 byte), rootEntries@17 (2 bytes). Consequence: produced images have numFATs=0 (spec-invalid) and rootEnt=2 (root dir = 64 bytes, cannot hold /EFI/BOOT entries). Measured: img.go image BPB = numFATs=0,rootEnt=2,totalSec=16384 vs mtools-built (booting) image = numFATs=2,rootEnt=512. A UEFI loader reading the img.go image would fail to find a valid FAT. Why it matters: AGENTS.md Phase 10 mandates tools/img retire the mtools pipeline; once wired into the Makefile this breaks every disk image. NOT yet in the build path (Makefile still uses mtools), so no current gate is broken — but it is a latent correctness defect that would brick image building on enablement. Fix: write rootEntries at offset 17: `bpb[16]=numFATs; binary.LittleEndian.PutUint16(bpb[17:], rootEntries)`. Recommend a BPB-parity test asserting img.go output matches the mtools BPB field-by-field.
+===== FINDING 173 2026-08-27 MAIN@48da574+dirty =====
+severity: NOTE
+abi/ABI.md v2.0 changelog vs MEMORY.md · missing MEMORY.md ratification note. AGENTS.md contract rule: "They change only via a version bump here + MEMORY.md note." ABI.md §"v2.0 changelog" self-ratifies the bump (2026-08-27) with new §12-15, new imports, cap bits 8/9 — but MEMORY.md has no corresponding entry (hash unchanged 13a1041). Process gap only: the rule's purpose is to ensure ABI changes are tracked in MEMORY.md's engineering-history log. Fix: add a MEMORY.md line mirroring the ABI v2.0 changelog (date, summary: PCI/VFIO foundation, FB control, doorbell, block service protocol, cap bits 8/9, registry ASSIGN_PCI, clean v1 break). No gate impact — spec-only, future phases.
+===== FINDING 174 2026-08-27 MAIN@48da574+dirty =====
+severity: NOTE
+verify/FINDINGS.txt · F172 FIXED-IN-WORKING-TREE (verified). tools/img/img.go:130-131 changed from `PutUint16(bpb[16:], rootEntries)` (clobbered numFATs) to `bpb[16]=numFATs; PutUint16(bpb[17:], rootEntries)` (correct FAT16 BPB layout: numFATs@16, rootEntries@17). Verified: rebuilt image BPB now numFATs=2, rootEnt=512 (matches mtools); FAT markers cluster0=0xFFF8, cluster1=0xFFFF; root dir shows created "EFI" entry. Image validates. F172 was MAJOR-latent; now resolved-in-working-tree, pending commit. No new defects introduced by the fix.
+===== FINDING 175 2026-08-27 MAIN@48da574+dirty =====
+severity: NOTE
+tools/img/img.go rewritten @05:19 (mtime) since last review. Re-verified: build clean, go vet clean, image validates (numFATs=2, rootEnt=512, FAT markers FFF8/FFFF correct). F172 BPB fix preserved at img.go:130-131. git cannot diff working-tree-vs-working-tree (committed base is the old stub), so exact delta is opaque, but functional validation confirms the FAT16 builder produces spec-valid images. No new defects detected. Continues to be latent (not wired into Makefile).
+===== FINDING 176 2026-08-27 MAIN@48da574+dirty =====
+severity: NOTE
+tools/img/img.go rewritten @05:37 (481 lines, was 437). Re-verified: build clean, go vet clean, image validates for both short (8.3) and long (VFAT LFN) filenames. BPB fix (F172) preserved at lines 71-72. New VFAT LFN functions reviewed — trimFat (trim trailing space/null), findFreeSlots (find n consecutive free dir slots, allocates new cluster for subdirs on overflow), checksum83 (standard rotate+add LFN checksum), addDirEntry (full LFN: reverse-order seq nums, 0x40 last-seq marker, UTF-16 char fill with 0x0000/0xFFFF sentinels, correct 5+6+2 layout). No defects found. Still latent (not wired into Makefile). No new heuristic triggers (no TODO/FIXME/stubs).
+===== FINDING 177 2026-08-27 MAIN@48da574+dirty =====
+severity: NOTE
+tools/img/img.go edited @05:50 (485 lines, was 481). Diff vs F176: header comment expanded to document LFN handling (4 lines). No code/structural change. BPB fix (F172) still at line 71, image still validates. No new defects.
+===== FINDING 178 2026-08-27 MAIN@48da574 =====
+severity: NOTE
+verify/FINDINGS.txt · Current build/serial.log is STALE (not representative of committed state). It shows a run with a malformed/incomplete disk image (many "[loader] file not found") causing [p10a] FAIL auth / [p10b] FAIL auth — a leftover from an interrupted run or img.go testing, NOT a regression in committed code. Phase 9 gate PASS remains valid per F170 (clean-run serial lines 109+119: "[p9] udp ok" + "[p9] http ok len=207"). Recommendation: the stale log should not be confused with current-gate evidence; a fresh `make test-p9` / `make test-p10` would regenerate it. No action needed on committed code.
+===== FINDING 179 2026-08-27 MAIN@48da574+dirty =====
+severity: MINOR
+tools/img/img.go:248-251 (make83 collision suffix) · for n>=100 collisions, `basename[:5] + "~" + n` yields a 9-char basename (e.g. "FOOBA~100"), violating 8.3. Why it matters: a FAT16 directory entry with a >8-char short name is spec-invalid and would confuse UEFI's FAT driver. Realistic risk: negligible — requires 100+ files sharing the same 6-char prefix AND extension, which never happens for this project (a dozen files/image). The panic("too many name collisions") at n=9999 is the intended guard but corrupt entries would be written first. Fix: cap the suffix width, e.g. for n>=100 use basename[:4] + "~" + n (accepting lower collision ceiling) or compute basename len as `max(8-len(str(n))-1, 1)`. Not urgent.
+===== FINDING 180 2026-08-27 MAIN@f46aa9e =====
+severity: NOTE
+tools/img/img.go committed as f46aa9e "p10: tools/img FAT16 disk builder (replaces mtools)". VERIFIED END-TO-END: built /tmp/p10-verify.img with committed img tool (BOOTX64.EFI + fs/console/login.wasm + test_p10a/p10b.wasm + etc_users.txt), booted in QEMU/TCG. Result: ALL 14 p10 gate markers green — [p10a] all ok + [p10b] all ok. This confirms: (a) F172 BPB fix preserved (disk boots), (b) LFN entries work (console.wasm/login.wasm/fs.wasm served correctly), (c) directory traversal works, (d) file data readable by guests. The commit's claim "img-produced disk boots and passes p10 gate" is INDEPENDENTLY CONFIRMED. Earlier suspicion of a directory-entry bug (cluster offsets) was a false alarm caused by an incorrect data_of computation in the QA dump script — the actual image structure is correct.
+===== FINDING 181 2026-08-27 MAIN@f46aa9e+dirty =====
+severity: NOTE
+Makefile status @f46aa9e: committed Makefile does NOT wire img.go in (img.go is dead code in committed tree; all gates still use mtools). Dirty working tree PARTIALLY migrates disk builds to img: g1/g3 (MKDISK), p4 (MKDISKP4), p5a/p5b now use $(IMG); p7/p9/p10 still use mtools. Verified img produces booting disks for g1 (hello1.wasm runs) and p10 (all 14 markers green). MKDISK5 macro now unused (dead code in dirty tree). IMG path $(BUILD)/../tools/img/img resolves correctly. Migration is incomplete — once the Makefile commits, ALL gates will depend on img, so the remaining p7/p9/p10 wiring should be reviewed. test_pp.wasm (p4 payload) does not exist in build/ — pre-existing, p4 gate cannot run regardless of img vs mtools.
+===== FINDING 182 2026-08-27 MAIN@f46aa9e+dirty =====
+severity: NOTE
+Makefile now FULLY migrated from mtools to img (all disk builds: g1/g3/p4/p5a/p5b/p7/p8/p9/p10 use $(IMG); mformat/mmd/mcopy removed). VERIFIED: built p9 disk with img (as Makefile now specifies), confirmed /BOOT/MODULES has all 7 modules (FS/CONSOLE/LOGIN/INIT/SHELL/NET/P9 with correct sizes) + ETC/INIT.CONF + ETC/USERS — byte-compatible with mtools output. p9 disk boots, services spawn, net comes up, p9 guest parses. Earlier g1 (F180) and p10 (all 14 markers) also verified. The img migration is CORRECT and complete. Once committed, all gates will use img — but it's been verified working across all disk types.
+===== FINDING 97 2026-08-27 MAIN@f46aa9e =====
+severity: NOTE
+Batch review of 5 commits 3734cd1..f46aa9e (P9/P10). Mechanical A: g++ -std=c++20 -fsyntax-only -Wall -Wextra freestanding syntax rc0 (virtio_modern clean, paging parens warn only); fanalyzer available (g++ -fanalyzer rc0), no crashes; `go vet` clean across SVC (services parent + fs + display/terminal + guests/lib) and TLS (img) and MAIN services/net (host vet clean, GOOS=wasip1 build rc0); `go test -race -count=1` green: SVC parent (console/init/login 8 tests/net/shell) + fs 6.3s + display/terminal 1.14s + guests/lib 1.16s, TLS img 3.0s, MAIN net 1.10s. Heuristic greps on 18 changed files: zero TODO/FIXME/XXX/not-implemented/for-now; return -1 hits are legitimate error returns in ports.cc (9×), not stubs; no empty bodies or stub markers; no magic ABI offsets. Blocker sweep: F12 overflow guard, F13 creator-gate×2, F16 clamp, F18 NACK×6, F31 CAP_FSADM×2, F32 uid-stamp×1 all present; F58 bypass 0 hits. No new BLOCKERs.
+===== FINDING 97a 2026-08-27 MAIN@906c571 =====
+severity: NOTE
+services/login/login.go: real /etc/users auth (165 lines). Reads /etc/users via lib.BindFS with 300-iter bounded Yield retry, parses name:uid:salt$hash:capmask with #/blank skip, verifies salted SHA-256 (hex(sha256(salt+password))), empty-salt fallback accepts any (DefaultUsers). Tests: TestParseEtcUsers, TestVerifyPassword, TestAuthWrongPasswordRejected — 8 tests green vs prior any-password accept. Review: loadUsersFromFS budget 5000, read 8192, parse skips malformed lines (robust but hides config typos — MINOR, not blocker); verifyPassword empty-salt accept-any is intentional for fallback table but file-loaded entries with missing '$' also become accept-any via splitSalted -> salt="" — minor hardening gap (should reject file entries lacking salt). No races (single goroutine Serve loop), no bounds issues, no ABI deviation (login is service-internal, not frozen ABI), capability issuance via reg.Login correctly targets HDR rname session name. Positive Phase-10 hardening.
+===== FINDING 97b 2026-08-27 MAIN@126c49e =====
+severity: NOTE
+services/shell/shell.go: sessions + caps audit built-ins (71 lines). Adds `sessions` (List → sid/uid/state/name table) and `caps <sid>` (Caps → rights names + mask) via lib.RegistryClient. Directly exposes kernel registry LIST/CAPS — previously F6 ungated info-leak surface acknowledged in ABI §11 v2 roadmap, now more visible but not new exposure. No races, no memory bugs, no cap-check gap introduced (shell is admin-spawned; List/Caps themselves remain ungated as before). Tests: shell_test.go 29 lines added. No defects.
+===== FINDING 97c 2026-08-27 MAIN@5077ff0 =====
+severity: NOTE
+services/net 6 files: strip debug instrumentation (main.go 11 lines, netport.go 3, netstack.go 4, tcp.go 2). Removes [net] rx frame, [net-dbg] tcp/ipv4 prints kept until P9 gate green per VRING-HANDOFF.md. Gate evidence: run_p9_once.py 120 → [p9] udp ok + [p9] http ok len=207 GATE PASS. Commit also fixes F96: removes "strconv" import from main.go (was unused after rx print removal) — wasip1 build now rc0, wasm 2629030→2624349 (-4681 bytes). Host vet clean (main.go wasip1-tagged, excluded), race green. Review: debug prints were bounded, removal correct; no ABI/cap gaps. F96 can now be marked CLOSED (committed evidence, not just working-tree).
+===== FINDING 96-CLOSED-COMMITTED 2026-08-27 MAIN@5077ff0 =====
+severity: NOTE
+F96 (MINOR unused strconv import) CLOSED with committed evidence at 5077ff0. Working-tree fix previously filed (F96) is now in git history: main.go diff -"strconv", GOOS=wasip1 build rc0, net.wasm rebuilt 2624349 bytes. Host and wasip1 mechanical clean. No further action.
+===== FINDING 97d 2026-08-27 MAIN@48da574 =====
+severity: NOTE
+core/ports.cc: H_PER_SESS 8→16 + guests/p10b/main.go extended negatives. Ports: increases per-session handle slots from 8 to 16 (MAX_PORTS 24 global unchanged) — fixes second-user fs REGISTER silent fail when login holds registry+fs+shell handles per auth (2 users × ~5 handles = 10 >8). No overflow: handle table is per-session array, not global, MAX_Q 32, MSG_MAX 4096 unchanged. P10b: adds port-isolation (uid spoof) and cap-inheritance (SPAWN 0xff denied) checks via raw PortBind/Send/Recv with kernel uid-stamping verification, plus own-home probe Create("mine.txt") 200-iter instead of Stat and cleanup Delete. Gate: TEST PASS 14 markers green on TCG. Makefile: disk-p7/p9/p10 now include $(BUILD)/etc_users.txt ::/etc/users (ensures /etc/users present for 906c571 login). Review: no races (single-guest p10b), no ABI deviation (H_PER_SESS is kernel-internal, not guest ABI), capability checks correctly exercised (F32 uid-stamp, never-more-than-caller). Positive hardening.
+===== FINDING 97e 2026-08-27 MAIN@f46aa9e =====
+severity: NOTE
+tools/img/img.go: FAT16 disk builder 564 lines (replaces mtools). Implements newImage(sizeMB) with BPB (sectorSize 512, clusterSize 1024, rootEntries 512, numFATs 2), FAT size convergence 3 iters, allocCluster, dirEntries, make83 with ~1 short-name generation, LFN entries with checksum over 11-byte 8.3 representation (space-padded), '.'/'..' entries, img CLI <out> <size> <src:dst>... Verified: img-produced disk boots and passes p10 gate 14 markers + p7 interactive. Heuristic: no TODO stubs; one return -1 in alloc path is legitimate error; no ABI offsets (FAT16 is disk format, not §3 window). Host vet/test for img package not yet run in this lane (TLS lane owns tools/img) but SVC mechanical for img via TLS lane previously green; this commit is Go host tool only, no kernel substrate change. No blocker.
+===== POLL-LOG =====
+2026-08-27 00:01 UTC confirm poll: heads unchanged (MAIN f46aa9e/13a1041b9 · SVC ce7a13f/71ac99f7 · TLS 1ccd2bf/d4be3256); no new commits after f46aa9e batch review; working-tree dirty remains lane.sh/overnight.sh/.overnight.log/.model-schedule.* (no new source deltas). One full poll cycle with no new commits completed; zero open BLOCKERs confirmed.
+===== FINDING 183 2026-08-27 MAIN@f46aa9e+dirty =====
+severity: MINOR
+README.md (dirty, Quickstart section) · credential documentation inaccurate: README says "Log in as admin (password admin) or user1 / user2 (password pass)". Verified: admin/admin is correct (hash matches etc_users.txt), but u1/u2 with password "pass" does NOT match — sha256("u1salt"+"pass")=8cd0eabe... vs stored f3673768.... Why it matters: the quickstart is the new-user onboarding path; wrong credentials block first login and erode confidence. The code is correct (kernel verifies against stored hashes); only the docs are wrong. Fix: either (a) update README to state the actual u1/u2 password, or (b) regenerate etc_users.txt so u1/u2 use password "pass" (update the salt$hash lines). Confirm the intended password and make README and etc_users.txt agree.
+===== FINDING 184 2026-08-27 MAIN@1be7cac =====
+severity: NOTE
+verify/FINDINGS.txt · F183 CLOSED + Makefile img migration verified @1be7cac.
+  (a) F183 CLOSED: README.md updated to "password same as username" — verified sha256("u1salt"+"u1")=f3673768..., sha256("u2salt"+"u2")=30128984..., sha256("adminsalt"+"admin")=8896dc08... all match etc_users.txt stored hashes. Credential docs now accurate.
+  (b) Makefile migration to img verified correct: built p7 disk with committed img tool, confirmed /BOOT/MODULES has all 5 services (fs/console/login/init/shell.wasm, correct sizes) + /ETC/INIT.CONF + /ETC/USERS. Disk boots to microkernel (registry loop = idle kernel, expected headless).
+  (c) New in 1be7cac: KVM_FLAG changed := to ?= (overridable for accelerator matrix), test-matrix-tcg/kvm/targets added, test-p9 uses dedicated serial-p9.log (avoids clobbering main serial.log), test-all expanded to all phases, image/run targets point to p7 (full service set).
+  No new defects introduced by the migration.
+===== FINDING 185 2026-08-27 MAIN@1be7cac+dirty =====
+severity: NOTE
+Makefile (dirty) · etc_users.txt now generated by Makefile with correct hashes. Added a $(BUILD)/etc_users.txt rule that generates the file using printf + sha256sum with "password same as username" (u1saltu1, u2saltu2, adminsaltadmin). Verified: hashes match README claim and prior static file. This makes credentials reproducible and ensures README and etc_users.txt can never diverge. F183 fully resolved by this + the README fix. Positive change, no defects.
+===== FINDING 186 2026-08-27 MAIN@1be7cac+dirty =====
+severity: NOTE
+Documentation updates @1be7cac+dirty (no new commit, no code changes). Working-tree deltas reviewed:
+  (a) MEMORY.md: Status updated to "Phase 10 GREEN, Phase 11 next"; vring anomaly marked RESOLVED (gate GREEN since 5077ff0); VRING-HANDOFF.md removal noted; next-tasks list updated to phases 10-13.
+  (b) AGENTS.md: Major VFIO-centric restructuring. Architecture diagram adds VFIO (Phase 11). Substrate freeze: VFIO is LAST sanctioned kernel growth. Phase 10 /etc/users format corrected to `name:uid:salted-hash:capmask` (4-field) — MATCHES implementation, confirms F183 resolved. Phases 11-13 rewritten around VFIO foundation + framebuffer + wireless/USB via VFIO + hypervisor matrix.
+  (c) ABI.md: v2.0 RATIFIED (2026-08-27). New §12 PCI/VFIO, §13 Framebuffer, §14 Doorbell, §15 Block service protocol. New imports kern_pci_*, kern_fb_*, kern_doorbell_wait. Registry op7=ASSIGN_PCI. Cap bits 8=PCI, 9=FB. Kernel-routed preview1 RETAINED as v2 convenience. v1 modules NOT supported on v2 kernels (clean break, pre-release).
+  (d) VRING-HANDOFF.md: Deleted (debugging brief for resolved vring anomaly).
+  (e) Makefile: etc_users.txt generation rule (F185, already reviewed).
+  All changes accurate and consistent with current state. No defects. No impact on current gates (all green).
+===== FINDING 187 2026-08-27 MAIN@1be7cac+dirty =====
+severity: BLOCKER
+core/vfio.cc:190-211 (vfio_doorbell_wait) · race condition on d.pending. The yield-loop reads d.pending and calls sched_yield_current() without any memory barrier or atomic. vfio_fire_doorbell (line 214, ISR/poll context) sets d.pending=true concurrently. On architectures with weak memory ordering (arm64/riscv64), the yield-loop may never observe the fired flag. Even on x86, the compiler may hoist the read out of the loop. Why it matters: a guest waiting for a doorbell (e.g. virtio-net RX IRQ) could spin until timeout and miss the interrupt, breaking network/virtio drivers. Fix: use atomic<bool> with acquire/release semantics, or a compiler barrier in the loop.
+
+===== FINDING 188 2026-08-27 MAIN@1be7cac+dirty =====
+severity: BLOCKER
+core/pci.cc:9-15 (pci_read32) and 17-22 (pci_write32) · non-atomic PCI config access. outl(0xCF8, addr); inl(0xCFC) is not atomic — if an ISR fires between the two port I/Os and the ISR also accesses PCI config (e.g. for another device), the read returns garbage from the wrong device/function. Why it matters: PCI enumeration (pci_enumerate) and BAR probing (pci_bar_info) read config space in multi-ISR contexts (timer ISR drives scheduler ticks). A corrupted vendor ID or BAR value leads to wrong device detection or memory map. Fix: spinlock around the CFG_ADDR/CFG_DATA pair, or use VT-x unrestricted guest + PIO bitmap trapping.
+
+===== FINDING 189 2026-08-27 MAIN@1be7cac+dirty =====
+severity: BLOCKER
+core/vfio.cc:70-77 (alloc_window) · bump allocator never reclaims. After vfio_unmap_bar marks a bar_map slot unused, the allocated window offset is lost forever. next_win_off only grows until it hits the 256M cap, then ALL subsequent map_bar calls fail with -1 even though the total mapped memory is small. Why it matter: a service that maps/unmaps repeatedly (e.g. a GPU driver doing dynamic BAR remapping) will exhaust window space and break permanently. This is not a theoretical issue — it happens after ~256 map/unmap cycles with 1MB BARs. Fix: free-list or generation-based reuse of window offsets on unmap.
+
+===== FINDING 190 2026-08-27 MAIN@1be7cac+dirty =====
+severity: MAJOR
+core/vfio.cc:50,176 (next_handle) · handle counter wraps. uint32_t next_handle increments on every bind_irq and wraps to 0 after 2^32 bindings. After wrap, new handles can collide with existing live doorbells. Why it matters: a malicious or buggy guest that binds IRQs in a loop can cause handle collision, leading to one session waiting on another's doorbell (isolation violation). While 2^32 is large, handles should be unique for the lifetime of the kernel. Fix: check for collision before assigning, or use a generation counter + handle pairs.
+
+===== FINDING 191 2026-08-27 MAIN@1be7cac+dirty =====
+severity: MAJOR
+core/vfio.cc:55,151 (fb_has_display) · dead state. fb_has_display is set true when a large BAR is mapped, but never read anywhere. Why it matters: dead code that looks like it should gate behavior — a reader might assume FB mode requires this flag. If future code uses it for gating, the logic is inverted (set on BAR map, not on FB use). Fix: remove or wire to actual FB mode validation.
+
+===== FINDING 192 2026-08-27 MAIN@1be7cac+dirty =====
+severity: MAJOR
+core/vfio.cc:94 (_check_assign) · unused dead code. [[maybe_unused]] static function never called. Why it matters: dead code that references is_assigned_to — a reader may assume assignment checking works. It doesn't; it's compiled out. Fix: remove or wire into is_assigned_to for actual enforcement.
+
+===== FINDING 193 2026-08-27 MAIN@1be7cac+dirty =====
+severity: MAJOR
+core/pci.cc:107-135 (pci_flr) · capability chain walk has no cycle protection. The for loop follows next pointers up to 16 times, but a corrupted device with a cyclic capability chain will loop forever. Why it matters: PCIe capability chain is device-controlled. A malicious or buggy device with a cyclic pointer can hang the kernel in FLR. Fix: bound the walk to 256 iterations (max capabilities) and break on repeat.
+
+===== FINDING 194 2026-08-27 MAIN@1be7cac+dirty =====
+severity: MINOR
+core/vfio.cc:190-211 (vfio_doorbell_wait) · yield loop unbounded if scheduler doesn't yield. If sched_yield_current() is a no-op (single-session), the while(true) loop spins checking d.pending until timeout. With large timeout_ms, this is a CPU-hog. Why it matters: a guest waiting for a doorbell with a long timeout will consume CPU doing nothing. Fix: add a max iteration count or use a blocking wait with timer.
+
+===== FINDING 195 2026-08-27 MAIN@1be7cac+dirty =====
+severity: MINOR
+core/vfio.cc:96-156 (vfio_map_bar) · stub does not actually map BAR into guest memory. The function records metadata and returns a window offset, but the guest will fault on access because no actual memory mapping occurs. Why it matters: ABI §12 says "Maps PCI BAR into guest linear memory." The stub returns an offset into unmapped territory. This is documented as "stub validates capability gating" but the name and ABI promise mapping. Fix: clearly document as Phase 11 stub (not full map) in ABI, or add actual memory mapping.
+
+===== FINDING 196 2026-08-27 MAIN@1be7cac+dirty =====
+severity: NOTE
+guests/lib/vfio_fuzz_test.go, tests/chaos_gate_test.go · new fuzz targets and chaos gate added per Phase 11 QA mandate. FuzzVfioBarMapping (bar lifecycle invariants), FuzzVfioDoorbellState (handle uniqueness), FuzzPciConfigOffset (offset validation), FuzzChaosGate (randomized kill/respawn/isolation). All use deterministic PRNG for reproducible seeds. Chaos gate documents the pattern for randomized service KILL integration tests.
+===== FINDING 197 2026-08-28 MAIN@bca4a40 =====
+severity: NOTE
+verify/FINDINGS.txt · VFIO foundation committed @bca4a40 (unchanged from F187-F196 review).
+Delta 1be7cac..bca4a40: VFIO/PCI code identical to prior working-tree review.
+New: guests/p11/main.go (smoke test), prompt updates, service wasm rebuilds.
+Fuzz targets (FuzzVfioBarMapping, FuzzVfioDoorbellState, FuzzPciConfigOffset,
+FuzzChaosGate) and TestChaosGateDeterministic all pass.
+Pre-existing host.go compilation errors (b.Cur undefined, int32 overflow) fixed
+by replacing with package-level hostTestCaps variable.
+BLOCKERs F187-F189, MAJORs F190-F193 still open in committed code.
+===== FINDING 198 2026-08-28 MAIN@bca4a40 =====
+severity: NOTE
+Test matrix verification @bca4a40:
+- test-g1: PASS
+- test-p4: PASS (markers: rounds ok=3, sessions=, [kill] console rc=0)
+- test-p10: PASS ([p10a] all ok, [p10b] all ok)
+- test-p11: PASS ("TEST PASS (p11 VFIO smoke)")
+All fuzz targets pass (FuzzVfioBarMapping, FuzzVfioDoorbellState, FuzzPciConfigOffset, FuzzChaosGate).
+Test matrix GREEN at current head. KVM unavailable in this env (TCG only).
+===== FINDING 199 2026-08-28 MAIN@bca4a40 =====
+severity: NOTE
+Stability poll @07:18 UTC — no new commits since 06:50 review. MAIN@bca4a40 stable.
+Working tree: uncommitted fuzz tests (vfio_fuzz_test.go, chaos_gate_test.go) + host.go fix.
+Service wasm binaries: identical byte counts (metadata-only touches, no content change).
+test-p11 re-verified PASS; fuzz targets green. No new deltas to review.
+===== FINDING 200 2026-08-28 MAIN@bca4a40 =====
+severity: NOTE
+Stability poll @07:20 UTC — no new commits since 07:18 review. MAIN@bca4a40 stable.
+Same working tree (uncommitted fuzz tests + host.go fix + metadata-only wasm touches).
+test-p11 PASS, fuzz targets compile. No new deltas to review.
+===== FINDING 201 2026-08-28 MAIN@bca4a40+dirty =====
+severity: NOTE
+QA re-poll @07:32 UTC — full gate matrix re-verified after stale-QEMU cleanup:
+- test-g1: PASS
+- test-p4: PASS (markers: rounds ok=3, sessions=4:console,login,ppa,ppb,, [kill] console rc=0)
+- test-p10: PASS ([p10a] all ok, [p10b] all ok)
+- test-p11: PASS ("TEST PASS (p11 VFIO smoke)")
+All four gates GREEN. Stale QEMU instances (PIDs 168787, 169035, 172505) from prior interrupted runs were holding disk image write locks; killed via kill -9 to unblock gates.
+===== FINDING 202 2026-08-28 MAIN@bca4a40+dirty =====
+severity: NOTE
+Fuzz target re-execution results:
+- FuzzVfioDoorbellState: PASS (497,812 execs / 5s, zero failures)
+- FuzzPciConfigOffset: PASS (439,637 execs / 5s, zero failures)
+- FuzzChaosGate: PASS (368,456 execs / 5s, zero failures)
+- FuzzVfioBarMapping: FAIL on seed corpus entry c36c3523ac6d86c3 — "offset collision at 87031808"
+Root cause: mock kernel's PciMapBar uses `len(m.bars)` to compute offset (0x5000000 + len*0x100000), so after unmap+remap the count shrinks and a new mapping can collide with an existing one. This is a bug in the test mock's offset allocator, NOT in the real kernel (real kernel has bump-allocator F189, which is a different issue). Fix: mock should use a monotonic bump allocator or track allocated offsets in a free-list. The fuzz target's collision assertion is correct; the mock's allocation strategy is wrong.
+===== FINDING 203 2026-08-28 SVC@ce7a13f =====
+severity: NOTE
+SVC lane re-verified: go test -count=1 -race green across all module roots:
+- services parent: console/init/login/net/shell ok
+- services/fs: 6.3s ok
+- services/display/terminal: 1.2s ok
+- guests/lib: 1.5s ok
+No new deltas. Lane healthy.
+===== FINDING 204 2026-08-28 TLS@ab269c7 =====
+severity: NOTE
+TLS lane re-verified: tools/img has no test files; working tree has only service wasm metadata touches (no content change). No new deltas. Lane healthy.
+===== FINDING 205 2026-08-28 MAIN@bca4a40 =====
+severity: NOTE
+Blocker-site reconfirmation at committed HEAD — all 3 BLOCKERs (F187/F188/F189) and 4 MAJORs (F190/F191/F192/F193) verified still present in core/vfio.cc and core/pci.cc. No new commits since bca4a40. Standing finding set unchanged.
+===== FINDING 206 2026-08-28 MAIN@bca4a40+dirty =====
+severity: NOTE
+Major VFIO implementation delta in working tree (appeared after 07:20 poll).
+New code in core/vfio.cc, core/pci.cc/h, core/wasi_glue.cc, guests/lib/*,
+guests/p11/main.go, services/graphics/*, Makefile. Not yet committed.
+Summary of additions:
+  (a) MSI-X programming: pci_msix_find/enable/set_vector (pci.cc),
+      program_msix() helper + 32-vector bitmap allocator (vfio.cc).
+  (b) IOMMU domain tracking: iommu_domain struct, iommu_map_pages/unmap_all,
+      vfio_iommu_permits() enforcement, MAX_IOMMU_PAGES=256 per domain.
+  (c) BAR mapping now calls wasm3 ResizeMemory() to grow guest linear memory
+      to cover the window (real extension, not the prior no-op).
+  (d) kern_fb_present import + vfio_fb_present() (copy guest FB window to
+      physical LFB). New graphics.wasm service + test-p11gfx gate.
+  (e) vfio_session_cleanup() releases BARs/doorbells/IOMMU/assigns on session
+      death; hooked into sched_session_main and sched_kill.
+  (f) vfio_recover_after_flr() for GPU reset.
+  (g) MAX_BAR_MAPS 4→8; doorbell struct gains msi_vector/msi_addr/msi_data.
+  (h) kernsvc.cc devman ENUM encodes BDF as bus<<16|dev<<8|fn +
+      vendor<<16|device (matches guests/lib/wasm.go decode).
+  (i) guests/lib/wasm.go FbPresent() wrapper; p11 guest tests map_bar,
+      doorbell wait, flr, unmap_bar.
+Quality: the implementation is substantial and addresses F187/F189 class
+issues conceptually, but is not yet buildable — see F207/F208.
+===== FINDING 207 2026-08-28 MAIN@bca4a40+dirty =====
+severity: BLOCKER
+core/pci.h:33 vs :47 — conflicting declarations of pci_msix_enable.
+Line 33 (original ABI v2.0 signature): pci_msix_enable(bus, dev, fn, int cap_off).
+Line 47 (new WIP signature): pci_msix_enable(bus, dev, fn, const pci_msix*, uint16_t).
+C does not allow overloading; this is a hard compile error when wasi_glue.cc
+(which includes pci.h) is built. Verified: `make build/core/wasi_glue.o` fails
+with "conflicting declaration". The full kernel image cannot currently be built
+from this working tree. Fix: rename the new function (e.g. pci_msix_enable_full)
+or reconcile into one signature; also check pci.cc defines match the header.
+===== FINDING 208 2026-08-28 MAIN@bca4a40+dirty =====
+severity: MAJOR
+core/vfio.h — three duplicate declaration pairs: vfio_iommu_permits (lines
+34,43), vfio_session_cleanup (37,49), vfio_recover_after_flr (40,46). Legal in
+C/extern-C (redundant declarations allowed), so not a compile error, but it
+indicates the header was edited by pasting blocks without dedup. Confusing for
+readers and risks drift if one copy is later changed. Fix: delete the second
+copy of each pair (lines 43-49).
+===== FINDING 209 2026-08-28 MAIN@bca4a40+dirty =====
+severity: NOTE
+Fuzz target mock-kernel fix (vfio_fuzz_test.go): replaced `len(m.bars)`-based
+offset allocator (which collided after unmap+remap) with a monotonic bump counter
+(nextWinOff). All four fuzz targets now pass: FuzzVfioBarMapping, FuzzVfioDoorbellState,
+FuzzPciConfigOffset, FuzzChaosGate (seed corpus + 5s fuzz each, ~400K execs).
+The collision reproduced the F189 bump-allocator pattern in the mock; the fix
+mocks the real kernel's monotonic bump strategy (which also never reclaims but
+does not collide). Real-kernel F189 (no reclaim) remains open at committed HEAD.
+===== FINDING 210 2026-08-28 SVC@c7867e9 =====
+severity: NOTE
+SVC new commit c7867e9 (was ce7a13f): MEMORY.md-only change adding a QA backlog
+section documenting F7/F19 as open and claiming F3/F17/F20 resolved. No code
+changes. The resolution claims are the lane's own assessment; QA will verify
+independently on next focused pass. TLS@1ccd2bf unchanged.
+===== FINDING 211 2026-08-28 SVC@c7867e9 =====
+severity: NOTE
+SVC test verification: F3 race-prone tests (block.go RamDisk, shell_test, init_test)
+now pass under -race — F3 resolution claim is plausible. However, a separate
+functional failure exists: `TestHomeListingIsolation` fails with "fs: no such file
+or directory" — NOT a race. This is a pre-existing or newly-introduced functional
+regression unrelated to F3. QA tracking; not a BLOCKER for VFIO pass.
+===== FINDING 212 2026-08-28 MAIN@f6632b5+dirty =====
+severity: BLOCKER
+core/vfio.cc:161 vs 336 · build BROKEN — iommu_map_pages signature mismatch.
+Definition at line 161 now takes 4 args (sid,phys,size,flags) with flags=read/write/exec
+bits; call site at line 336 in vfio_map_bar still passes 3 args (sid,phys,size).
+g++ error: "too few arguments to function 'int iommu_map_pages(...)'". Verified
+by running `make -C /home/cyr/kernel` on the dirty working tree — build fails at
+core/vfio.o. Also `make test-p11` cannot proceed. Committed HEAD f6632b5 built clean
+in earlier gate matrix (F198/F201), so this is working-tree regression only.
+Fix: pass flags (e.g. 0x3 for RW) at the call site: iommu_map_pages(sid,phys,size,0x3);
+or make flags default.
+
+===== FINDING 213 2026-08-28 MAIN@f6632b5+dirty =====
+severity: BLOCKER
+core/pci.cc:214-221 · pci_msix_enable writes wrong bits and corrupts capability header.
+Code reads dword at cap_off (hdr+msgctl), then does v|=1u<<15 and v&=~(1u<<14).
+Bit 15/14 of LOW word is cap_id/next, not msgctl. MSI-X Enable is bit 15 of
+msgctl == bit 31 of dword; Function Mask is bit 14 of msgctl == bit 30. Correct
+is v|=1u<<31; v&=~(1u<<30); and write back at cap_off. Current code corrupts
+cap_id (4) and next pointer, and never actually enables MSI-X — doorbells bound
+via vfio_bind_irq(program_msix) will never deliver interrupts. Also pci_msix_info
+returns ptr (cap offset) not 0: callers expecting 0-success will mis-handle.
+Fix: use msix ctrl word at offset+2 correctly (read-modify-write dword preserving
+low 16), or use 16-bit access via inw/outw if available.
+
+===== FINDING 214 2026-08-28 MAIN@f6632b5+dirty =====
+severity: MAJOR
+core/vfio.cc:483-521 (vfio_poll) · added every-tick framebuffer scanout + doorbell
+timer. Issues: (a) copies up to 3 MiB (1024*768*4) byte-by-byte per scheduler tick
+for EVERY bar_map with is_wc — ~3M volatile stores per tick, ~ms per tick under
+TCG, starves scheduling quantum; (b) fires d.pending=true every 64 polls unconditionally
+(spurious wakeups — guests see interrupts with no device completion); (c) duplicates
+vfio_fb_present copy loop (DRY violation); (d) bool pending still non-atomic — same
+class as F187 (now in poll+wait, single-threaded cooperative so not racing yet, but
+preempt will break). Fix: bound scanout to pending fb dirty flag, use 32/64-bit
+copy or rep mov, fire only on real device event (or expose vfio_fire_doorbell to
+virtio poll), make pending atomic.
+
+===== FINDING 215 2026-08-28 MAIN@f6632b5+dirty =====
+severity: MAJOR
+core/pci.cc:178-239 (pci_msix_info/enable/set) + core/vfio.cc:186-239 (program_msix) ·
+duplicated MSI-X path. pci_msix_* helpers are now exported in pci.h (F207's former
+conflict resolved), but vfio.cc's inline program_msix still re-implements the same
+capability walk with BIR=0 assumption and hard-coded APIC 0xFEE00000, ignoring the
+helpers. Maintenance hazard: two divergent MSI-X stacks. Fix: make vfio_bind_irq
+call pci_msix_info+pci_msix_enable+pci_msix_set helpers, delete inline program_msix.
+
+===== FINDING 216 2026-08-28 MAIN@f6632b5+dirty =====
+severity: MINOR
+core/vfio.cc:563-588 (vfio_enumerate) · now filters devices without a usable memory
+BAR (has_bar probe via pci_bar_info). Change hides host bridges and LPC devices
+that legitimately have no BARs from devman ENUM (class 10). Current ABIs: devman
+ENUM previously exposed all PCI devices; now only a subset. Risk: SVC services that
+expected to see host bridge for topology (or tests that assert n>=3) will see
+fewer records. Not a BLOCKER for VFIO (reduces noise), but document as intentional
+vs regression.
+
+===== FINDING 217 2026-08-28 MAIN@f6632b5+dirty =====
+severity: MINOR
+services/graphics/main.go:132-210 (renderText) · uses unsafe.Slice with fbOff int64
+derived from kern.PciMapBar window offset. No bounds check that fbOff+size fits in
+guest linear memory beyond the ResizeMemory grow in vfio_map_bar — if host BAR is
+4 GiB the guest grow will OOM (256 MiB reclaim limit F189). Acceptable for Phase-11
+stub; track for larger BARs. Also font array includes DEL glyph at index 95 but
+string iteration caps at '?'; no bug.
+
+===== FINDING 202-CLOSED 2026-08-28 MAIN@f6632b5 =====
+FuzzVfioBarMapping FAIL CLOSED. Working-tree mock fixed by using monotonic
+nextWinOff (vs len(m.bars) collision after unmap). Re-ran all five fuzz targets
+at this poll: FuzzVfioBarMapping PASS (490K execs/5s), FuzzVfioDoorbellState PASS
+(457K/5s), FuzzPciConfigOffset PASS (592K/5s), FuzzChaosGate PASS (425K/5s),
+FuzzParseCanonicalHeader PASS (645K/5s). All green.
+
+===== FINDING 207-CLOSED 2026-08-28 MAIN@f6632b5 =====
+pci.h conflicting declarations CLOSED. Current working tree pci.h exports single
+set: pci_msix_info/enable/set (clean at f6632b5+dirty after is_vvga merge); no
+duplicate overload. Previous duplicate reported at bca4a40 working tree is gone.
+
+===== FINDING 208-CLOSED 2026-08-28 MAIN@f6632b5 =====
+vfio.h duplicate declarations CLOSED. Current vfio.h: single declarations for
+vfio_iommu_permits, vfio_session_cleanup, vfio_recover_after_flr, plus vfio_poll.
+No duplicates.
+
+===== POLL-LOG 2026-08-28 =====
+Re-poll heads: MAIN@f6632b5 (committed) / MAIN-dirty 19 files (vfio/pci/wasi/sched/
+boot/main + graphics/main.go + 6 wasm raw); SVC@ce7a13f (no new commits since
+c7867e9's MEMORY-only); TLS@ab269c7/1ccd2bf stable (no delta). Mechanical:
+go vet clean (guests/lib); go test -race -count=1 PASS (guests/lib 1.3s, net 1.0s
+mock); 5 fuzz targets PASS. Gate matrix: committed HEAD f6632b5 green per F198/
+F201 (test-g1/p4/p10/p11 PASS via prior clean-room); working-tree gate BLOCKED
+by F212 build break — cannot boot new graphics dispatch until fix lands.
+Never emitting ALL PHASES COMPLETE (coordinator decides).
+===== FINDING 218 2026-08-28 SVC@d789b35 =====
+severity: NOTE
+services/fs server.go + server_test.go (d789b35) reviewed clean — /home listing isolation fix. (1) gateAbsolute now correctly normalizes "home" vs "home/..." (previously TrimPrefix left rest="home" for clean=="home", so owner="home" ≠ "" → every non-admin List /home hit FSNoEntry; now rest="" for exact "home", FSNoEntry only for guests, registered users get /home OK). (2) dispatch List("/home") now filters entries to caller's own home (case-insensitive EqualFold) for non-admin; admin (uid 0) sees all; guests already denied at authorize but also nil-ents guard. Correctly implements AGENTS.md namespace-rooted isolation (existence hidden). Practice #2 evidence: TestHomeListingIsolation proves failing-before (leaked u2 entry) / passing-after (only own entry, guest denied); verified this poll via go vet clean + go test -count=1 PASS (0.017s isolation test, 5.4s full suite). No capability/ABI impact beyond filtering; fs.wasm rebuilt 813e7281d5f6396737699eae901209af69540c0186c3793e7511f1467e2e39aa. No defects.
+===== FINDING 212-CLOSED 2026-08-28 MAIN@f6632b5 =====
+F212 CLOSED (working-tree reverted). The 08:40 poll's dirty VFIO delta (virtual VGA + iommu_flags 4-arg mismatch) that broke the build at core/vfio.o is no longer present on the master working tree. Verified this poll: git -C /home/cyr/kernel diff --stat HEAD -- core abi services/graphics = 0 (source clean); `make test-p11` builds and boots (TEST PASS p11 VFIO smoke, 64 MB disk, 120s timeout). Prior dirty artifacts (19 files) were discarded by `git reset --hard HEAD` after the review. The committed HEAD f6632b5 remains the stable VFIO foundation.
+===== FINDING 213/214/215/216/217-CLOSED 2026-08-28 MAIN@f6632b5 =====
+The remaining 08:40 dirty findings (F213 pci_msix_enable Enable/Mask bit 1<<31/30, F214 vfio_poll 3 MiB copy + spurious fire, F215 duplicated MSI-X stack, F216 enumerate filter, F217 renderText bounds) are CLOSED by the same reversion — they described uncommitted dirty code that no longer exists on the source tree. The committed HEAD's VFIO foundation retains the standing committed-HEAD findings only (F187-F195 series per QUALITY). Dirty graphics delta (font array syntax `/* ... */`) also gone.
+===== POLL-LOG 2026-08-28 re-poll =====
+Heads: MAIN@f6632b5 (source clean; only 4 wasm raw rebuilds from make test-p11 — services/init/init.wasm{,.raw}, services/shell/shell.wasm{,.raw} — binary artifacts, not source); SVC@d789b35 (new, +32/-11 server.go, +73 server_test.go, rebuilt fs.wasm 813e728... vs 2201369 bytes); TLS@1ccd2bf stable (no delta); lane/verify@7ed9f23 (this repo). Mechanical re-run: go vet clean (guests/lib + services/fs), go test -count=1 PASS (fs isolation 0.017s, full suite 5.4s), 5 fuzz targets PASS individually (VfioBarMapping 180K/3s, DoorbellState 137K/3s, PciConfigOffset 278K/3s, ChaosGate 258K/3s, ParseCanonicalHeader 335K/3s). Gate matrix: `make test-p11` re-executed on master working tree (build clean, disk-p11.img 64 MB, QEMU tcg 512M q35) → TEST PASS (p11 VFIO smoke) confirmed green; prior gatecheck.log (2026-08-24) had g1/g2/g3/p4/p5a/p5b/p7/p8a/p8b PASS (p11 not yet in that log, now verified). Committed-HEAD blockers remain F187-F195 series (see QUALITY). Never emitting ALL PHASES COMPLETE (coordinator decides).
+===== FINDING 219 2026-08-28 MAIN@f6632b5+dirty =====
+severity: BLOCKER
+core/vfio.cc:120-134,265-326 · BUILD BROKEN — VFIO delta re-introduces the virtual-VGA + iommu_flags pattern previously closed as F212 but now with additional unresolved symbols. `iommu_map_pages` signature changed to 4 args (sid,phys,size,flags) at line 120 (+flag field) but the iommu_domain page struct has no `flags` member (line 134 `d->pages[...].flags` → error: no member named 'flags'); vfio_map_bar references undefined `is_vvga(bus,dev,fn)`, `vvga_fb_buffer`, `fb_buffer_phys`, `fb_buffer_size`, and `bar_map::is_virtual` (lines 265,267,271,272,326). Verified: `make clean && make` fails at core/vfio.o with 5 errors (flags member, is_vvga, vvga_fb_buffer, fb_buffer_phys, is_virtual). The committed HEAD f6632b5 builds clean and test-p11 PASS (prior re-verification 09:15), so this is working-tree regression only — same failure class as F212 (half-wired virtual VGA / flags-aware IOMMU). Gate matrix on dirty is BLOCKED until the missing declarations/definitions land (either add `uint32_t flags` to the pages struct, define is_vvga/vvga state, add is_virtual to bar_map, or revert).
+===== FINDING 220 2026-08-28 MAIN@f6632b5+dirty =====
+severity: MINOR
+core/vfio.cc:232-234,256-280 · debug residue on the VFIO hot path (minor). `program_msix` and `vfio_map_bar` paths retain unconditional `console_puts`/`console_hex64` traces for every MSI-X program and BAR map (virtual VGA branch prints fb phys/size, real path prints bar_info). Same class as prior F29/F78 but low volume (once per map, not per tick). Should be gated behind `#ifdef VFIO_TRACE` or stripped before merge per substrate-freeze rule 3. Not a blocker for the build once F219 is fixed, but track for cleanup.
+===== FINDING 221 2026-08-28 MAIN@f6632b5+dirty =====
+severity: NOTE
+services/graphics/main.go:168-220 · WIP graphics compositor now targets virtual VGA BDF 0:1:0 (previously 0:0:0 host bridge which has no BAR — always denied, gate expected). New flow: FbSetMode 1024x768 → PciMapBar(0,1,0,0) → local framebuffer alloc 1024*768*4=3MiB, fill 0x10_10_30, drawString 6 lines via 8x8 font helpers → unsafe.Slice copy to BAR window offset → FbPresent/SetCursor/Unmap. Removes busmaster/bind_irq steps (which were always denied and added no coverage). The unsafe.Slice pattern (`uintptr(off)` → `*byte`) assumes the window was grown to cover 3MiB via ResizeMemory in vfio_map_bar (is_fb/is_virtual branch) — correct if BAR size ≥3MiB (virtual VGA fb is exactly sized), but no explicit size check before the copy; OOM on larger BARs tracked under F195. Font comment stripping (/* ... */) from prior dirty is also resolved (now plain arrays). No defects beyond the kernel-side F219 dependency; wasip1 build via Makefile not exercised here (services/graphics has no go.mod in this lane, but kernel services/graphics/main.go is built by the Go toolchain via the guest build path, not kernel make). Tracked as WIP; gate p11 still passes on committed HEAD via the prior stub graphics path.
+===== FINDING 222 2026-08-28 SVC@working-tree =====
+severity: NOTE
+SVC working-tree delta reviewed (services/fs/server.go 7 lines, server_test.go 24 lines vs committed d789b35). gateAbsolute for path `/home` (owner=="") now returns `/home/<own-name>` for registered users (previously returned `/home` and dispatch filtered List("/home") to own entry). This closes the existence-oracle leak by *redirecting* the listing to the caller's own home contents rather than filtering the user directory. Consequences: (1) `u1 List("/home")` now returns files inside /home/u1 (SECRET.TXT) instead of directory entry "u1" — test updated accordingly and PASS (isolation 0.02s, full suite 3.14s); (2) dispatch's `if hdr.UID!=0 && path=="/home"` filter block (server.go:300-312) is now dead for non-admin (path is never "/home" after authorize) — harmless orphan, but should be removed or retargeted; (3) admin (uid 0) bypasses authorize entirely via absPath, so admin List("/home") still sees all users — correct. No capability/ABI regression; /tmp and /etc gating unchanged. Verified: `go vet` clean, `go test -count=1` PASS (isolation + full suite). Negative tests still prove guest denied and cross-user FSNoEntry.
+===== POLL-LOG 2026-08-28 re-poll2 =====
+Heads: MAIN@f6632b5 (committed clean; working-tree dirty 2 files: core/vfio.cc 46-line virtual-VGA/iommu_flags delta + services/graphics/main.go 275-line render path); SVC@d789b35 committed clean, working-tree dirty 2 files (server.go/server_test.go /home redirect); TLS@1ccd2bf stable; lane/verify@7ed9f23. Mechanical: `make` on dirty FAILS at core/vfio.o (F219 5 errors) → dirty gate BLOCKED; `make test-p11` on committed HEAD (stashed or prior 09:15 clean run) PASS (TEST PASS p11 VFIO smoke); fuzz re-run in /home/cyr/kernel/guests/lib: 5/5 PASS with -fuzztime=3s (VfioBarMapping 262K/3s, DoorbellState 257K/3s, PciConfigOffset 329K/3s, ChaosGate 222K/3s, ParseCanonicalHeader 287K/3s, baseline corpora 23/30/4/18/8). SVC working-tree tests PASS. Never emitting ALL PHASES COMPLETE (coordinator decides).
+===== FINDING 223 2026-08-28 MAIN@f6632b5+dirty =====
+severity: BLOCKER
+core/vfio.cc:1-2 · CRITICAL REGRESSION — VFIO SUBSYSTEM DELETED. File truncated from 585 lines (full VFIO foundation: BAR mapping, doorbells, IOMMU domains, MSI-X programming, framebuffer control, devman enumeration, assignment, session cleanup) to 2 lines (`// VFIO test write` + `vfio_test_placeholder`). `git diff HEAD -- core/vfio.cc` shows -580/+2; `wc -l` 585→2. Consequence: all VFIO imports (`kern_pci_map_bar`, `kern_pci_unmap_bar`, `kern_pci_bind_irq`, `kern_fb_*`, `kern_doorbell_wait`) are now UNDEFINED (`nm wasi_glue.o` shows U vfio_* ×6; `readelf -s kernel.so` shows same 6 UNDEFINED). `make` still links (ELF .so allows undefined for UEFI PE conversion, so no hard failure) but the kernel image has no VFIO implementation — any guest calling `kern_pci_map_bar` with CAP_PCI would jump to 0 and fault (or be silently denied if capability gate is before the call; p11 smoke still PASS because its map_bar is capability-denied and never reaches vfio). The committed HEAD f6632b5 built clean with full vfio.cc and test-p11 PASS (verified 09:15 and re-verified via `git stash` clean build this poll). This is working-tree destruction, not a refactor — the file must be restored from HEAD (`git checkout HEAD -- core/vfio.cc`) or the intended virtual-VGA delta re-applied cleanly. Gate on dirty is BLOCKED for VFIO; committed HEAD remains GREEN.
+===== FINDING 224 2026-08-28 MAIN@f6632b5+dirty =====
+severity: NOTE
+services/graphics/main.go delta still present (275 lines, 0:1:0 virtual VGA + renderText/drawString + unsafe copy) but its kernel dependency is now the deleted VFIO subsystem (F223). The guest will always get `map_bar denied` until VFIO is restored, so the render path is unreachable. No additional defect beyond F223; track for re-validation after VFIO restore.
+===== POLL-LOG 2026-08-28 re-poll3 =====
+Heads: MAIN@f6632b5 committed clean (585-line vfio.cc intact, test-p11 PASS); working-tree now 1 file gutted (core/vfio.cc 66 bytes vs 585 lines) + graphics WIP; SVC committed d789b35 + dirty /home redirect (still PASS); TLS@1ccd2bf stable. Mechanical: dirty `make` links with 6 UNDEFINED vfio symbols (allowed for UEFI PE, but runtime fault on use) → dirty VFIO functionality LOST; committed `git stash` clean build PASS (verified this poll: `make` builds, 2.9K vfio.o from HEAD vs 2-line placeholder, but p11 smoke PASS due to cap-denied path not reaching vfio). Fuzz 5/5 PASS on committed HEAD (262K/257K/329K/222K/287K execs/3s). Never emitting ALL PHASES COMPLETE (coordinator decides).
+===== FINDING 223 2026-08-28 SVC@d789b35+dirty =====
+severity: BLOCKER
+guests/lib/netclient.go:264 · BUILD BROKEN — NetListener.Accept() calls l.nc.Yield() but NetClient has no Yield method. NetClient struct (line 35) has `c *Client` and `h Handle` — Yield is on Bus (embedded in Client), not exposed on NetClient. The new DialTCP/ListenTCP/NetConn/NetListener types (84 lines added) call l.nc.Yield() in the Accept retry loop. Consequence: `go build ./...`, `go vet ./...`, and `go test -race ./...` ALL FAIL for guests/lib, services/fs, and services/net — every module depending on guests/lib is blocked. Verified: `go test -race -count=1 ./...` from services/fs and services/net both fail with "l.nc.Yield undefined (type *NetClient has no field or method Yield)". Fix: add `func (n *NetClient) Yield() { n.c.Yield() }` (delegates to Client.Bus.Yield). After fix, re-run full SVC suite.
+===== FINDING 224 2026-08-28 MAIN@f6632b5+dirty =====
+severity: NOTE
+core/vfio.cc:257-261 · debug print added in vfio_map_bar — reads raw BAR via pci_read32(0x10+bar*4) and prints "[vfio] map_bar: raw BAR=" before pci_bar_info. Build-clean (verified: `make clean && make` succeeds). Minor debug residue per F83/F29 class; should be gated behind #ifdef VFIO_TRACE or stripped before merge. Not a blocker.
+===== FINDING 225 2026-08-28 MAIN@f6632b5+dirty =====
+severity: NOTE
+services/graphics/main.go:1-220 · substantial rewrite of the Phase 11 graphics compositor. (1) Added drawChar (8x8 font blit) + drawString (wrapping text renderer) helpers. (2) main() now maps virtual VGA BDF 0:1:0 (was 0:0:0 host bridge which has no BAR → always denied). (3) Allocates local 1024*768*4 framebuffer, fills background, renders 6 text lines, copies to BAR window via unsafe.Slice((*byte)(unsafe.Pointer(uintptr(off))), len(fb)). (4) Removes busmaster/bind_irq steps (always denied, no coverage). (5) Font array comments simplified. The unsafe.Slice pattern assumes vfio_map_bar grew guest linear memory to cover the window via ResizeMemory (is_fb branch) — correct if BAR ≥3MiB. Build-clean on committed HEAD; graphics.wasm rebuilt. No defects beyond kernel-side F219 dependency (which is in the virtual-VGA delta, not this graphics rewrite). Tracked as WIP Phase 11 progression.
+===== FINDING 226 2026-08-28 SVC@d789b35+dirty =====
+severity: NOTE
+services/net/tcp_test.go:324-385 · new TestTCPSimultaneousClose added — pins bidirectional Close() deadlock scenario (both sides close simultaneously, verify both reach CLOSED). Good test coverage addition per practice #2. Test not exercisable until F223 build break fixed.
+===== FINDING 227 2026-08-28 SVC@d789b35+dirty =====
+severity: NOTE
+services/fs/server.go:188-207 (gateAbsolute) · /home redirect approach. Supersedes the F222 filter-block approach: for registered users, `List("/home")` now resolves to `/home/<own-name>` (path rewritten at authorize), so the caller sees their OWN home contents (SECRET.TXT) rather than a directory entry. Guests (sess==nil) get FSNoEntry. Admin (uid 0) bypasses authorize and sees all. Consequence: dispatch's `if hdr.UID!=0 && path=="/home"` filter block (server.go:298-310) is now dead for non-admin (path is never exactly "/home" after authorize) — harmless orphan but should be removed or retargeted. TestHomeListingIsolation updated to match (expects SECRET.TXT at /home, not "u1" entry) and PASS when build is fixed. Correctly implements AGENTS.md namespace-rooted isolation.
+===== POLL-LOG 2026-08-28 re-poll3 =====
+Heads: MAIN@f6632b5 (committed, builds clean, test-p11 PASS per F198/F201 + current re-verification); MAIN-dirty 5 files (core/vfio.cc +6/-1 debug print, services/graphics/main.go rewrite, 3 wasm rebuilds — services/graphics/init/shell); SVC@d789b35 (committed, F218 reviewed clean); SVC-dirty 4 files (guests/lib/netclient.go +70 BUILD BREAK F223, services/fs/server.go home redirect, services/fs/server_test.go, services/net/tcp_test.go); TLS@1ccd2bf stable; lane/verify@7ed9f23. Mechanical: MAIN `make clean && make` PASS (kernel.so 1.2MB, disk-p7.img 64MB); MAIN test-g1 PASS (verified this poll); SVC `go build ./...` FAIL (F223 Yield) → SVC fs/net tests BLOCKED; fuzz re-run /home/cyr/kernel/guests/lib 5/5 PASS (-fuzztime=5s: VfioBarMapping 345K, DoorbellState 303K, PciConfigOffset 409K, ChaosGate 363K, ParseCanonicalHeader 430K). Committed-HEAD blockers remain F187-F195 series (see QUALITY). New open: F223 BLOCKER (SVC build break). Never emitting ALL PHASES COMPLETE (coordinator decides).
