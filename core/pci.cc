@@ -51,6 +51,28 @@ bool pci_is_vfb(uint32_t bus, uint32_t dev, uint32_t fn) {
     return g_vfb.enabled && bus == VFB_BUS && dev == VFB_DEV && fn == VFB_FN;
 }
 
+// Find a real PCI display device (class 0x03) that is NOT the kernel VFB.
+// Returns its framebuffer BAR0 physical address and size via out params.
+// Returns 0 if found, -1 if no real display device present (headless).
+int pci_find_display(uint32_t *out_phys, uint32_t *out_size) {
+    if (!out_phys || !out_size) return -1;
+    struct pci_dev devs[16];
+    int count = 0;
+    if (pci_enumerate(devs, 16, &count) != 0) return -1;
+    for (int i = 0; i < count; i++) {
+        if (devs[i].class_code != 0x03) continue;        // not a display device
+        if (pci_is_vfb(devs[i].bus, devs[i].dev, devs[i].fn)) continue; // skip emulated VFB
+        uint64_t phys, size;
+        bool is_mem;
+        if (pci_bar_info(devs[i].bus, devs[i].dev, devs[i].fn, 0, &phys, &size, &is_mem) == 0 && is_mem) {
+            *out_phys = (uint32_t)phys;
+            *out_size = (uint32_t)size;
+            return 0;
+        }
+    }
+    return -1;
+}
+
 static uint32_t vfb_rd32(uint32_t offset) {
     switch (offset) {
     case 0x00: return VFB_VENDOR | (VFB_DEVICE << 16); // vendor | device

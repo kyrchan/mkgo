@@ -39,6 +39,9 @@ int pci_msix_set_vector(uint32_t bus, uint32_t dev, uint32_t fn, const struct pc
 // Virtual framebuffer (headless VFIO test device). BDF 0:2:0.
 void pci_vfb_init(uint32_t width, uint32_t height);
 bool pci_is_vfb(uint32_t bus, uint32_t dev, uint32_t fn);
+// Find a real PCI display device (class 0x03, not the VFB). Returns its
+// framebuffer BAR0 physical address and size. 0 = found, -1 = headless.
+int pci_find_display(uint32_t *out_phys, uint32_t *out_size);
 
 #ifdef __cplusplus
 }

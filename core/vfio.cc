@@ -4,6 +4,7 @@
 #include "lib.h"
 #include "mm.h"
 #include "plat.h"
+#include "io.h"
 
 extern "C" {
 #include "wasm3.h"
@@ -82,6 +83,12 @@ static bool fb_has_display = false;
 // MSI-X vector allocation (simple bitmap for 32 vectors)
 static uint32_t msi_vector_bitmap = 0;
 
+// Scanout target: real PCI display framebuffer (set if a display device is
+// present), otherwise the kernel-allocated headless buffer.
+static uint32_t scanout_phys = 0;
+static uint32_t scanout_size = 0;
+static bool scanout_enabled = false;
+
 void vfio_init(void) {
     for (auto &m : bar_maps) m.used = false;
     for (auto &d : doorbells) d.used = false;
@@ -91,6 +98,24 @@ void vfio_init(void) {
     msi_vector_bitmap = 0;
     fb_w = 1024; fb_h = 768; fb_bpp = 32;
     fb_has_display = false;
+    // Find a real PCI display device for scanout. If present, the VFB backing
+    // buffer is identity-mapped to the hardware framebuffer so guest renders
+    // reach the display. If absent (headless), fall back to a pool buffer.
+    uint32_t disp_phys = 0, disp_size = 0;
+    if (pci_find_display(&disp_phys, &disp_size) == 0 && disp_size >= (fb_w * fb_h * 4)) {
+        scanout_phys = disp_phys;
+        scanout_size = disp_size;
+        scanout_enabled = true;
+        fb_has_display = true;
+        console_puts("[vfio] scanout: display fb phys=");
+        console_hex64(scanout_phys);
+        console_puts(" size=");
+        console_hex64(scanout_size);
+        console_puts("\n");
+    } else {
+        scanout_enabled = false;
+        console_puts("[vfio] scanout: headless (no display device)\n");
+    }
     pci_vfb_init(1024, 768);
 }
 
@@ -438,16 +463,28 @@ int vfio_fb_set_mode(uint32_t sid, uint32_t w, uint32_t h, uint32_t bpp) {
     if (w == 0 || h == 0 || w > 4096 || h > 4096) return -1;
     fb_w = w; fb_h = h; fb_bpp = bpp;
     fb_has_display = true;
-    console_puts("[vfio] fb_set_mode ");
+    // Program Bochs DISPI for real display hardware (0x01CE index, 0x01CF data).
+    // Only when a real display device is present (scanout_enabled).
+    if (scanout_enabled) {
+        outw(0x01CE, 0x0000); (void)inw(0x01CF); // ID (read to ack)
+        outw(0x01CE, 0x0004); outw(0x01CF, 0x0041); // ENABLE: enable + LFB + clear
+        outw(0x01CE, 0x0001); outw(0x01CF, (uint16_t)w);   // XRES
+        outw(0x01CE, 0x0002); outw(0x01CF, (uint16_t)h);   // YRES
+        outw(0x01CE, 0x0003); outw(0x01CF, (uint16_t)bpp); // BPP
+        outw(0x01CE, 0x0006); outw(0x01CF, (uint16_t)w);   // VIRT_WIDTH
+        outw(0x01CE, 0x0007); outw(0x01CF, (uint16_t)h);   // VIRT_HEIGHT
+        outw(0x01CE, 0x0008); outw(0x01CF, 0);            // X_OFFSET
+        outw(0x01CE, 0x0009); outw(0x01CF, 0);            // Y_OFFSET
+        console_puts("[vfio] fb_set_mode hw ");
+    } else {
+        console_puts("[vfio] fb_set_mode ");
+    }
     console_hex64(w);
     console_puts("x");
     console_hex64(h);
     console_puts(" bpp=");
     console_hex64(bpp);
     console_puts("\n");
-    // Real hardware: program CRTC via Bochs DISPI 0x01CE/0x01CF or via BAR
-    // QEMU stdvga: write to 0x1CE index 0x00/0x01 etc.
-    // For now, store mode; the LFB is accessed via kern_pci_map_bar
     return 0;
 }
 
@@ -460,9 +497,9 @@ int vfio_fb_set_cursor(uint32_t sid, uint32_t x, uint32_t y) {
 // Present/flip: copy a session's framebuffer BAR window to the physical LFB.
 // For wasm guests this is the only way pixels reach hardware — the guest
 // writes into its linear memory at win_off, and we copy to the physical
-// framebuffer address recorded when the BAR was mapped. On real IOMMU
-// hardware this would be zero-copy (guest physical == LFB physical via
-// IOMMU page tables); here we emulate the DMA copy.
+// framebuffer address. When a real PCI display device is present (scanout
+// enabled), pixels go to the hardware framebuffer so QEMU scans them out to
+// a window. Otherwise we copy to the headless pool buffer for test verification.
 // Returns 0 on success, -1 if no FB BAR mapped for this session.
 int vfio_fb_present(uint32_t sid) {
     // Find the framebuffer BAR mapping for this session
@@ -483,13 +520,20 @@ int vfio_fb_present(uint32_t sid) {
                     src = nullptr;
                 }
             }
-            // Destination: physical LFB (identity-mapped)
-            volatile uint8_t *dst = (volatile uint8_t *)(uintptr_t)m.phys;
-            if (src) {
+            // Destination: real hardware framebuffer if a display is present,
+            // otherwise the identity-mapped headless pool buffer.
+            volatile uint8_t *dst = nullptr;
+            if (scanout_enabled && scanout_phys != 0) {
+                if (size > scanout_size) size = scanout_size;
+                dst = (volatile uint8_t *)(uintptr_t)scanout_phys;
+            } else {
+                dst = (volatile uint8_t *)(uintptr_t)m.phys;
+            }
+            if (src && dst) {
                 for (uint64_t i = 0; i < size; i++)
                     dst[i] = src[i];
-            } else {
-                // No guest memory access; just clear the LFB
+            } else if (dst) {
+                // No guest memory access; just clear the target
                 for (uint64_t i = 0; i < size; i++)
                     dst[i] = 0;
             }
