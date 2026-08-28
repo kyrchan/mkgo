@@ -51,10 +51,12 @@ extern "C" EFI_STATUS __attribute__((ms_abi)) efi_main(EFI_HANDLE image_handle,
     static CHAR16 pconf[] = {'i','n','i','t','.','c','o','n','f',0};
     static CHAR16 papp2[] = {'v','m','\\','a','p','p','2',0};
     static CHAR16 pgate[] = {'v','m','\\','g','a','t','e',0};
+    static CHAR16 pdef[] = {'v','m','\\','a','p','p',0};
     void *cimg = 0, *limg = 0, *fimg = 0, *a2img = 0, *iimg = 0, *shimg = 0,
          *cfimg = 0, *nimg = 0, *p9img = 0, *gateimg = 0, *gimg = 0;
     uint64_t clen = 0, llen = 0, flen = 0, a2len = 0, ilen = 0, shlen = 0,
              cflen = 0, nlen = 0, p9len = 0, gatelen = 0, glen = 0;
+    load_esp_file(image_handle, systab, pdef, &prog, &prog_len);
     load_esp_file(image_handle, systab, pcon, &cimg, &clen);
     load_esp_file(image_handle, systab, plog, &limg, &llen);
     load_esp_file(image_handle, systab, pfs, &fimg, &flen);
