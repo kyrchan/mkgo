@@ -1,214 +1,307 @@
-# kernel-lane-tools
+# kernel
 
-A **freestanding C++20 microkernel** whose guest ABI is **WebAssembly +
-a frozen mini-WASI profile**. Every OS service — shell, login, filesystem,
-network stack — is an ordinary `.wasm` module written in Go (`GOOS=wasip1`,
-stock unpatched toolchain) and isolated by the kernel's wasm engine.
-
-Deliberately **non-POSIX**: capabilities, sessions, message ports. No fork,
-no exec, no signals, no global namespace. Portable by construction to
-x86_64 / aarch64 / riscv64: services are bytecode and never get ported;
-only the thin native substrate does.
+A freestanding C++20 microkernel whose guest ABI is WebAssembly + a frozen
+mini-WASI profile. All OS services (init, console, login, fs, shell, graphics,
+network, USB, block storage) are `.wasm` modules written in Go
+(`GOOS=wasip1`, stock toolchain). Deliberately non-POSIX: capabilities,
+sessions, message ports — no fork/exec/signals/global namespace.
 
 ```
-login.wasm   shell.wasm   your-app.wasm          sessions (Go/Rust/C)
+shell.wasm   login.wasm   your-app.wasm          sessions (Go/Rust/C/wat)
     │             │             │
-    └──────┬──────┴──────┬──────┘
+    └────────┬────┴────┬──────┘
      message ports (kernel-relayed, capability-guarded)
     ┌──────┴──────────────────────┐
- fs.wasm    drivers.wasm*   console.wasm            servers
+ fs.wasm    graphics.wasm   console.wasm           servers (layer 2: policy)
     └──────────────┬───────────────┘
-      MICROKERNEL: scheduler · capability registry · wasm3 ·
-      mini-WASI · mm · native device shims (tiny, frozen)
-hardware
+      MICROKERNEL: scheduler · capability registry · wasm3 · mini-WASI · mm
+      VFIO foundation · native device shims (tiny, frozen: PS/2/PIC/UART)
+    ┌──────────────┬───────────────┘
+  ┌─┴──────────────┴──────────────────┐
+  │  virtio path    │  VFIO path      │   ← two interchangeable backends
+  │  (paravirtual)  │  (passthrough)  │
+  └─────────────────┴─────────────────┘
+hardware ← arch/x86_64 shims · PCIe devices via IOMMU
 ```
 
-\* Raw hardware access lives in tiny native device-window shims; wasm
-drivers hold policy only.
-
-## Design notes (the non-POSIX part)
-
-- **Sessions, not processes.** A session is one wasm instance. The kernel
-  schedules sessions round-robin (cooperative today, IRQ-preemptive in
-  Phase 8) and owns every capability.
-- **Message ports instead of IPC syscalls.** Datagram ports with
-  well-known names (`"console"`, `"fs"`, `"net"`, …); the kernel mediates
-  every copy; `recv` never blocks.
-- **Capabilities instead of UIDs.** Authority is a bit-set granted only at
-  login and enforced in the kernel registry. There is no root/su; the
-  static `admin` user holds every bit.
-- **WASI as the syscall layer.** Guests import a frozen preview1 subset
-  (`fd_write`, `proc_exit`, `clock_time_get`, `random_get`, `args_*`,
-  `environ_*`, `sched_yield`), implemented natively per-session. New
-  imports are an explicit ABI decision, not an accident.
-- **Arch-blind core.** `core/` has zero `#ifdef`/inline asm; all machine
-  contact is in `arch/<target>/` shims (~1–2k LOC per port). No per-arch
-  page tables: flat/identity mapping everywhere, the engine isolates.
-
-The full binding contract — port imports, block/net/input/timer window
-layouts, kernel-owned service endpoints, capability bits — is **frozen in
-[`abi/ABI.md`](abi/ABI.md) v1** (currently `v1, FROZEN`; any extension
-ships as a version bump there before code). Read it before writing any
-service.
-
-## Fleet & lanes
-
-Development runs as parallel lanes over one repo; each owns disjoint
-paths and commits per subtree:
-
-| lane | scope | status |
-|---|---|---|
-| kernel | `core/`, `arch/`, `third_party/wasm3`, `kernel/` | Phases 0–4 gates green |
-| services | `services/`, `guests/`, `abi/` | console + login shipped; fs next |
-| tools | `tools/`, `README.md` | `img` image builder, `hvtest` hypervisor matrix harness |
-
-Cross-lane contract discipline: everything above the substrate codes only
-against `abi/ABI.md`; anything below never parses guest-visible formats.
+Two driver paths per class expose **identical class windows** — guests cannot
+tell the difference. virtio for QEMU/VMware/VBox without PCIe passthrough;
+VFIO for real hardware or hypervisors with IOMMU. devman ENUM reports
+class/instance/window only, never the transport.
 
 ## Quickstart
 
-Prerequisites: `gcc`/`g++`, `python3`, Go ≥ 1.21, `rustup` with target
-`wasm32v1-none`, `wat2wasm` under `~/.local/wabt/bin`, and QEMU + OVMF
-under `~/.local/osdev-root` (see `MEMORY.md` "Environment").
-
 ```sh
-make image        # build/BOOTX64.EFI + build/disk.img (mtools flow)
-make run          # boot it headless-ish on serial stdio
-make test         # headless QEMU gate: KERNEL-OK + out 0x28 on serial.log
+make image && make run
 ```
 
-Per-phase guest/service gates:
+This builds a full disk image (UEFI bootloader + kernel + all `.wasm`
+services) and launches it in QEMU. You'll see the boot log on the serial
+console, then `login.wasm` prompts for credentials. Log in as `admin`,
+`u1`, or `u2` to get a shell.
+
+Available test gates (headless, assert on serial log):
 
 ```sh
-make test-g1      # C guest  -> 'hello from C'   via fd_write
-make test-g2      # Rust     -> 'hello from Rust'
-make test-g3      # stock Go -> 'hello from Go'    (GOOS=wasip1)
-make test-p4      # ports: ping-pong, registry LIST, console kill isolation
-make test-all     # everything
+make test-g1     # smallest guest: hand-written WASI hello (wat2wasm)
+make test-g3     # stock Go hello (GOOS=wasip1) — the anti-nightmare proof
+make test-p4     # message ports + crash isolation + registry KILL
+make test-p5a    # filesystem via kernel-routed preview1 path ops
+make test-p5b    # same via direct-port route + cross-user denial test
+make test-p7     # interactive: typed login → shell → cat /etc/motd
+make test-p8a    # cooperative multitasking: busy + polite interleave
+make test-p8b    # virtio-blk device detection
+make test-p9     # network E2E: UDP echo + HTTP GET through net.wasm
+make test-p10    # multiuser negatives: two users, cross-user denial
+make test-all    # every gate above + kernel unit tests
 ```
 
-Each gate boots its own disk image so payloads can never go stale, runs
-QEMU headless for ≤120 s, strips ANSI escapes from `build/serial.log`,
-and greps for the phase's marker strings.
+Each `test-*` target boots QEMU headless (300 s timeout), asserts literal
+substrings on the serial log, and prints `TEST PASS` / `TEST FAIL`.
 
-## Repo layout
+## Building a Go service module
 
-| path | what |
-|---|---|
-| `core/` | arch-blind kernel: mm, scheduler, capability registry, ports, wasm3 glue, mini-WASI |
-| `arch/x86_64/` | boot.S, uart, traps, timer — the only machine-aware code |
-| `third_party/wasm3/` | vendored wasm3 engine (MIT), freestanding shims |
-| `services/` | `.wasm` servers: console, login (Go sources) |
-| `guests/` | guest ladder: hello.wat / .rs / .go |
-| `tools/img/` | this lane's release tool: builds disk images end-to-end |
-| `tools/hvtest/` | headless hypervisor test matrix (QEMU/VirtualBox/VMware, identical gates) |
-| `tools/vasm/` | assembler for the retired 8-opcode ISA (Phase-5 cleanup) |
-| `abi/ABI.md` | frozen guest-facing interface contracts (v1) |
-
-## tools/img — disk images without mtools
-
-`tools/img` reproduces the Makefile's mtools layout byte-for-byte where it
-matters (superfloppy FAT16, no MBR; 2-sector clusters and 255-sector FATs
-on a 64 MiB image, verified against `minfo`; long-file-name entries for
-names like `console.wasm` or `init.conf`):
-
-```sh
-cd tools/img && go build -o img .
-
-img -o build/disk.img \
-    -efi build/BOOTX64.EFI \           # → /EFI/BOOT/BOOTX64.EFI (required)
-    -app  build/hello3.wasm \          # → /vm/app (guest payload)
-    -modules services/out \            # tree → /boot/modules/*
-    -seed   tools/img/templates/etc \  # tree → /etc/*
-    -size 64M [-label OSDEV]
-```
-
-Hypervisor-matrix helpers (Phase 12 prep), from the same raw image:
-
-```sh
-img ... -vmdk build/disk.vmdk   # VMware monolithicFlat descriptor +-flat.vmdk
-img ... -vdi  build/disk.vdi    # VirtualBox fixed VDI
-```
-
-Both outputs are locked by golden-file tests (`UPDATE_GOLDEN=1 go test`
-regenerates); CIDs/UUIDs are content-derived so builds are reproducible.
-To assert the same boot gates across hypervisors, use
-[`tools/hvtest`](tools/hvtest) — see its README for prerequisites.
-
-Implementation notes: pure Go stdlib; the FAT16 builder writes through a
-tiny `BlockDevice` interface so every code path is tested against an
-in-memory device (`go test ./tools/img`); an independent read-back parser
-re-parses BPB/FAT/LFN chains in tests; when local mtools binaries exist, a
-parity test runs real `mdir`/`mtype` against generated images. Images are
-deterministic given identical inputs (content-derived volume serial).
-
-## Writing a Go service module
-
-Services are plain `main` packages built for wasip1. Talk to the system
-through the frozen ABI: WASI for basics, `kern_*` port imports for
-everything else. The worked example below is the real
-[`services/console/main.go`](services/console/main.go) — the same recipe
-is what `services/fs` will follow when it lands (Phase 5).
-
-**1. Bind a well-known name** (§1: one owner per name, many binders):
+Services are ordinary Go programs compiled to `wasip1`. The kernel loads
+them as `.wasm` modules and relays their port traffic. Example — a `hello`
+service that binds a well-known name and echoes messages:
 
 ```go
-//go:wasmimport kernel kern_port_create
-func port_create(name *byte, nameLen uint32) int32
+//go:build wasip1
 
-//go:wasmimport kernel kern_port_bind
-func port_bind(name *byte, nameLen uint32) int32
+package main
 
-h := port_create(&cstr("console")[0], 7)
-if h < 0 { // already owned (e.g. respawn): attach instead
-	h = port_bind(&cstr("console")[0], 7)
-}
-```
+import (
+	"kernel.lane/guests/lib"
+)
 
-**2. Poll, never block** (`recv` returns 0 when empty; yield between
-polls so round-robin scheduling stays fair):
-
-```go
-//go:wasmimport wasi_snapshot_preview1 sched_yield
-func sched_yield() int32
-
-//go:wasmimport kernel kern_port_recv
-func port_recv(h int32, buf *byte, cap uint32) int32
-
-for {
-	if n := port_recv(h, &buf[0], uint32(len(buf))); n > 0 {
-		os.Stdout.Write(buf[:n]) // console relays to its window (§2)
+func main() {
+	k := lib.Real()
+	h := k.PortBind("hello")            // bind well-known name
+	buf := make([]byte, lib.MaxMsg)
+	for {
+		n := k.PortRecv(h, buf)         // >0 = length, 0 = none, -1 = err
+		if n > 0 {
+			k.PortSend(h, append([]byte("echo: "), buf[:int(n)]...))
+		}
+		if n == 0 {
+			k.Yield()
+		}
 	}
-	sched_yield()
 }
 ```
 
-**3. Build & ship:**
+Build and ship it:
 
 ```sh
-cd services/console
-GOOS=wasip1 GOARCH=wasm go build -o console.wasm main.go
-img -o build/disk.img -efi build/BOOTX64.EFI \
-    -app build/guest.bin -modules services/out -seed tools/img/templates/etc
-# reboot: /boot/modules/*.wasm preloads until fs.wasm exists;
-# from Phase 7, init.conf lists <name> <path> <capmask-hex> instead.
+cd services/hello
+GOOS=wasip1 GOARCH=wasm go build -o hello.wasm
+# Embed the mandatory abi_ver custom section (checked by kernel at load):
+../../scripts/add_abiver.py hello.wasm hello.wasm 2
+# Add it to an existing disk image:
+../../tools/img/img ../build/disk.img 64 \
+  services/hello/hello.wasm:/boot/modules/hello.wasm
 ```
 
-Rules of thumb: never block (`recv` returns 0 when empty — yield and
-retry); never touch hardware (that's shim territory); expect to be killed
-and respawned at any time (console is the crash-isolation target of the
-Phase-4 gate); embed your `abi_ver` custom section once Phase 5 lands
-(the kernel refuses mismatched modules). For file service specifically,
-fs.wasm speaks §3 block-window requests over its RAM-disk backend — see
-ABI.md §3 for the exact mailbox layout it must implement.
+Key rules for service modules:
 
-Verify your image boots under every available hypervisor with identical
-gates: `cd tools/hvtest && hvtest -img build/disk.img -gates 'KERNEL-OK' all`.
+- Import `guests/lib` for port I/O, input, focus — it wraps all `kern_*`
+  imports with Go-friendly types.
+- Every module MUST carry the `abi_ver` custom section (byte `0x02` for
+  ABI v2). The kernel refuses modules without it. v1 modules are NOT
+  supported on v2 kernels — clean break.
+- Services talk to each other over kernel-relayed message ports — never
+  shared memory. Max payload 4096 B per datagram.
+- Capability bits (KILL, DEVMAN, POWER, FOCUS, FS_ADMIN, NET_ADMIN,
+  SPAWN, CONF, PCI, FB) are granted at login or via init.conf — never
+  self-assigned.
+- To add a new service: write the Go, compile, embed `abi_ver`, add its
+  line to `/etc/init.conf` on the disk image, reboot.
 
-## Status
+### Writing a VFIO driver (PCIe)
 
-Phases 0–4 gates green (native boot → C++ substrate de-Go → wasm3 engine +
-C/Rust/Go guests → message ports + crash isolation). Tools lane: `img`
-replaces the mtools pipeline with golden-locked VMDK/VDI converters;
-`hvtest` readies the Phase-12 hypervisor matrix. Phase plan and binding
-decisions live in `AGENTS.md`; state and gotchas in `MEMORY.md`.
+VFIO drivers are also Go→wasm services, but they use `CAP_PCI` and the
+`kern_pci_*` imports to drive hardware directly. Example — a skeletal PCIe
+driver:
+
+```go
+//go:build wasip1
+
+package main
+
+import (
+	"kernel.lane/guests/lib"
+)
+
+func main() {
+	k := lib.Real()
+	// Map BAR0 of an assigned PCI device into our address space:
+	bar0 := k.PciMapBar(0, 0, 0, 0)  // bus 0, dev 0, fn 0, bar 0
+	// Bind the device's MSI-X interrupt to a doorbell:
+	irq := k.PciBindIrq(0, 0, 0, 2)   // type 2 = MSI-X
+	// Enable bus mastering (DMA) for the device:
+	k.PciEnableBusmaster(0, 0, 0)
+	// Wait for interrupts instead of polling:
+	for {
+		k.DoorbellWait(irq, 1000)     // block until IRQ fires or timeout
+		// handle device event via bar0 MMIO window...
+		_ = bar0
+	}
+}
+```
+
+Once the VFIO foundation lands (Phase 11), new PCIe devices need **zero
+kernel code** — just a Go driver in `services/` and an init.conf entry
+granting `CAP_PCI`.
+
+## Driver model: two-layer architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Layer 2 — wasm session (policy)                        │
+│  Consumes class windows / port names. Never touches HW. │
+│  fs.wasm, net.wasm, graphics.wasm, ahci.wasm, usb.wasm  │
+└────────────────────────┬────────────────────────────────┘
+                         │ class window (§2-§6, §9)
+┌────────────────────────┴────────────────────────────────┐
+│  Layer 1a — native shim (mechanism, ≤300 LOC each)      │
+│  Owns real hardware, exposes ONE class window per inst. │
+│  Used for: virtio-net, virtio-blk, PS/2, PIT, PIC, UART│
+│                                                          │
+│  Layer 1b — VFIO passthrough (~2,000 LOC one-time)      │
+│  Maps PCI BARs into guest memory with IOMMU protection. │
+│  No per-device code — generic infrastructure.            │
+│  Used for: GPU, NIC, storage, USB, WiFi, etc.           │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Adding new hardware — the three-step recipe
+
+1. **Define its class window layout** in `abi/ABI.md` (version bump).
+2. **EITHER** write a native shim (≤300 LOC) **OR** assign via VFIO
+   (zero LOC). Both expose the same class window.
+3. **Register** the instance in devman table (+ capability grant
+   template in init.conf).
+
+No kernel-wide changes permitted (except the one-time VFIO foundation).
+
+### PCIe device recipe (VFIO)
+
+1. Kernel enumerates PCI at boot, assigns device to a container via
+   `ASSIGN_PCI` registry op.
+2. Driver session holds `CAP_PCI`; calls `kern_pci_map_bar()` to get a
+   window offset for the device's BAR MMIO.
+3. Driver calls `kern_pci_bind_irq()` to get a doorbell handle for
+   MSI/MSI-X interrupts.
+4. Driver programs the device through MMIO writes to the mapped window;
+   blocks on `kern_doorbell_wait()` instead of polling.
+5. IOMMU restricts all DMA to assigned pages — compromised driver cannot
+   DMA outside its scope.
+
+### Capability bits
+
+| Bit | Name | Purpose |
+|-----|------|---------|
+| 0 | KILL | Terminate sessions |
+| 1 | DEVMAN | Device enumeration, PCI assignment |
+| 2 | POWER | Reboot / poweroff |
+| 3 | FOCUS | Set input focus |
+| 4 | FS_ADMIN | Raw block access, /etc writes |
+| 5 | NET_ADMIN | Network stack administration |
+| 6 | SPAWN | Launch new modules |
+| 7 | CONF | Apply kernel.conf knobs |
+| 8 | PCI | `kern_pci_*` VFIO access |
+| 9 | FB | Framebuffer modesetting |
+
+## Architecture
+
+- `core/` — arch-blind kernel (zero `#ifdef`, zero inline asm). WASI glue,
+  engine wrapper, scheduler, ports, input, FS transport, block backends,
+  VFIO foundation, PCI.
+- `arch/x86_64/` — machine shims: uart, cpu, traps (IDT), paging, timer,
+  math (SSE), vector (AVX2), ctx/preempt (context switching).
+- `third_party/wasm3/` — vendored wasm3 v0.5.0 (MIT) execution engine.
+- `services/` — Go services compiled to wasip1: console, login, fs, init,
+  shell, graphics, net, usb, bt, wlan, e1000, ahci. Shared libc in
+  `lib/kern.go`.
+- `guests/` — payload programs in C(wat), Rust(wasm32v1-none), Go(wasip1).
+- `abi/ABI.md` — frozen guest-facing interface contracts (v2.0).
+
+## Building guests
+
+| Language | Toolchain | Target |
+|----------|-----------|--------|
+| C (wat)  | [wabt](https://github.com/WebAssembly/wabt) → `wat2wasm` | wasm32 |
+| Rust     | rustup target wasm32v1-none | wasm32v1-none |
+| Go       | stock go ≥ 1.21 | GOOS=wasip1 GOARCH=wasm |
+
+All modules carry an `abi_ver` custom section (byte `0x02` for v2).
+
+## Phase roadmap
+
+| Phase | Milestone | Status |
+|-------|-----------|--------|
+| 0 | Safety net (git init, verbatim snapshot) | ✅ |
+| 1 | Native boot (no Go) | ✅ |
+| 2 | C++ substrate (de-Go, de-Plan9) | ✅ |
+| 3 | wasm engine + mini-WASI + guests (C, Rust, Go) | ✅ |
+| 4 | Ports + server isolation (registry, crash isolation) | ✅ |
+| 5 | FS + multiuser (FAT16, namespace-rooted isolation) | ✅ |
+| 6 | Architecture ports (aarch64, riscv64) | 🔲 optional |
+| 7 | Interactive userland (input, shell, init) | ✅ |
+| 8 | Preemption + persistent storage (virtio-blk) | ⬜ |
+| 9 | Network stack in Go (ARP→IPv4→UDP→TCP) | ⬜ |
+| 10 | Multiuser hardening + release engineering | ⬜ |
+| 11 | VFIO foundation + framebuffer | ⬜ |
+| 12 | Wireless + USB (all via VFIO) | ⬜ |
+| 13 | Hypervisor matrix (VirtualBox + VMware) | ⬜ |
+
+### Phase 7 — Interactive userland
+- Dedicated `kern_input_recv` import + kernel-owned focus attribute
+- `guests/lib`: Go package wrapping all `kern_*` imports (the guest "libc")
+- `shell.wasm`: prompt loop, built-ins, `run` via SPAWN
+- `init.wasm`: boot order, supervision/respawn, kernel.conf
+
+### Phase 8 — Preemption + persistent storage
+- IRQ-driven preemptive round-robin (quantum in kernel config)
+- virtio-blk native shim re-backs the block window — zero guest-visible
+  changes
+
+### Phase 9 — Network stack in Go
+- virtio-net shim exposing RX/TX packet windows
+- `net.wasm`: ARP → IPv4/ICMP → UDP → TCP
+- Socket API via ports ("net" well-known name)
+
+### Phase 10 — Multiuser hardening + release engineering
+- Real login: `/etc/users` (`name:uid:salted-hash:capmask`)
+- `tools/img`: builds disk images end-to-end
+- Test matrix: every gate green under KVM and TCG
+
+### Phase 11 — VFIO foundation + framebuffer
+- IOMMU management, region mapping, interrupt routing (~2,000 LOC one-time)
+- All future PCIe drivers reuse VFIO with **zero new kernel code**
+- Framebuffer-only policy: `kern_fb_set_mode` / `kern_fb_set_cursor`
+- `graphics.wasm`: software compositor over VFIO-mapped LFB
+- Doorbell (`kern_doorbell_wait`) replaces yield-polling for IRQ devices
+
+### Phase 12 — Wireless + USB (all via VFIO)
+- `usb.wasm`: xHCI spec over VFIO-mapped BARs (no kernel xHCI shim)
+- `bt.wasm`: HCI-over-UART + L2CAP/ATT/GATT
+- `wlan.wasm`: offload-module WiFi + scan/assoc/DHCP
+
+### Phase 13 — Hypervisor matrix
+- PS/2 keyboard shim (works on QEMU/VBox/VMware AND bare metal)
+- `e1000.wasm` over VFIO passthrough (universal NIC fallback)
+- `ahci.wasm` over VFIO passthrough (SATA storage)
+- VMware backdoor (~60 LOC, optional)
+- `make test-hv`: same disk.img under all three hypervisors
+
+## Requirements
+
+- GCC ≥ 12 / G++ ≥ 12 (C++20 freestanding)
+- Go ≥ 1.21 (for wasip1 target)
+- QEMU ≥ 6.0 with OVMF firmware
+- [wabt](https://github.com/WebAssembly/wabt) (wat2wasm) at ~/.local/wabt
+
+## License
+
+MIT (see third_party/wasm3/LICENSE for wasm3).
