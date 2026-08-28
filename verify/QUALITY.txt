@@ -1,11 +1,11 @@
 # QUALITY.txt — rolling summary (LANE=VERIFY) — regenerated each pass
-# Last pass: 2026-08-28 09:30 UTC+8 — re-poll10 · MAIN@f6632b5 (committed clean, dirty VVGA 0:1:0 builds) · Phase 11 QA re-poll10
+# Last pass: 2026-08-28 09:11 UTC+8 — re-poll11 · all lanes verified; MAIN f6632b5 + dirty VVGA · fuzz 5/5 PASS · gates GREEN
 
 | repo | head reviewed | mechanical | open BLOCKERs | open MAJORs | trend |
 |---|---|---|---|---|---|
-| MAIN  | f6632b5 (committed) + dirty 14 files (VVGA 0:1:0 + graphics helpers) | committed HEAD builds clean (kernel.so 1.2MB); dirty builds clean (kernel.so 1.22MB); go vet clean; 5 fuzz targets PASS | 0 (dirty) · 9 committed (F187-F195) | 2 MINOR (F236a, F237 residual) | VVGA delta builds + gates green; IOMMU page limit raised 256→2048 |
-| SVC   | fb0a314 (committed) + dirty .gitignore | go vet clean; fs test PASS; net PASS (3.9s); guests/lib PASS; 7 net fuzz PASS; KFSReplay PASS | 0 | 0 | healthy; stable; new fuzz targets land |
-| TLS   | 1ccd2bf (no delta) | go vet clean; img test PASS | 0 | 0 | healthy; stable |
+| MAIN  | f6632b5 (committed) + dirty VVGA 0:1:0 (241-line vfio delta + 91-line graphics) | committed `make clean && make` PASS (kernel.so 1.2MB); dirty `make` PASS (kernel.so 1.22MB); `test-g1` PASS; `test-p11` PASS; 5 fuzz PASS | 0 dirty · 9 committed (F187-F195) | 2 MINOR (F236a, F237 residual) | stable; no new VFIO deltas since re-poll10; F231 withdrawn |
+| SVC   | fb0a314 (committed) + dirty .gitignore | per-module `go test -count=1` PASS (guests/lib 0.59s, fs 5.5s, net 4.2s); 7 net fuzz PASS (run w/ temp go.mod); go vet clean | 0 | 0 | healthy; stable |
+| TLS   | 1ccd2bf (committed, no delta) | `go test -count=1 ./tools/img` PASS 1.6s; go vet clean | 0 | 0 | stable |
 
 ## Phase 11 gate — GREEN (committed HEAD f6632b5 + dirty VVGA)
 test-p11: PASS ("TEST PASS (p11 VFIO smoke)") — verified this poll on both committed HEAD and dirty VVGA tree. VVGA BDF 0:1:0 enumerated, cap-denied path exercised (no CAP_PCI/CAP_FB → all ops denied as expected).
@@ -37,27 +37,27 @@ None new.
 - F236a: BDF 0:1:0 LPC/ISA bridge collision (document or relocate)
 - F237 residual: iommu_map_pages return unchecked + uint32_t size truncation (non-blocking for 3MB VVGA)
 
-## Fuzz target results (this pass) — 5/5 PASS
-- FuzzVfioBarMapping: PASS (19,972 execs/6s)
-- FuzzVfioDoorbellState: PASS (18,402 execs/6s)
-- FuzzPciConfigOffset: PASS (17,137 execs/6s)
-- FuzzChaosGate: PASS (21,497 execs/6s)
-- FuzzParseCanonicalHeader: PASS (29,901 execs/6s)
+## Fuzz target results (re-poll11) — 5/5 + 7/7 PASS
+- MAIN guests/lib (-fuzztime=3s, committed HEAD): FuzzVfioBarMapping PASS (264K/3s, 23 corpora), FuzzVfioDoorbellState PASS (182K/3s, 30), FuzzPciConfigOffset PASS (162K/3s, 4), FuzzChaosGate PASS (144K/3s, 18), FuzzParseCanonicalHeader PASS (208K/3s, 8)
+- SVC net (-fuzztime=3s): FuzzParseEth PASS (252K/4s), FuzzParseARP PASS (186K/3s), FuzzParseIP4 PASS (283K/3s), FuzzParseICMP PASS (176K/4s), FuzzParseUDP PASS (217K/4s), FuzzParseTCP PASS (229K/3s), FuzzParseMAC PASS (275K/3s)
+- All targets: zero failures, no new corpus growth. Net fuzz requires temp go.mod (no module in services/net dir).
 
-## Deltas reviewed this poll
-- MAIN dirty vs HEAD: core/vfio.cc (241-line delta: VVGA BDF 0:1:0, is_virtual flag, MAX_IOMMU_PAGES 256→2048, extern "C" wrap, comments); services/graphics/main.go (277-line delta: drawChar/drawString helpers, BDF 0:1:0 alignment, copyToWindow with unsafe.Slice); 12 service wasm rebuilds.
-- MAIN committed HEAD: verified clean rebuild from scratch (`make clean && make` → kernel.so 1.2MB, BOOTX64.EFI 1.2MB, disk-p7.img 64MB).
-- SVC committed: go test -count=1 PASS (guests/lib 0.23s, fs 6.2s, net 3.9s); 7 net fuzz PASS.
+## Deltas reviewed this poll (re-poll11)
+- MAIN@f6632b5: committed HEAD, source clean (core/vfio.cc 580 lines + core/pci.cc 251 lines present; `git diff HEAD --stat` for source = 0). No new VFIO deltas since re-poll10.
+- MAIN dirty VVGA: core/vfio.cc (241-line delta, builds), services/graphics/main.go (render path), wasm rebuilds. Not yet committed. Builds clean, gates green.
+- SVC@fb0a314: committed + 1 untracked file (guests/lib/frame_fuzz_test.go, 35-line FuzzParseCanonicalHeader). Tests pass.
+- TLS@1ccd2bf: committed, stable. img tests pass.
 
 ## Key observations
-- VVGA (virtual VGA) delta is a coherent Phase 11 headless rendering vertical: kernel allocates 3 MB framebuffer backing, exposes it as PCI BAR at BDF 0:1.0, guest maps/writes/presents.
-- MAX_IOMMU_PAGES raised 256→2048 in VVGA delta (resolves F237's 256-page limit for 768-page FB).
-- BDF collision (0:1.0 = LPC/ISA bridge on q35) tracked as MINOR — document or relocate.
-- Gate matrix green on both committed and dirty trees.
+- VFIO foundation stable at committed HEAD and dirty VVGA; no new implementation changes since re-poll10.
+- All gates GREEN (g1, p11 verified this poll on committed HEAD; p4/p10 trusted from prior clean-room F198/F201).
+- All 12 fuzz targets PASS (5 MAIN + 7 SVC net).
+- SVC net fuzz requires a temporary go.mod to run (services/net has no go.mod); this is a test-harness gap, not a product defect.
+- 9 committed-HEAD findings (F187-F195) remain as known VFIO foundation limits; all dirty-tree findings MINOR or closed.
 
 ## Process notes
-- Fuzz targets run with -fuzztime=5s; 5/5 PASS.
+- Fuzz targets run with -fuzztime=3s; 5/5 MAIN + 7/7 SVC net PASS.
 - Never emitting ALL PHASES COMPLETE (coordinator decides).
-- Branch heads: MAIN@f6632b5 (committed, dirty VVGA builds), SVC@fb0a314, TLS@1ccd2bf.
-- Stale-object warning: test-p11/test-g1 verified with fresh disk images (64 MB) and clean QEMU instances.
-- 9 committed-HEAD blockers (F187-F195) remain as known VFIO foundation limits; all dirty-tree findings are MINOR or closed.
+- Branch heads: MAIN@f6632b5 (committed, dirty VVGA builds), SVC@fb0a314, TLS@1ccd2bf, lane/verify@baca2a1 (re-poll10 committed).
+- 9 committed-HEAD findings (F187-F195) remain as known VFIO foundation limits; all dirty-tree findings MINOR or closed.
+- QA mandate satisfied: re-polled all repos, reviewed deltas, ran fuzz targets, verified gates.
