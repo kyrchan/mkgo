@@ -137,7 +137,7 @@ func drawChar(fb []byte, fbW, fbH, px, py uint32, ch byte, color uint32) {
 	}
 }
 
-func drawString(fb []byte, fbW, fbH, px, py uint32, s string, color uint32) {
+func drawString(fb []byte, fbW, fbH, px, py uint32, s string, color uint32) uint32 {
 	cx := px
 	for i := 0; i < len(s); i++ {
 		if s[i] == '\n' {
@@ -152,6 +152,7 @@ func drawString(fb []byte, fbW, fbH, px, py uint32, s string, color uint32) {
 			py += fontH + 1
 		}
 	}
+	return py
 }
 
 func ptrAt(off int64, n int) []byte {
@@ -180,6 +181,8 @@ func main() {
 	}
 	fmt.Printf("graphics: map_bar ok off=0x%x\n", off)
 
+	motd := readMotd(k)
+
 	fb := make([]byte, 1024*768*4)
 	for i := 0; i < len(fb); i += 4 {
 		fb[i] = 0x10
@@ -187,13 +190,14 @@ func main() {
 		fb[i+2] = 0x30
 		fb[i+3] = 0xFF
 	}
-	drawString(fb, 1024, 768, 16, 16, "Phase 11: VFIO Foundation", 0xFFFFFF)
-	drawString(fb, 1024, 768, 16, 32, "Graphics rendering via wasm!", 0x00FF00)
-	drawString(fb, 1024, 768, 16, 48, "IOMMU-protected BAR mapping.", 0xFFCC00)
-	drawString(fb, 1024, 768, 16, 64, "Zero-copy framebuffer present.", 0xCCFFCC)
-	drawString(fb, 1024, 768, 16, 96, "The capability microkernel.", 0xFFFFFF)
-	drawString(fb, 1024, 768, 16, 112, "gfx.wasm rendering to LFB.", 0x88CCFF)
-	fmt.Println("graphics: rendered text to LFB window")
+	drawString(fb, 1024, 768, 16, 16, "Phase 11: VFIO Graphics", 0xFFFFFF)
+	py := drawString(fb, 1024, 768, 16, 40, "--- /etc/motd ---", 0x00FF00)
+	if len(motd) > 0 {
+		drawString(fb, 1024, 768, 16, py+16, motd, 0xCCFFCC)
+	} else {
+		drawString(fb, 1024, 768, 16, py+16, "(no motd)", 0xFFCC00)
+	}
+	fmt.Println("graphics: rendered motd to LFB window")
 
 	window := ptrAt(off, len(fb))
 	copy(window, fb)
@@ -205,23 +209,21 @@ func main() {
 		fmt.Println("graphics: fb_present ok")
 	}
 
-	csRet := k.FbSetCursor(100, 100)
-	if csRet < 0 {
-		fmt.Println("graphics: fb_set_cursor denied")
-	} else {
-		fmt.Println("graphics: fb_set_cursor ok")
-	}
-
-	unmapRet := k.PciUnmapBar(0, 1, 0, 0)
-	if unmapRet < 0 {
-		unmapRet = k.PciUnmapBar(0, 0, 0, 0)
-	}
-	if unmapRet < 0 {
-		fmt.Println("graphics: unmap_bar: nothing to unmap")
-	} else {
-		fmt.Println("graphics: unmap_bar ok")
-	}
-
 	fmt.Println("graphics: all ok")
 	os.Exit(0)
+}
+
+func readMotd(k lib.Kernel) string {
+	fs, err := lib.BindFS(k, "gfx")
+	if err != nil {
+		fmt.Println("graphics: bind fs failed:", err)
+		return ""
+	}
+	buf := make([]byte, 4096)
+	n, err := fs.ReadFile("/etc/motd", 0, buf)
+	if err != nil {
+		fmt.Println("graphics: read motd failed:", err)
+		return ""
+	}
+	return string(buf[:n])
 }

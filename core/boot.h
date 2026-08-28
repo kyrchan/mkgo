@@ -26,6 +26,8 @@ struct boot_info {
     uint64_t mod_net_len;
     uint64_t mod_p9;
     uint64_t mod_p9_len;
+    uint64_t mod_graphics;
+    uint64_t mod_graphics_len;
     /* \etc\init.conf preloaded (NUL-terminated via conf_z in main.cc) */
     uint64_t conf;
     uint64_t conf_len;
