@@ -99,6 +99,47 @@ extern "C" EFI_STATUS __attribute__((ms_abi)) efi_main(EFI_HANDLE image_handle,
         g_bi.gate_mask = mask;
     }
 
+    /* Locate EFI GOP (Graphics Output Protocol) to get the firmware framebuffer.
+     * This must happen before ExitBootServices. If present, vfio uses it as the
+     * scanout target so guest renders reach the firmware display window. */
+    g_bi.fb_phys = 0; g_bi.fb_size = 0; g_bi.fb_width = 0; g_bi.fb_height = 0; g_bi.fb_bpp = 32;
+    {
+        EFI_GRAPHICS_OUTPUT_PROTOCOL *gop = nullptr;
+        EFI_GUID gop_guid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
+        EFI_STATUS gop_st = FW3(systab->BootServices->LocateProtocol,
+                                (UINTN)&gop_guid, (UINTN)nullptr, (UINTN)&gop);
+        if (gop_st == EFI_SUCCESS && gop && gop->Mode) {
+            g_bi.fb_phys = gop->Mode->FrameBufferBase;
+            g_bi.fb_size = gop->Mode->FrameBufferSize;
+            /* ModeInfo pixels-per-scan-line is at offset 4 in the mode info;
+             * derive width/height from framebuffer size when ModeInfo absent. */
+            if (gop->Mode->InfoSize >= 20 && gop->Mode->ModeInfo) {
+                uint32_t *info = (uint32_t *)(uintptr_t)gop->Mode->ModeInfo;
+                g_bi.fb_width = info[1];
+                g_bi.fb_height = info[2];
+                g_bi.fb_bpp = 32;
+                if (gop->Mode->InfoSize >= 28 && info[5] != 0)
+                    g_bi.fb_stride = info[5] * 4; /* PixelsPerScanLine * bytes_per_px */
+                console_puts("[boot] GOP mode ");
+                console_hex64(g_bi.fb_width);
+                console_puts("x");
+                console_hex64(g_bi.fb_height);
+                console_puts(" stride=");
+                console_hex64(g_bi.fb_stride);
+                console_puts("\n");
+            } else if (g_bi.fb_size > 0) {
+                g_bi.fb_width = 1024; g_bi.fb_height = 768;
+            }
+            console_puts("[boot] GOP framebuffer phys=");
+            console_hex64(g_bi.fb_phys);
+            console_puts(" size=");
+            console_hex64(g_bi.fb_size);
+            console_puts("\n");
+        } else {
+            console_puts("[boot] GOP not found (headless or firmware has no display)\n");
+        }
+    }
+
     static uint8_t mmapbuf[16384];
     UINTN msize = sizeof(mmapbuf), dsize, key;
     UINT32 dver;

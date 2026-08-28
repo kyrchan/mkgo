@@ -89,6 +89,29 @@ typedef struct { uint32_t a; uint16_t b; uint16_t c; uint8_t d[8]; } EFI_GUID;
 #define EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID \
     ((EFI_GUID){0x964e5b22u,0x6459,0x11d2,{0x8e,0x39,0x00,0xa0,0xc9,0x69,0x72,0x3b}})
 
+/* EFI Graphics Output Protocol (GOP) — provides the linear framebuffer that
+ * the firmware (OVMF) scans out to the display. We locate it before
+ * ExitBootServices and use its framebuffer as our scanout target so guest
+ * renders reach the single firmware display window. */
+#define EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID \
+    ((EFI_GUID){0x9042a9deu,0x23dc,0x4a38,{0x96,0xfb,0x7a,0xde,0xd0,0x80,0x51,0x6a}})
+
+typedef struct {
+    uint32_t MaxMode;
+    uint32_t Mode;
+    void *ModeInfo;      /* EFI_GRAPHICS_OUTPUT_MODE_INFORMATION * */
+    UINTN InfoSize;
+    uint64_t FrameBufferBase;
+    uint64_t FrameBufferSize;
+} EFI_GOP_MODE;
+
+typedef struct {
+    void *QueryMode;
+    void *SetMode;
+    void *Blt;
+    EFI_GOP_MODE *Mode;
+} EFI_GRAPHICS_OUTPUT_PROTOCOL;
+
 typedef struct {
     uint64_t Signature;
     uint32_t Revision;

@@ -5,6 +5,7 @@
 #include "mm.h"
 #include "plat.h"
 #include "io.h"
+#include "boot.h"
 
 extern "C" {
 #include "wasm3.h"
@@ -77,6 +78,7 @@ static uint32_t next_handle = 1;
 
 // Framebuffer state (single display, §13)
 static uint32_t fb_w = 0, fb_h = 0, fb_bpp = 32;
+static uint32_t fb_stride = 0; /* bytes per scanline in the display fb */
 static uint32_t fb_cursor_x = 0, fb_cursor_y = 0;
 static bool fb_has_display = false;
 
@@ -89,7 +91,7 @@ static uint32_t scanout_phys = 0;
 static uint32_t scanout_size = 0;
 static bool scanout_enabled = false;
 
-void vfio_init(void) {
+void vfio_init(const struct boot_info *bi) {
     for (auto &m : bar_maps) m.used = false;
     for (auto &d : doorbells) d.used = false;
     for (auto &a : assigns) a.used = false;
@@ -98,23 +100,46 @@ void vfio_init(void) {
     msi_vector_bitmap = 0;
     fb_w = 1024; fb_h = 768; fb_bpp = 32;
     fb_has_display = false;
-    // Find a real PCI display device for scanout. If present, the VFB backing
-    // buffer is identity-mapped to the hardware framebuffer so guest renders
-    // reach the display. If absent (headless), fall back to a pool buffer.
-    uint32_t disp_phys = 0, disp_size = 0;
-    if (pci_find_display(&disp_phys, &disp_size) == 0 && disp_size >= (fb_w * fb_h * 4)) {
-        scanout_phys = disp_phys;
-        scanout_size = disp_size;
+    // Prefer the EFI GOP framebuffer (firmware display) for scanout. This makes
+    // guest renders reach the single firmware window. Falls back to a real PCI
+    // display device (e.g. bochs-display), then to a headless pool buffer.
+    scanout_enabled = false;
+    scanout_phys = 0;
+    scanout_size = 0;
+    if (bi && bi->fb_phys != 0 && bi->fb_size >= (fb_w * fb_h * 4)) {
+        scanout_phys = (uint32_t)bi->fb_phys;
+        scanout_size = (uint32_t)bi->fb_size;
         scanout_enabled = true;
         fb_has_display = true;
-        console_puts("[vfio] scanout: display fb phys=");
+        if (bi->fb_width != 0) fb_w = bi->fb_width;
+        if (bi->fb_height != 0) fb_h = bi->fb_height;
+        if (bi->fb_bpp != 0) fb_bpp = bi->fb_bpp;
+        if (bi->fb_stride != 0) fb_stride = bi->fb_stride;
+        console_puts("[vfio] scanout: GOP fb phys=");
         console_hex64(scanout_phys);
         console_puts(" size=");
         console_hex64(scanout_size);
+        console_puts(" ");
+        console_hex64(fb_w);
+        console_puts("x");
+        console_hex64(fb_h);
         console_puts("\n");
     } else {
-        scanout_enabled = false;
-        console_puts("[vfio] scanout: headless (no display device)\n");
+        // No GOP — try a real PCI display device for scanout
+        uint32_t disp_phys = 0, disp_size = 0;
+        if (pci_find_display(&disp_phys, &disp_size) == 0 && disp_size >= (fb_w * fb_h * 4)) {
+            scanout_phys = disp_phys;
+            scanout_size = disp_size;
+            scanout_enabled = true;
+            fb_has_display = true;
+            console_puts("[vfio] scanout: PCI display fb phys=");
+            console_hex64(scanout_phys);
+            console_puts(" size=");
+            console_hex64(scanout_size);
+            console_puts("\n");
+        } else {
+            console_puts("[vfio] scanout: headless (no display)\n");
+        }
     }
     pci_vfb_init(1024, 768);
 }

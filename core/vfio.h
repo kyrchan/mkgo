@@ -2,12 +2,14 @@
 #define VFIO_H
 #include <stdint.h>
 
+struct boot_info;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 // VFIO foundation (abi/ABI.md §12) — PCI BAR mapping + IRQ doorbell
-void vfio_init(void);
+void vfio_init(const struct boot_info *bi);
 
 // Doorbell
 int vfio_bind_irq(uint32_t sid, uint32_t bus, uint32_t dev, uint32_t fn, uint32_t type); // returns handle or -1

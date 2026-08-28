@@ -36,6 +36,15 @@ struct boot_info {
     uint64_t prog2_len;
     /* gate mask for legacy payload slots (0 = default KILL) */
     uint64_t gate_mask;
+    /* EFI GOP framebuffer (physical address + size) located before ExitBootServices.
+     * If nonzero, vfio uses this as the scanout target so guest renders reach
+     * the firmware display window. Set by main.cc via LocateProtocol(GOP). */
+    uint64_t fb_phys;
+    uint64_t fb_size;
+    uint32_t fb_width;
+    uint32_t fb_height;
+    uint32_t fb_bpp;
+    uint32_t fb_stride;
 };
 
 void kmain(const struct boot_info *bi);
