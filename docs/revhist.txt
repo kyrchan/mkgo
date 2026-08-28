@@ -1,0 +1,190 @@
+================================================================================
+  DOC-ID:   KLD-REV-001
+  TITLE:    Documentation Set Revision Journal (master)
+  VERSION:  1.20
+  DATE:     2026-08-22
+  STATUS:   Released
+  AUTHOR:   LANE DOCS
+  SOURCE-REVISION REVIEWED: MAIN master @ 0907825 (+ Phase-5 working tree),
+            SVC lane/services @ 88ed8a7, TLS lane/tools @ e0bfb11,
+            VERIFY FINDINGS.txt findings 1-39 incl. addenda/closures,
+            MEMORY.md @ md5 deb670af... (QA intake binding; cross-lane
+            contract notes), abi/ABI.md v1.1 RATIFIED (@ md5 66226514...)
+================================================================================
+
+PURPOSE. Master journal of the documentation set. Every substantive change
+to any docs/*.txt appends one row here AND a row in that file's own
+revision-history table. Columns: Version | Date | Sections touched |
+Reason.
+
+Version | Date       | Sections touched                    | Reason
+--------+------------+-------------------------------------+---------------
+1.0     | 2026-08-22 | SDD all; IFSPEC all; GLOSSARY all;  | Initial release
+        |            | TRACE all; TESTPLAN all; RELHIST    | of the six
+        |            | all                                 | deliverables.
+1.1     | 2026-08-22 | SDD ctrl/8.6/9.5/16.7/17.5; IFSPEC  | VERIFY lane
+        |            | ctrl/1.3/7.2/7.4/10; GLOSSARY +5    | FINDINGS.txt
+        |            | terms; TRACE ctrl/R-AB7-3/R-MU1/N2/ | findings 1-21
+        |            | N4; TESTPLAN ctrl/1.8/9.8; RELHIST  | arrived and
+        |            | ctrl/1.1/5.2                        | MEMORY.md made
+        |            |                                     | QA intake
+        |            |                                     | binding.
+1.2     | 2026-08-22 | SDD 11.4/11.5/16.7; IFSPEC 7.2;     | FINDINGS grew
+        |            | TRACE R-PH5-2; TESTPLAN 9.8;        | to 28 (F22
+        |            | RELHIST 5.3                         | blocker, F23-
+        |            |                                     | F26, F1 closed);
+        |            |                                     | routed-FS
+        |            |                                     | transport truth
+        |            |                                     | (fsroute) folded
+        |            |                                     | into the SDD.
+1.3     | 2026-08-22 | SDD 11.4/16.7; IFSPEC 7.2;          | Third ledger
+        |            | TRACE R-PH5-2; TESTPLAN 9.8;        | wave: F5/F11/
+        |            | RELHIST 5.4                         | F22 closed,
+        |            |                                     | F23a/F27/F28
+        |            |                                     | opened; docs re-
+        |            |                                     | scoped to the
+        |            |                                     | connected-but-
+        |            |                                     | unvalidated
+        |            |                                     | interception.
+1.4     | 2026-08-22 | SDD 16.2/16.7; IFSPEC 10.3;         | Fourth ledger
+        |            | RELHIST 5.5                         | wave: F29/F29a
+        |            |                                     | trace hygiene,
+        |            |                                     | F30 devman/block-
+        |            |                                     | window convention;
+        |            |                                     | F23/F28 re-verified
+        |            |                                     | open.
+1.5     | 2026-08-22 | SDD 9.5/16.7; IFSPEC 7.2;           | Fifth ledger
+        |            | TRACE R-MU1; TESTPLAN 9.8;          | wave: F15 closed
+        |            | RELHIST 5.6                         | (kernel-side
+        |            |                                     | canonical header);
+        |            |                                     | F2 narrowed per
+        |            |                                     | addendum 2a; F18
+        |            |                                     | recheck noted.
+1.6     | 2026-08-22 | SDD 12.3; IFSPEC 5.2; GLOSSARY 1.2  | MEMORY.md added
+        |            | (canonical header + new term);      | binding cross-lane
+        |            | RELHIST 5.7                         | contract notes
+        |            |                                     | (ABI-NOTES §1
+        |            |                                     | instantiation).
+1.7     | 2026-08-22 | SDD 6.4/12.3; IFSPEC 4.1/5.2;       | ABI v1.1 gained
+        |            | TRACE R-AB3b; GLOSSARY 1.3          | managed-runtime
+        |            | (kern_blk_* term); RELHIST 5.8      | block transport
+        |            |                                     | kern_blk_*;
+        |            |                                     | implemented in
+        |            |                                     | wasi_glue+devblk.
+1.8     | 2026-08-22 | SDD 12.3/16.7; IFSPEC 4.1;          | FINDINGS 31:
+        |            | TRACE R-AB3b; RELHIST 5.9           | kern_blk_*
+        |            |                                     | transport ungated;
+        |            |                                     | capability gate
+        |            |                                     | mandated.
+1.9     | 2026-08-22 | SDD 9.5/16.7; IFSPEC 7.2;           | F2b: login
+        |            | RELHIST 5.10                        | sender migrated;
+        |            |                                     | MAIN consistent on
+        |            |                                     | §7; residue is
+        |            |                                     | cross-lane only.
+1.10    | 2026-08-22 | SDD 8.2/13.6/16.5; IFSPEC 7.3/7.4/  | ABI v1.1
+        |            | A.5; TRACE R-ADM2; GLOSSARY 1.4;    | RATIFIED: SETCONF
+        |            | RELHIST 5.11                        | op 6 + CAP_CONF
+        |            |                                     | bit7 adopted.
+1.11    | 2026-08-22 | all ctrl blocks; SDD 9.5/16.2/16.6/ | b9263a2
+        |            | 16.7/17.5; IFSPEC 5.2/7.2/new 11/    | ratification
+        |            | renumbered 12.x; TRACE R-MU1/R-PH5-5 | commit + SVC
+        |            | flip/R-AB11; TESTPLAN 9.8; GLOSSARY  | merge e3ef0ce
+        |            | 1.5; RELHIST 5.12                    | + findings
+        |            |                                      | 32-34.
+1.12    | 2026-08-22 | SDD ctrl/13.4/16.7; IFSPEC ctrl/7.2; | SVC conformance
+        |            | TESTPLAN 9.8; RELHIST 5.13           | sprint f5d2e23+
+        |            |                                      | daac2b6+162c90e:
+        |            |                                      | lib migrated (F20
+        |            |                                      | closed), fs on
+        |            |                                      | kern_blk_*;
+        |            |                                      | F35/F35a open.
+1.13    | 2026-08-22 | all ctrl blocks (MAIN @ da43b41);    | Phase-5 commit
+        |            | SDD 11.4/12.3/16.7; IFSPEC 5.2/7.2;  | landed with
+        |            | TRACE R-PH5-1/2/3 + ctrl; TESTPLAN   | green gate
+        |            | 9.8; RELHIST 5.14                    | report; open
+        |            |                                      | set re-scoped;
+        |            |                                      | admissibility
+        |            |                                      | caveat kept.
+1.14    | 2026-08-22 | SDD ctrl/16.7; TRACE ctrl; TESTPLAN  | MEMORY @ 6a22fec
+        |            | 9.8/ctrl; RELHIST ctrl/5.15          | declares Phases
+        |            |                                      | 0-5 ALL GREEN;
+        |            |                                      | ledger recheck
+        |            |                                      | keeps six
+        |            |                                      | blockers open;
+        |            |                                      | TLS cleared
+        |            |                                      | (F36).
+1.15    | 2026-08-22 | SDD ctrl/4.5/16.7; RELHIST ctrl/5.16 | Ninth wave:
+        |            |                                      | Phase-7 boot
+        |            |                                      | orchestration in
+        |            |                                      | flight (F33a);
+        |            |                                      | F33 split; F37/
+        |            |                                      | F38 filed.
+1.16    | 2026-08-22 | SDD 12.4/16.7; IFSPEC 5.3;           | Tenth wave: §4
+        |            | TRACE R-AB4-x                        | input/focus in-
+        |            |                                      | tree (F17 kernel
+        |            |                                      | side resolved);
+        |            |                                      | F13 remains.
+1.17    | 2026-08-22 | SDD ctrl; RELHIST ctrl/4.2           | TLS @ d461037:
+        |            |                                      | VMDK/VDI
+        |            |                                      | converter
+        |            |                                      | golden-file
+        |            |                                      | coverage.
+1.18    | 2026-08-22 | RELHIST ctrl + row 1.17; SDD ctrl    | FINDINGS 39
+        |            |                                      | (d461037
+        |            |                                      | reviewed clean).
+1.19    | 2026-08-22 | SDD ctrl/15.5 note via RELHIST 4.3;  | TLS @ 1929b87:
+        |            | RELHIST ctrl/4.3                     | tools/hvtest
+        |            |                                      | hypervisor test
+        |            |                                      | matrix scaffolded.
+1.20    | 2026-08-22 | SDD ctrl; RELHIST ctrl/4.3           | TLS @ b75d0f5
+        |            |                                      | (README fleet
+        |            |                                      | overview); FINDINGS
+        |            |                                      | 40 clean review.
+        |            |                                     | (kernel impl
+        |            |                                     | pending).
+
+SET STATE AT RELEASE 1.15.
+- Sources reviewed: abi/ABI.md v1.1 RATIFIED (changelog incl. LOGIN,
+  abi_ver, managed-runtime block transport, SETCONF/CAP_CONF; §11 v2
+  roadmap), MEMORY.md (Phases 0-5 ALL GREEN @ 6a22fec; five-lane fleet;
+  binding QA intake; ratified-ABI note; NEXT = Phase 7 with merge-first
+  coordination note), services/ABI-NOTES.md §1-§8, core/*.{cc,h} incl.
+  fsroute.{cc,h}, arch/x86_64/*, Makefile gates g1-g3/p4/p5a/p5b, SVC
+  five wrapped modules + guests/lib (conformance sprint through
+  162c90e), TLS tools/img + README (cleared F36), VERIFY FINDINGS.txt findings 1-39
+  with addenda/closures.
+- Consistency: TRACE marks P0-P4 VERIFIED at commits recorded in RELHIST;
+  P5 gates GREEN-declared at 6a22fec but rows remain IMPL* under the
+  TESTPLAN 1.8 admissibility rule while FINDINGS F12/F13/F16/F18/F31/F32
+  (+F28, F35/F35a) stay open; IFSPEC treats the ratified ABI v1.1 prose
+  as canonical and tracks code gaps in its Section 12 open-defect
+  register; GLOSSARY terms match usage across all files; SDD 16.7 is the
+  authoritative blocker summary.
+- Poll cadence: heads re-checked each cycle; MAIN advanced to b9263a2
+  (ratification) -> da43b41 (Phase 5) -> 6a22fec (gate-green declaration)
+  with Phase-7 orchestration in flight; SVC sprinted e3ef0ce -> f5d2e23
+  -> daac2b6 -> 162c90e; ABI advanced twice (waves 1.7, 1.10-1.11); the
+  VERIFY ledger advanced eight times mid-session -- all fully mirrored
+  in SDD 16.7 / IFSPEC Section 12 / TRACE annotations / TESTPLAN 9.8 /
+  RELHIST 5.x.
+- Consistency: TRACE marks P0-P4 VERIFIED at commits recorded in RELHIST;
+  P5 gates REPORTED GREEN at da43b41 but rows remain IMPL* under the
+  TESTPLAN 1.8 admissibility rule while FINDINGS F13/F16/F18/F31/F32/F33
+  (+F28, F35/F35a) stay open; IFSPEC treats the ratified ABI v1.1 prose
+  as canonical and tracks code gaps in its Section 12 open-defect
+  register; GLOSSARY terms match usage across all files; SDD 16.7 is the
+  authoritative blocker summary.
+- Poll cadence: heads re-checked each cycle; MAIN advanced to b9263a2
+  (ratification) then da43b41 (Phase 5); SVC sprinted through e3ef0ce ->
+  f5d2e23 -> daac2b6 -> 162c90e; ABI advanced twice (waves 1.7,
+  1.10-1.11); the VERIFY ledger advanced six times mid-session -- all
+  fully mirrored in SDD 16.7 / IFSPEC Section 12 / TRACE annotations /
+  TESTPLAN 9.8 / RELHIST 5.x.
+
+UPDATE POLICY. Re-poll commits and MEMORY.md at every cycle start; revise
+invalidated sections per KLD standard; append rows here and per-file;
+keep TRACE/GLOSSARY synchronized with any ABI or phase fact change; when
+a FINDINGS blocker referenced by a doc closes, the citing rows must be
+updated in the same docs cycle.
+
+================================================================================

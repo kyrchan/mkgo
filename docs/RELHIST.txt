@@ -1,0 +1,339 @@
+================================================================================
+  DOC-ID:   KLD-REL-001
+  TITLE:    Release History -- Narrative Milestones
+  VERSION:  1.19
+  DATE:     2026-08-22
+  STATUS:   Released
+  AUTHOR:   LANE DOCS
+  SOURCE-REVISION REVIEWED: git logs of MAIN (master @ 6a22fec + Phase-7
+            orchestration in flight), SVC (lane/services @ 162c90e),
+            TLS (lane/tools @ d461037); VERIFY lane FINDINGS.txt findings
+            1-39; MEMORY.md @ md5 d33b3ae...; abi/ABI.md v1.1 RATIFIED
+================================================================================
+
+1. LANES
+
+1.1 Scope statement. Development runs in five parallel worktree lanes off
+    the main repository -- MAINLINE (master, kernel phases + watchdog),
+    SERVICES (lane/services), TOOLS (lane/tools), VERIFY (QA department,
+    read-only everywhere, owns FINDINGS.txt/QUALITY.txt), and DOCS (this
+    publications lane) -- supervised by fleet.sh/lanes.conf with cron-guard
+    revival; this history records milestones per lane in commit order, one
+    entry per gate or substantive delivery.
+
+2. MAINLINE (master)
+
+2.1 Phase 0 -- 4ee8974 "Phase 0: verbatim pre-surgery snapshot".
+    The tree was committed verbatim before any surgery, preserving the Go
+    pivot era (gokernel/, tools/goshim/, Plan 9 asm artifacts, the 8-opcode
+    ISA) forever in history. The safety net every later phase stands on.
+
+2.2 Phase 1 -- 31f112b "Phase 1: native C boot through the 8-opcode VM, no
+    Go", fixed by dcf6909 "MEMORY.md: Phase 1 gate green, record root
+    causes". The Go marker handoff died; kmain ran straight from UEFI. Two
+    root causes were recorded for posterity: the loader's AllocatePool was
+    invoked through a four-argument wrapper so an extra BootServices
+    argument landed in the Type slot (INVALID_PARAMETER; now FW3), and the
+    vasm pass-1 label bug that resolved text labels to offset zero, sending
+    guests spinning at pc=0. Gate evidence: KERNEL-OK, out 0x28 (zero-padded
+    hex tolerated), 'E' on serial.
+
+2.3 Phase 2 -- 1d92083 "Phase 2: C++ substrate, de-Go/de-Plan9", gate green
+    at 3513bb4. Kernel sources converted to freestanding C++20; the Plan 9
+    IDT bank gave way to GNU-as vectors; GOROOT_BARE rules and gokernel/
+    went away; core/ and arch/x86_64/ were born, with the arch-blind rule
+    in force from day one. C++ lessons banked: no range designators,
+    extern "C" on efi_main or the linker silently mis-picks the entry.
+
+2.4 Phase 3 -- 39dc3fb "Phase 3: wasm3 engine + mini-WASI + guest ladder
+    C->Rust->Go", gate green at e5f8d61. wasm3 (MIT) was vendored and
+    adapted to run over rt.cc/mm.cc with freestanding shims; the frozen WASI
+    profile came up; and three guests printed through the kernel: a wat-
+    compiled C module ("hello from C"), a no_std Rust crate ("hello from
+    Rust"), and stock GOOS=wasip1 Go ("hello from Go") -- the anti-nightmare
+    proof that unpatched toolchains suffice.
+
+2.5 Phase 4 -- 7e7c2dd "Phase 4: message ports + kernel service endpoints +
+    crash isolation", gate green at 0907825. ABI §1 ports landed in the
+    'kernel' import namespace with kernel-mediated copy and non-blocking
+    recv; registry/devman/power became native §7 endpoints with capability
+    bits and [audit] lines; the cooperative coroutine scheduler grew
+    per-session native stacks and per-session WASI state; console.wasm and
+    login.wasm preload from /boot/modules before ExitBootServices. The gate:
+    ping-pong x3 rounds, LIST showing four sessions, KILL of console with
+    rc=0 while login heartbeats continued, KERNEL-OK.
+
+2.6 In flight (working tree at review time). Phase 5 surgery is staged but
+    uncommitted: core/vm/, tools/vasm and programs/demo.* deletions retire
+    the 8-opcode ISA; devblk/fstransport add the RAM-disk block window and
+    the synchronous FS transport; the engine gained the abi_ver custom-
+    section gate; the WASI profile gained routed path_open/fd_read/
+    path_create_directory/fd_close; Makefile grew test-p5a/test-p5b.
+    RELHIST will record these under their gate commits once green.
+
+3. SERVICES LANE (lane/services @ 88ed8a7)
+
+3.1 509fb7e "guests/lib guest libc" -- package kern: kern_* wrappers for
+    ABI §1/§4, host Bus mirroring core/ports.cc decision-for-decision,
+    FakeKernel §7 endpoints, framing primitives, registry/fs clients, and a
+    C header mirror. Every later server is host-testable because of this.
+
+3.2 c86d8bb console server -- owns-or-binds "console", tag-aware relay with
+    FIFO, wrapped to wasip1 and host-tested via kern.Bus.
+
+3.3 a66d8b6 fs -- FAT16 (8.3 names, 512 B sectors) over the §3 block window
+    with RAM-disk harness; port server speaking FS protocol v0;
+    cross-validated byte-for-byte against mtools; services/ABI-NOTES.md
+    born to record lane-local wire conventions without touching frozen ABI.
+
+3.4 551d5d8 login -- static user table (admin/u1/u2), stub auth, per-user
+    capability sets issued via registry SPAWN with bounded budget, focus
+    handoff to shell.
+
+3.5 1ad8d6e shell -- §4 input line editor, console-relayed prompt, built-ins
+    echo/ls/cat/stat/kill-session/run over fs+registry clients; shared input
+    records moved into guests/lib.
+
+3.6 64364d6 + 865e7a6 -- shared §4 record file for wasm+host; SetBudget
+    helpers; go.mod wiring across services.
+
+3.7 6abc4bc init -- init.conf/kernel.conf parsing, ordered SPAWN boot from
+    the preload paths, supervision with respawn policy plus give-up cap,
+    knob application attempted via proposed SETCONF (kernel lacks it v1;
+    rejection logged, not fatal).
+
+3.8 8d0b318 -- all five modules wrapped to .wasm carrying abi_ver=1 custom
+    sections via pure-Go tools/addabiver, wabt wasm-validate clean;
+    ABI-NOTES gained §7 hosteng status and §8 abi_ver encoding.
+
+3.9 88ed8a7 -- host Bus.Yield parks 20 microseconds after Gosched to model
+    real quantum cost, killing RPC-budget flakes under parallel test load.
+    Host-only change; no wire impact.
+
+4. TOOLS LANE (lane/tools @ e0bfb11)
+
+4.1 ed3cb5a tools/img -- Go disk-image builder begins replacing the mtools
+    flow; 2d19bf3 hygiene (no stray binaries); eeb333b README with
+    architecture overview, quickstart, and a service-module guide;
+    9c7223a live BPB byte-parity test against real mformat output;
+    e0bfb11 unit tests for CLI helpers, geometry clamps, input validation.
+4.2 Later the same day, d461037 added golden-file coverage for the
+    VMDK/VDI converters -- groundwork for the Phase-12 hypervisor
+    matrix (VirtualBox/VMware disk formats) long before those
+    phases begin.
+4.3 1929b87 then scaffolded tools/hvtest: a headless hypervisor test
+    matrix driver (QEMU/VBox backends, gate runner, unit tests) so the
+    Phase-12 "same disk image, identical gate strings" recipe has a
+    harness waiting for it. b75d0f5 rounded the lane out with a README
+    covering the fleet/lanes overview, an ABI pointer, and a real-code
+    service walkthrough; VERIFY reviewed both deliveries clean
+    (FINDINGS 40).
+
+5. DOCS LANE (this repository)
+
+5.1 Initial release of KLD-SDD/IFS/GLS/TRC/TST/REL rev 1.0 plus revhist on
+    2026-08-22, generated from the heads above; TRACE marks P0-P4 VERIFIED
+    and P5 IMPL pending first green test-p5a/p5b runs.
+
+5.2 Revision wave to doc-set v1.1, same day: the VERIFY lane's review
+    ledger (FINDINGS.txt findings 1-21) landed and MEMORY.md made QA
+    intake binding; SDD gained the open-blocker register (16.7) and
+    residual-risk statement (17.5), IFSPEC restored the canonical 24-byte
+    §7 header as normative with conformance status OPEN (F2/F15/F19) and
+    recorded F13/F18 on LOGIN/rejection semantics, TRACE annotated
+    R-AB7-3/R-MU1 with their blockers and added gate-precondition note N2,
+    TESTPLAN added the admissibility rule 1.8, GLOSSARY took the QA
+    vocabulary. No wire-format claims changed hands -- the ABI text was
+    right all along; the implementations are being brought to it.
+
+5.3 Second ledger wave, same day: FINDINGS grew to 28 entries. New
+    BLOCKER F22 showed the routed-FS reply transport disconnected
+    end-to-end (expectations fed only from enqueue-by-name while fs
+    replies via bind+send), with MAJOR F23 (no seq match) beside it and
+    MINOR F24 declaring fstransport dead substrate code; SVC gained MAJOR
+    F26 (fs dispatch lacks the uid rooting MAIN's copy has) and MINOR F25
+    (FAT16 sparse-write gap exposes stale cluster bytes). F1 was closed
+    after the in-tree fix verified clean. Doc-set v1.2 integrated all of
+    it: SDD 11.4/11.5 rewritten around fsroute reality, blocker register
+    extended, TRACE R-PH5-2 annotated, TESTPLAN 9.8 blocking set grown,
+    IFSPEC 7.2 conformance note extended.
+
+5.4 Third ledger wave, same day: fixes started landing in the dirty tree
+    and the ledger tracked them -- F11 (ring order), F22 (reply transport,
+    via a new port_send interception hook) and F5 (PTRACE) closed pending
+    clean-rebuild confirmation; F1 had closed just before. Two new MAJORs
+    arrived with the fix: F28 (interception consumes ANY datagram for a
+    pending name, unvalidated) and F27 (fleet.sh stall-kill trusts stale
+    pidfiles), plus addendum F23a recording that the interception
+    amplifies the missing seq check. Doc-set v1.3 re-scoped: SDD 11.4/
+    16.7 rewritten around the connected-but-unvalidated transport,
+    IFSPEC/TRACE/TESTPLAN annotations moved from F22 to F23/F28.
+
+5.5 Fourth ledger wave, same day: F29/F29a flagged ungated debug traces
+    compiling into the target image (devblk heap-address dumps; ports
+    "[hook] feed") and load-bearing DEBUG state (g_last_mem); F30 recorded
+    that the block window base 0x700000 is a dual-hardcoded convention
+    with the §8 devman registration still pending. Doc-set v1.4 folded
+    both into SDD 16.2/16.7 and IFSPEC 12.3 (then numbered 10.3).
+    F23/F28 were re-verified OPEN in this pass.
+
+5.6 Fifth ledger wave, same day: F15 closed -- mk_req now writes the
+    canonical v1.1 24-byte header and kernsvc + fs agree, so the
+    kernel-routed path is conformant at last. Addendum 2a keeps F2 open
+    for the remaining legacy senders (login main.go LOGIN shape, SVC
+    guests/lib encoders, FakeKernel dispatch model); F18 was re-verified
+    unchanged. Doc-set v1.5 re-scoped SDD 9.5/16.7, IFSPEC 7.2, TRACE
+    R-MU1 (unmarked; SVC-head rooting gap tracked as F26), and TESTPLAN
+    9.8 accordingly.
+
+5.7 Sixth state change: MEMORY.md added BINDING cross-lane contract
+    notes pinning the ABI-NOTES.md instantiations (block-window aligned
+    offsets, guest scratch at window+0x1000 / min window 0x2000, CAP_
+    DEVMAN grant for fs, inbox reply convention, FS op mapping for the
+    preview1 route) until an ABI v1.1 review. Doc-set v1.6 recorded the
+    contract and its open deltas against devblk in SDD 12.3, IFSPEC 5.2,
+    and the glossary.
+
+5.8 ABI evolution: abi/ABI.md v1.1 gained a managed-runtime block
+    transport -- new kernel imports kern_blk_read/kern_blk_write (lba,
+    ptr, count -> 0 | -1) served by devblk_rw against the same backends,
+    because a moving Go heap cannot reserve the §3 window address range;
+    the window remains the contract for raw/native guests. The kernel
+    link table implements both imports. Doc-set v1.7 traced the new
+    surface: SDD 6.4/12.3, IFSPEC 4.1/5.2, TRACE row R-AB3b, glossary.
+
+5.9 Sixth ledger wave: BLOCKER F31 against the brand-new kern_blk_*
+    transport -- devblk_rw discards sid with no capability check, so any
+    session can read or overwrite the whole RAM disk raw, bypassing the
+    uid-rooted multiuser boundary (bounds math on this path is safe,
+    unlike F12). Mandated fix: from_sid gate in devblk_rw (CAP_FS_ADMIN
+    or fs-service-only) with -1 + audit. Doc-set v1.8 recorded the gap
+    in SDD 12.3/16.7, IFSPEC 4.1, and TRACE R-AB3b.
+
+5.10 Addendum 2b: services/login/main.go migrated its registry LOGIN
+    sender to the canonical 24-byte header, making the MAIN tree
+    internally consistent on the §7 path end-to-end. F2's residue is now
+    a cross-lane sync task only (SVC guests/lib encoders + FakeKernel
+    mirror). Doc-set v1.9 re-scoped SDD 9.5/16.7 and IFSPEC 7.2.
+
+5.11 ABI v1.1 RATIFIED by the project owner -- all lanes adopt. The
+    ratification added registry op 6 SETCONF {key[16],u64 value} with a
+    new capability bit7 CONF (init.wasm the intended caller for
+    /etc/kernel.conf knobs) and declared LIST/CAPS deliberately ungated
+    in the stub phase, self-or-admin gating on the Phase-10 roadmap.
+    Kernel implementation of op 6/bit7 is pending; init keeps logging
+    rejections. Doc-set v1.10 adopted it all: SDD 8.2/13.6/16.5,
+    IFSPEC 7.3/7.4/A.5, TRACE R-ADM2, glossary.
+
+5.12 RATIFICATION COMMIT b9263a2: ABI v1.1 ratified by the project owner
+    and landed on master together with MAINLINE's staged 8-opcode
+    retirement deletions (core/vm/, programs/demo.*, tools/vasm). The
+    ratified text pins the canonical datagram header with uid KERNEL-
+    STAMPED on send, the §3 block offsets (scratch@0x1000, min window
+    0x2000), SETCONF op 6 + CAP_CONF bit7, the managed-runtime blk
+    imports, and a new §11 v2 roadmap (reply caps, LIST/CAPS gating,
+    IRQ arms, §9 layouts). SVC lane merged master (e3ef0ce). VERIFY
+    immediately filed findings 32-34 against it: F32 BLOCKER (uid
+    stamping not implemented -- direct-port rooting spoofable), F33
+    MAJOR (SETCONF/bit7/fs-CAP_DEVMAN absent from substrate), F34 MINOR
+    (fscore sparse-write gap bytes). Doc-set v1.11 recorded all of it.
+
+5.13 SVC conformance sprint: f5d2e23 migrated guests/lib to the ratified
+    framing (FrameCanonical/ParseHeader, CapConf bit7, LOGIN+SETCONF
+    host modeling -- closing F20 with a name-based ownership caveat)
+    but left services' hand-built frames half-migrated (F35 MAJOR:
+    login kernAuth legacy parse, init invalid-handle panic, shell/fs
+    suite failures). daac2b6 followed: fs.wasm now dispatches canonical
+    headers with rname replies and reaches its block device through the
+    managed-runtime imports (blkimport.go) instead of the §3 window;
+    login/init fixes sit in the working tree and F35 stays open until
+    committed and -race green; 162c90e rebuilt fs.wasm with the v1.1
+    transport and its abi_ver section so the shipped artifact matches
+    the sources. Doc-set v1.12 updated SDD 13.4/16.7,
+    IFSPEC 7.2, TESTPLAN 9.8.
+
+5.14 PHASE 5 COMMITTED: da43b41 "Phase 5: fs.wasm FAT16 + dual routing +
+    multiuser stubs; VM retired" landed on master with the gate report
+    in the message -- TEST PASS p5a (preview1 create/write/read
+    /home/1/hello.txt) + p5b (direct-port write/read/delete + u2->u1
+    denial) + all prior gates green (g1/g2/g3/p4). The commit unified
+    the canonical frame across kernsvc/glue/fs/login/clients, retired
+    the block mailbox window (devblk_poll now an empty stub; F12 closed
+    by removal), made fsroute seq-aware (F23 closed), and stamped every
+    service+payload with scripts/add_abiver.py. VERIFY's ledger still
+    carries open items against it (F13/F16/F18/F31/F32/F33), so doc-set
+    v1.13 marks the P5 gates GREEN-but-admissibility-pending rather than
+    VERIFIED.
+
+5.15 MEMORY @ 6a22fec declares "Phase 5 gate GREEN (commit da43b41) --
+    Phases 0-5 ALL GREEN", records the canonical frame and blk-transport
+    conventions, and banks hard-won debugging rules (grep-verify edits,
+    stale-artifact paranoia, frame-offset unification via copied comment
+    blocks, never re-entering a suspended wasm3 runtime, Go guests owning
+    low linear memory, ring-pop ordering, escaped bracket greps). The
+    VERIFY recheck at committed HEAD upgraded F1/F5/F11/F15/F22 closures
+    to committed evidence, kept F12/F13/F16/F18/F31/F32 open as
+    negative-path/security defects ("gates green does not close them"),
+    and cleared the TLS lane as conformance-neutral (F36). Doc-set v1.14
+    recorded the declaration with the admissibility caveat intact.
+
+5.16 Ninth wave, same evening: MEMORY's next-action line moved to
+    "NEXT = Phase 7 (interactive userland)" with a coordination note --
+    merge lane/services (15 commits ahead, v1.1-conformed per VERIFY)
+    into master before starting. The working tree already carries the
+    boot-orchestration rework: kmain spawns ONLY init.wasm with admin
+    caps, init.conf arrives as argv[1], and SCHED_CAP_CONF (bit7) now
+    exists -- F33 item 2 CLOSED, item 3 superseded by the architecture,
+    item 1 (SETCONF op) still open. New filings: F37 MINOR (gate slot
+    ppa holds admin-grade rights) and F38 NOTE (a second guest-lib
+    lineage in MAIN invites drift against SVC's guests/lib). Doc-set
+    v1.15 recorded all of it in SDD 4.5/16.7.
+
+--------------------------------------------------------------------------------
+REVISION HISTORY (Version | Date | Sections touched | Reason)
+1.0    | 2026-08-22 | all | Initial narrative history from polled git logs.
+1.1    | 2026-08-22 | ctrl block; 1.1; new 5.2 | Five-lane fleet recorded
+       |            |     | (VERIFY + DOCS joined); QA-ledger arrival and
+       |            |     | doc-set revision wave documented.
+1.2    | 2026-08-22 | ctrl block; new 5.3 | Findings 22-28 wave and F1
+       |            |     | closure recorded.
+1.3    | 2026-08-22 | ctrl block; new 5.4 | Closure wave (F5/F11/F22)
+       |            |     | and new findings (F23a/F27/F28) recorded.
+1.4    | 2026-08-22 | ctrl block; new 5.5 | Trace-hygiene and devman-
+       |            |     | registration findings (F29/F29a/F30) recorded.
+1.5    | 2026-08-22 | ctrl block; new 5.6 | F15 closure and F2 narrowing
+       |            |     | (addendum 2a) recorded.
+1.6    | 2026-08-22 | ctrl block; new 5.7 | Cross-lane contract notes
+       |            |     | arrival recorded.
+1.7    | 2026-08-22 | ctrl block; new 5.8 | Managed-runtime block
+       |            |     | transport added to ABI v1.1; traced.
+1.8    | 2026-08-22 | ctrl block; new 5.9 | F31 ungated transport
+       |            |     | blocker recorded.
+1.9    | 2026-08-22 | ctrl block; new 5.10 | F2b login migration;
+       |            |     | MAIN-side framing consistency recorded.
+1.10   | 2026-08-22 | ctrl block; new 5.11 | ABI v1.1 ratification:
+       |            |     | SETCONF op 6 + CAP_CONF bit7 recorded.
+1.11   | 2026-08-22 | ctrl block; new 5.12 | Ratification commit
+       |            |     | b9263a2, SVC merge e3ef0ce, findings 32-34.
+1.12   | 2026-08-22 | ctrl block; new 5.13 | SVC conformance
+       |            |     | sprint f5d2e23+daac2b6 recorded.
+1.13   | 2026-08-22 | ctrl block; new 5.14 (head moved to da43b41) |
+       |            |     | Phase-5 commit + gate report recorded.
+1.14   | 2026-08-22 | ctrl block (head 6a22fec); new 5.15 |
+       |            |     | Gate-green declaration + ledger recheck
+       |            |     | recorded.
+1.15   | 2026-08-22 | ctrl block (Phase-7 in flight); SDD 4.5/
+       |            |     | 16.7; RELHIST 5.16 | Ninth wave: F33 split,
+       |            |     | F37/F38 filed, Phase 7 next.
+1.16   | 2026-08-22 | ctrl block (TLS @ d461037); RELHIST 4.2 |
+       |            |     | TLS VMDK/VDI converter golden-file
+       |            |     | coverage recorded.
+1.17   | 2026-08-22 | ctrl block; FINDINGS count to 39 | Ledger
+       |            |     | NOTE 39: d461037 reviewed clean (vet +
+       |            |     | -race green), purely additive.
+1.18   | 2026-08-22 | ctrl block (TLS @ 1929b87); new 4.3 |
+       |            |     | hvtest scaffolding recorded.
+1.19   | 2026-08-22 | ctrl block (TLS @ b75d0f5); 4.3 extended |
+       |            |     | README delivery + clean VERIFY review
+       |            |     | (F40) recorded.
+================================================================================

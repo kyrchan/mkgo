@@ -1,0 +1,555 @@
+================================================================================
+  DOC-ID:   KLD-IFS-001
+  TITLE:    Interface Specification -- ABI v2.0 Complete Reference
+  VERSION:  2.0
+  DATE:     2026-08-29
+  STATUS:   Released
+  AUTHOR:   LANE DOCS
+  SOURCE-REVISION REVIEWED:
+            abi/ABI.md v2.0 RATIFIED (@ HEAD 1be7cac); all sections §1-§15
+            normative; core/wasi_glue.cc (implementation); guests/lib/wasm.go
+            (guest bindings); AGENTS.md (binding policies); MEMORY.md (state)
+================================================================================
+
+1. INTRODUCTION
+
+1.1 Purpose. This document is the authoritative reference for ALL guest-facing
+     interface contracts in ABI v2.0. It documents every kernel import, device
+     window, service port operation, and capability bit. Both kernel substrate
+     and services/guests code against this document ONLY.
+
+1.2 Scope. Covers the complete v2.0 surface: message ports (§1), console
+     window (§2), block window (§3), input events (§4), timer window (§5),
+     net packet windows (§6), kernel-owned service ports (§7), device driver
+     model (§8), reserved device classes (§9), audit trail (§10), PCI/VFIO
+     (§12), framebuffer control (§13), doorbell (§14), block service protocol
+     (§15). Section 11 (v2 roadmap) documents scheduled but not-yet-ratified
+     features.
+
+1.3 Conventions.
+     - All integers are little-endian (wasm native).
+     - No NUL-terminated strings: lengths are explicit.
+     - "Window" = a region of a session's linear memory the kernel assigns at
+       instantiation; guests never compute absolute addresses, only window
+       offsets.
+     - "i32" / "u32" / "i64" / "u64" = WASM-typed parameters.
+     - Return codes: 0 = success, -1 = error, -2 = would-block (non-fatal).
+
+1.4 References. abi/ABI.md v2.0 (authoritative source); AGENTS.md (phase plan,
+     binding policies); MEMORY.md (state, decisions); KLD-SDD-001 (design);
+     KLD-TRC-001 (traceability); KLD-TST-001 (verification).
+
+2. MESSAGE PORTS (ABI §1)
+
+2.1 Imports. Extra imports appended to the mini-WASI profile (prefix `kern_`):
+
+Import Signature                           | Returns       | Description
+-------------------------------------------|---------------|---------------------------
+kern_port_create(name_ptr, name_len)       | i32 handle    | Own endpoint; -1 on err
+kern_port_bind(name_ptr, name_len)         | i32 handle    | Attach to existing name
+kern_port_send(h, ptr, len)               | i32 status    | 0 ok | -2 would-block | -1 err
+kern_port_recv(h, ptr, cap)               | i32 length    | >0 len | 0 none | -1 err
+
+2.2 Parameters:
+
+Parameter    | Type   | Description
+-------------|--------|-------------------------------------------
+name_ptr     | i32    | Pointer to name bytes in guest memory
+name_len     | i32    | Length of name (1..15 bytes)
+h            | i32    | Port handle (from create/bind)
+ptr          | i32    | Pointer to data buffer in guest memory
+len          | i32    | Length of data (1..4096 bytes)
+cap          | i32    | Capacity of receive buffer
+
+2.3 Semantics:
+     - Datagram style, FIFO per sender→receiver pair, kernel-mediated copy only
+       (sessions never share memory). Max payload 4096 bytes per message.
+     - `recv` never blocks; poll with `sched_yield`.
+     - One name may have many binders (fan-in); a name has exactly one owner.
+     - Well-known names: `"console"` `"fs"` `"net"` `"login"` `"shell"`.
+
+2.4 Canonical datagram header (v1.1, binding). Every datagram starts:
+     {u16 op, u16 seq, u32 uid, char rname[16]}, payload at byte offset 24.
+     On SEND the kernel OVERWRITES `uid` with the sending session's registry
+     uid — clients can never spoof identity. `rname` may be empty (synchronous
+     kernel-routed calls).
+
+3. CONSOLE WINDOW (ABI §2)
+
+3.1 Layout. Offsets in every session's linear memory view:
+
+Offset  | Size | Access | Description
+--------|------|--------+--------------------------------------------
++0xF000 | u64  | Write  | Value printed as hex ("out 0x...")
++0xF008 | u8   | Write  | Low byte emitted as raw char
+
+3.2 Semantics. Output only. Input arrives via §4.
+
+4. BLOCK WINDOW (ABI §3)
+
+4.1 Layout. Offsets PINNED (v1.1), naturally aligned, little-endian (single
+     outstanding request, polled):
+
+Offset  | Size | Type | Description
+--------|------|------+-------------------------------------------
+0x00    | u32  | R/W  | magic 'BLKW'
+0x04    | u32  | RO   | blk_size (=512)
+0x08    | u64  | RO   | num_blocks
+0x10    | u32  | R/W  | next_req_id (guest increments)
+0x14    | u32  | pad  | reserved
+-- request mailbox (guest writes) --
+0x18    | u64  | W    | op (1=read, 2=write)
+0x20    | u64  | W    | lba
+0x28    | u32  | W    | count
+0x2c    | u32  | pad  | reserved
+0x30    | u64  | W    | off (window offset of data area)
+-- completion slot (kernel writes) --
+0x38    | u32  | RO   | done_req_id
+0x3c    | i32  | RO   | status (0 ok, <0 err)
+
+4.2 Guest scratch for data transfers: window offset **0x1000**; ≤8 sectors per
+     request; **minimum window size 0x2000**.
+
+4.3 Managed-runtime transport (v1.1). Go guests use imports instead:
+
+Import Signature                           | Returns       | Description
+-------------------------------------------|---------------|---------------------------
+kern_blk_read(lba, ptr, count)            | i32 status    | 0 ok | -1 err
+kern_blk_write(lba, ptr, count)           | i32 status    | 0 ok | -1 err
+
+4.4 Capability gate (F31, binding): `kern_blk_read/write` require the caller's
+     session to hold `CAP_FS_ADMIN` (bit 4). The kernel audits and rejects (-1)
+     any other caller.
+
+5. INPUT EVENTS (ABI §4)
+
+5.1 Import:
+
+Import Signature                           | Returns       | Description
+-------------------------------------------|---------------|---------------------------
+kern_input_recv(ptr, cap)                 | i32 length    | >0 len | 0 none
+
+5.2 Record layout (v1.13, binding). Each record is 6 bytes:
+
+Field       | Type | Description
+------------|------+-------------------------------------------
+kind        | u8   | 1=key_down, 2=key_up
+mods        | u8   | bit0 shift, bit1 ctrl, bit2 alt
+scan        | u16  | raw i8042 scancode set 1, untranslated
+codepoint   | u16  | kernel's US-layout mapping
+
+5.3 Semantics. Delivered ONLY to the focused session. Focus is a kernel-owned
+     attribute; `kern_focus_set(port_handle)` moves it.
+
+5.4 Focus import:
+
+Import Signature                           | Returns       | Description
+-------------------------------------------|---------------|---------------------------
+kern_focus_set(port_handle)               | void          | Move focus to session owning port
+
+6. TIMER WINDOW (ABI §5)
+
+6.1 Layout:
+
+Offset  | Size | Access | Description
+--------|------|--------+--------------------------------------------
++0x00   | u64  | RO     | nanos_since_boot (monotonic)
++0x08   | u64  | W      | deadline_abs (kernel uses for wakeups)
++0x10   | u32  | W      | arm (0/1); write 1 after setting deadline
+
+6.2 Semantics. Preemption is kernel-internal (scheduler quantum checked in the
+     timer ISR); guests need no cooperation for it.
+
+7. NET PACKET WINDOWS (ABI §6)
+
+7.1 Layout. Two identically-shaped windows (RX and TX):
+
+Offset  | Size | Access | Description
+--------|------|--------+--------------------------------------------
++0x00   | u32  | RO     | head (consumer index)
++0x04   | u32  | R/W    | tail (producer index)
++0x08   | slot | R/W    | N=256 slots of {u32 len; u8 data[1526]}
+
+7.2 Slot stride: 1536 bytes. Producer writes slot at `tail % N`, increments
+     `tail`; consumer mirrors with `head`. TX drained by kernel shim into
+     virtio-net; RX filled by shim.
+
+8. KERNEL-OWNED SERVICE PORTS (ABI §7)
+
+8.1 Well-known names. Three names served BY THE KERNEL itself:
+
+Name        | Description
+------------+-------------------------------------------
+"registry"  | session & capability control
+"devman"    | device enumeration
+"power"     | reboot / poweroff
+
+8.2 Request framing. Single §1 datagram {u16 op, u16 seq, payload}; replies
+     carry the same `seq`. Canonical header {u16 op, u16 seq, u32 uid,
+     char rname[16]}, payload at +24.
+
+8.3 Registry ops:
+
+Op | Name      | Request Payload                              | Reply
+---+-----------+----------------------------------------------+---------------------------
+1  | LIST      | (none)                                       | {sid, uid, state, name[16]}[n]
+2  | CAPS      | {u32 sid}                                    | {u32 n; rec{cap_id, rights}}
+3  | KILL      | {u32 sid}                                    | status (needs CAP_KILL)
+4  | SPAWN     | {name[16], path[64], capmask, argc, args}   | {u32 sid} (needs CAP_SPAWN)
+5  | LOGIN     | {name[16], uid, capmask}                     | status (login owner only)
+6  | SETCONF   | {key[16], u64 value}                         | status (needs CAP_CONF)
+7  | ASSIGN_PCI| {u8 bus, dev, fn, u32 target_sid}            | status (needs CAP_DEVMAN)
+
+8.4 Registry parameter details:
+
+Parameter    | Type     | Offset | Description
+-------------|----------|--------+-------------------------------------------
+op           | u16      | 0      | Operation code (1-7)
+seq          | u16      | 2      | Sequence number (echoed in reply)
+uid          | u32      | 4      | Kernel-stamped on send
+rname        | char[16] | 8      | Reply port name (empty = synchronous)
+name         | char[16] | 24     | Session/module name (SPAWN/LOGIN)
+path         | char[64] | 40     | Module path (SPAWN, ignored v1)
+capmask      | u32      | 80     | Capability mask (SPAWN/LOGIN)
+argc         | u16      | 84     | Argument count (SPAWN)
+sid          | u32      | 24     | Target session (CAPS/KILL)
+key          | char[16] | 24     | Knob name (SETCONF)
+value        | u64      | 40     | Knob value (SETCONF)
+bus          | u8       | 24     | PCI bus (ASSIGN_PCI)
+dev          | u8       | 25     | PCI device (ASSIGN_PCI)
+fn           | u8       | 26     | PCI function (ASSIGN_PCI)
+target_sid   | u32      | 28     | Target session (ASSIGN_PCI)
+
+8.5 SPAWN semantics. Kernel instantiates the named module from `/boot/modules/`
+     as a fresh session with exactly the requested capmask (never more than the
+     caller's own rights allow — privilege escalation rejected). This is how
+     shells launch programs; there is no fork/exec anywhere in the system.
+
+8.6 LOGIN semantics. Callable ONLY by the session that owns the "login"
+     well-known name (kernel-checked). The named session (matched by its unique
+     session name, i.e. argv[0]) receives uid + capmask; this is the sole
+     mechanism by which capabilities are issued (at login, never otherwise).
+
+8.7 Devman ops:
+
+Op | Name  | Request | Reply
+---+-------+---------+------------------------------------------------------
+1  | ENUM  | (none)  | {u32 n; rec{class, inst, win_off}} (needs CAP_DEVMAN)
+
+Class IDs: 1=block, 2=net, 3=input, 4=timer, 5=console, 10=PCI (VFIO).
+
+8.8 Power ops:
+
+Op | Name    | Request | Reply
+---+---------+---------+---------------------------
+1  | REBOOT  | (none)  | status 0, then halt
+2  | OFF     | (none)  | status 0, then halt
+
+Both require CAP_POWER.
+
+8.9 Capability bits (u64 mask, enforced by kernel registry):
+
+Bit | Name       | Grants Access To
+----+------------+-------------------------------------------
+0   | CAP_KILL   | Registry KILL op
+1   | CAP_DEVMAN | Devman ENUM, ASSIGN_PCI, admin bypass
+2   | CAP_POWER  | Power REBOOT/OFF
+3   | CAP_FOCUS  | kern_focus_set
+4   | CAP_FS_ADMIN| kern_blk_read/write, /etc writes
+5   | CAP_NET_ADMIN| Network admin operations
+6   | CAP_SPAWN  | Registry SPAWN op
+7   | CAP_CONF   | Registry SETCONF op
+8   | CAP_PCI    | kern_pci_* imports (VFIO)
+9   | CAP_FB     | kern_fb_set_mode/cursor (framebuffer)
+
+Login maps users→masks; `admin` gets all bits, regular users get none of 0-2
+and scoped others. Unknown op / insufficient bit => status -1, audited.
+
+9. DEVICE DRIVER MODEL (ABI §8)
+
+9.1 Two-layer rule:
+
+Layer | Type        | Budget     | Description
+------+-------------+------------+-------------------------------------------
+1a    | Native shim | ≤300 LOC   | Owns hardware, exposes class window
+1b    | VFIO        | ~2k LOC 1x | Maps PCI BARs with IOMMU protection
+2     | Wasm session| unlimited  | Consumes windows/ports, holds policy
+
+9.2 Adding new hardware = exactly three steps:
+     1. define its class window layout here (version bump),
+     2. EITHER write a shim (≤300 LOC) OR assign via VFIO (zero LOC),
+     3. register instance in devman table (+ capability grant template).
+     No kernel-wide changes permitted (except VFIO foundation, one-time).
+
+9.3 Multiple backends per class (e.g. block: RAM-disk | virtio-blk | AHCI;
+     net: virtio-net | E1000). Backends are invisible to guests — devman ENUM
+     exposes only class/instance/window, never the transport.
+
+10. RESERVED DEVICE CLASSES (ABI §9)
+
+10.1 Class IDs:
+
+ID  | Name        | Status
+----+-------------+-------------------------------------------
+1   | Block       | DEFINED (§3)
+2   | Net         | DEFINED (§6)
+3   | Input       | DEFINED (§4)
+4   | Timer       | DEFINED (§5)
+5   | Console     | DEFINED (§2)
+6   | WLAN        | RESERVED (undefined)
+7   | Bluetooth   | RESERVED (undefined)
+8   | USB-HC      | RESERVED (undefined)
+9   | Framebuffer | DEFINED (§9.FB, v1.2)
+10  | PCI         | DEFINED (§12, VFIO passthrough)
+
+10.2 Framebuffer window layout (§9.FB, v1.2, binding):
+
+Offset  | Size | Type | Description
+--------|------|------+-------------------------------------------
+0x00    | u32  | RO   | magic 'FBW'
+0x04    | u32  | RO   | width
+0x08    | u32  | RO   | height
+0x0c    | u32  | RO   | bpp (=32 XRGB)
+0x10    | u64  | RO   | fb_off (pixel data; stride = width*4)
+0x18    | u32  | RO   | caps (bit0 double-buffer, bit1 damage-rects)
+-- control mailbox --
+0x20    | u32  | W    | op: 1=SET_MODE, 2=FLIP, 3=UPDATE_RECT
+0x24    | u32  | R/W  | next_req_id
+0x28    | u32  | RO   | done_req_id
+0x2c    | i32  | RO   | status
+0x30    | u32  | W    | args[3] (SET_MODE: w,h,bpp | UPDATE_RECT: x,y,w,h)
+
+10.3 §9.FB semantics. Single-buffer default (FLIP is no-op unless double-buffer
+     negotiated); consumers must tolerate width==0 ("no display attached").
+
+11. AUDIT TRAIL (ABI §10)
+
+11.1 Format. Every rejected §7 op produces:
+
+     [audit] sid=<n> uid=<n> op=<name> reason=<cap|op> target=<port>
+
+11.2 Semantics. v1 destination is serial only; a file sink under /var/log
+     arrives with post-v1 storage work.
+
+12. PCI/VFIO (ABI §12)
+
+12.1 Imports. Device passthrough foundation:
+
+Import Signature                           | Returns       | Description
+-------------------------------------------|---------------|---------------------------
+kern_pci_read32(bus, dev, fn, offset)     | i32 value     | Read PCI config dword; -1 err
+kern_pci_write32(bus, dev, fn, offset, val)| i32 status    | Write PCI config dword
+kern_pci_map_bar(bus, dev, fn, bar)       | i64 offset    | Map BAR to guest window; -1 err
+kern_pci_unmap_bar(bus, dev, fn, bar)     | i32 status    | Unmap a BAR
+kern_pci_enable_busmaster(bus, dev, fn)   | i32 status    | Enable PCI DMA
+kern_pci_bind_irq(bus, dev, fn, type)     | i32 handle    | Bind IRQ to doorbell; -1 err
+kern_pci_flr(bus, dev, fn)               | i32 status    | Function Level Reset
+
+12.2 Parameters:
+
+Parameter    | Type | Constraints                  | Description
+-------------|------+------------------------------+---------------------------
+bus          | u32  | 0..255                       | PCI bus number
+dev          | u32  | 0..31                        | PCI device number
+fn           | u32  | 0..7                         | PCI function number
+offset       | u32  | 0..0xFC, 4-aligned           | Config space offset
+val          | u32  | any                          | Value to write
+bar          | u32  | 0..5                         | BAR index
+type         | u32  | 0=INTX, 1=MSI, 2=MSI-X       | IRQ type
+
+12.3 Semantics:
+     - IOMMU restricts all guest DMA to assigned pages — compromised guest
+       cannot DMA outside its scope.
+     - BAR window offsets follow the same convention as §2-§6: guest never
+       computes absolute addresses, only window offsets.
+     - One doorbell handle per IRQ source. Multiple devices → multiple handles.
+     - `kern_pci_map_bar` may fail if the device is not assigned to the caller's
+       session (kernel registry check).
+     - All imports require CAP_PCI (bit 8).
+
+12.4 BAR mapping cache policy. Kernel maps with write-combining (WC) for
+     framebuffer BARs, uncached for device registers.
+
+13. FRAMEBUFFER CONTROL (ABI §13)
+
+13.1 Imports. Modesetting and cursor for VFIO-mapped Linear Framebuffer:
+
+Import Signature                           | Returns       | Description
+-------------------------------------------|---------------|---------------------------
+kern_fb_set_mode(width, height, bpp)      | i32 status    | Set display mode; -1 err
+kern_fb_set_cursor(x, y)                  | i32 status    | Set hardware cursor; -1 disable
+
+13.2 Parameters:
+
+Parameter    | Type | Constraints                  | Description
+-------------|------+------------------------------+-------------------------------------------
+width        | u32  | 1..4096                      | Display width
+height       | u32  | 1..4096                      | Display height
+bpp          | u32  | must be 32                   | Bits per pixel (XRGB)
+x            | u32  | 0..width-1 or -1             | Cursor X position (-1 disables)
+y            | u32  | 0..height-1 or -1            | Cursor Y position (-1 disables)
+
+13.3 Semantics:
+     - Guest writes pixels directly to the mapped LFB (zero-copy).
+     - stride = width * 4.
+     - No kernel copy — writes reach the hardware directly.
+     - VSYNC notification arrives via the doorbell handle bound to the display
+       controller's interrupt.
+     - All imports require CAP_FB (bit 9).
+
+13.4 The §9.FB window mailbox (SET_MODE/FLIP/UPDATE_RECT) is RETAINED for v1
+     backward compat with Bochs/SVGA shims. VFIO framebuffer uses the new
+     imports + direct LFB writes. Both paths converge on the same hardware.
+
+14. DOORBELL (ABI §14)
+
+14.1 Import. Replaces yield-polling for IRQ-bearing devices:
+
+Import Signature                           | Returns       | Description
+-------------------------------------------|---------------|---------------------------
+kern_doorbell_wait(handle, timeout_ms)     | i32 status    | 0 fired | 1 timeout | -1 err
+
+14.2 Parameters:
+
+Parameter    | Type | Constraints                  | Description
+-------------|------+------------------------------+-------------------------------------------
+handle       | u32  | from kern_pci_bind_irq       | Doorbell handle
+timeout_ms   | u32  | 0 = poll once (non-blocking) | Timeout in milliseconds
+
+14.3 Semantics:
+     - `handle` is obtained from `kern_pci_bind_irq`.
+     - Multiple handles can be waited on via sequential calls (no multi-wait
+       in v1 — guest loops over its handles).
+     - For v1 compat, `sched_yield` still works; guests that don't use
+       `kern_doorbell_wait` fall back to polling.
+     - Doorbell is level-triggered: if the interrupt fired while the guest
+       was not waiting, the next `kern_doorbell_wait` returns immediately.
+     - No capability requirement — any session with a bound handle can wait.
+
+15. BLOCK SERVICE PROTOCOL (ABI §15)
+
+15.1 Protocol. Port-based block I/O for userspace block drivers (ahci.wasm):
+
+Request  (client → driver):
+     {u16 op, u16 seq, u32 uid, char rname[16], u64 lba, u32 count, u32 pad}
+
+Reply    (driver → client):
+     {u16 op, u16 seq, u32 uid, char rname[16], i32 status, u32 pad}
+
+Data     (client ↔ driver): transferred via §1 port payload (≤4096 B) or via
+     a shared window for larger ops.
+
+15.2 Ops:
+
+Op | Name      | Description
+---+-----------+-------------------------------------------
+1  | READ      | Read sectors from disk
+2  | WRITE     | Write sectors to disk
+3  | FLUSH     | Flush pending writes
+4  | GEOMETRY  | Returns {u64 sectors, u32 blk_size}
+
+15.3 Semantics. A block driver session binds a well-known name (e.g. "blk1")
+     and serves this protocol over §1 ports. The kernel's "userspace block
+     backend" router (part of VFIO foundation) bridges §3 window operations
+     to this protocol, so fs.wasm is unchanged — it still sees §3, but the
+     backend is now a userspace driver.
+
+16. CAPABILITY BITS (complete table)
+
+16.1 Bit assignments:
+
+Bit | Hex    | Name        | Grants Access To
+----+--------+-------------+-------------------------------------------
+0   | 0x0001 | CAP_KILL    | Registry KILL op
+1   | 0x0002 | CAP_DEVMAN  | Devman ENUM, ASSIGN_PCI, admin bypass
+2   | 0x0004 | CAP_POWER   | Power REBOOT/OFF
+3   | 0x0008 | CAP_FOCUS   | kern_focus_set
+4   | 0x0010 | CAP_FS_ADMIN| kern_blk_read/write, /etc writes
+5   | 0x0020 | CAP_NET_ADMIN| Network admin operations
+6   | 0x0040 | CAP_SPAWN   | Registry SPAWN op
+7   | 0x0080 | CAP_CONF    | Registry SETCONF op
+8   | 0x0100 | CAP_PCI     | kern_pci_* imports (VFIO)
+9   | 0x0200 | CAP_FB      | kern_fb_set_mode/cursor (framebuffer)
+
+16.2 Masks:
+
+Mask    | Hex    | Description
+--------+--------+-------------------------------------------
+Admin   | 0x03FF | All bits (admin user)
+FS ops  | 0x0010 | Block access + /etc writes
+VFIO    | 0x0100 | PCI passthrough
+FB ctrl | 0x0200 | Framebuffer modesetting
+
+16.3 Enforcement. Unknown op / insufficient bit => status -1, audited (§10).
+     Login maps users→masks; `admin` gets all bits, regular users get none of
+     0-2 and scoped others.
+
+17. IMPORT SUMMARY (alphabetical)
+
+Import                        | Module  | ABI Section | Capability
+------------------------------+---------+-------------+-----------
+kern_blk_read                 | kernel  | §3          | FS_ADMIN
+kern_blk_write                | kernel  | §3          | FS_ADMIN
+kern_doorbell_wait            | kernel  | §14         | (none)
+kern_fb_present               | kernel  | §13         | FB
+kern_fb_set_cursor            | kernel  | §13         | FB
+kern_fb_set_mode              | kernel  | §13         | FB
+kern_focus_set                | kernel  | §4          | FOCUS
+kern_input_recv               | kernel  | §4          | (none)
+kern_pci_bind_irq             | kernel  | §12         | PCI
+kern_pci_enable_busmaster     | kernel  | §12         | PCI
+kern_pci_flr                  | kernel  | §12         | PCI
+kern_pci_map_bar              | kernel  | §12         | PCI
+kern_pci_read32               | kernel  | §12         | PCI
+kern_pci_unmap_bar            | kernel  | §12         | PCI
+kern_pci_write32              | kernel  | §12         | PCI
+kern_port_bind                | kernel  | §1          | (none)
+kern_port_create              | kernel  | §1          | (none)
+kern_port_recv                | kernel  | §1          | (none)
+kern_port_send                | kernel  | §1          | (none)
+sched_yield                   | wasi    | frozen      | (none)
+
+18. v2 ROADMAP (scheduled, NOT in force)
+
+18.1 Reply capabilities: `kern_port_reply(h, ptr, len)` — kernel mints a
+     one-shot, consumed-on-use reply right; supersedes rname inbox convention.
+
+18.2 LIST/CAPS registry ops gain self-or-admin gating (Phase 10).
+
+18.3 IRQ arm flags + kernel-routed wakeups on §3–§6 windows (post-Phase-9).
+
+18.4 Class layouts for §9 reserved ids (USB-HC, WLAN, BLUETOOTH).
+
+18.5 Any of these entering force requires a version bump + MEMORY.md note.
+
+19. GATE ASSERTION CONVENTIONS
+
+19.1 `make test` targets assert literal substrings on stripped ANSI serial
+     output; hex values may be zero-padded (`out 0x0000000000000028`).
+
+19.2 Each phase adds `make test-pN`. Budget ≥150 s wall clock per run when the
+     kernel halts.
+
+19.3 Kernel fault policy: any substrate fault prints `KERNEL-PANIC <pc> <err>`
+     on serial then halts — never a silent hang. Guest faults only kill that
+     session.
+
+20. DOCUMENT CROSS-REFERENCES
+
+20.1 Design: KLD-SDD-001.
+20.2 Traceability: KLD-TRC-001.
+20.3 Verification: KLD-TST-001.
+20.4 Performance: KLD-PER-001.
+20.5 Release history: KLD-REL-001.
+20.6 User guide: KLD-USE-001.
+20.7 Glossary: KLD-GLS-001.
+
+--------------------------------------------------------------------------------
+REVISION HISTORY (Version | Date | Sections touched | Reason)
+1.0    | 2026-08-22 | all | Initial release; reviewed MAIN 0907825.
+2.0    | 2026-08-29 | COMPLETE REWRITE | Regenerated from ABI v2.0 RATIFIED.
+       |            |     | All imports documented with parameter tables.
+       |            |     | New: PCI/VFIO (§12), framebuffer (§13), doorbell (§14),
+       |            |     | block service protocol (§15), capability bits table (§16),
+       |            |     | import summary (§17), v2 roadmap (§18).
+================================================================================
