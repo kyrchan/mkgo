@@ -1,9 +1,11 @@
-CURRENT MISSION: extended lane deliverables COMPLETE.
+CURRENT MISSION: extended lane deliverables COMPLETE + COMMITTED.
 
 - services/net layer ladder (ARP→IPv4/ICMP→UDP→TCP): built, host-tested under -race
 - fs.wasm uid-rooting hardening: multiuser /home isolation, dot-dot escape prevention
 - guests/lib net helpers: NetConn/NetListener wrappers, DialTCP/ListenTCP
 - Wire-format fuzz coverage: all parsers covered (net, lib, login, fs)
+- Cleanup: untracked gitignored *.wasm.raw build artifacts; .kilo.pid/.runner.pid gitignored
 
-All `go test -race` green. Wasm artifacts current. No open BLOCKERs/MAJORs.
-Working tree clean. Awaiting next mandate.
+All `go test -race` green (net, fs, guests/lib). Wasm artifacts current (Aug 28).
+No open BLOCKERs/MAJORs against SERVICES scope. Working tree clean.
+Awaiting next mandate.
