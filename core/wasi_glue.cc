@@ -24,6 +24,7 @@ static void put16_(uint8_t *p, uint16_t v) {
 static uint16_t fs_seq_ctr = 200;
 #include "plat.h"
 #include "rt.h"
+#include "vfio.h"
 
 extern "C" {
 #include "wasm3.h"
@@ -812,10 +813,11 @@ m3ApiRawFunction(kern_fb_set_cursor) {
 }
 m3ApiRawFunction(kern_fb_present) {
     m3ApiReturnType(int32_t)
-    // Present the guest framebuffer window to the physical LFB.
-    // In a real implementation, this would copy/flush the shadow buffer
-    // to the actual hardware LFB. For now, just return success.
-    m3ApiReturn(0);
+    // Present the guest framebuffer window to the physical LFB by copying
+    // the session's FB BAR window (emulated DMA) into the real hardware
+    // framebuffer. Returns the result of the underlying VFIO present op.
+    int r = vfio_fb_present(sched_current_sid());
+    m3ApiReturn(r);
 }
 m3ApiRawFunction(kern_doorbell_wait) {
     m3ApiReturnType(int32_t)
