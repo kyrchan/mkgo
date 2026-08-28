@@ -21,6 +21,13 @@ static constexpr int MAX_DOORBELLS = 4;
 static constexpr int MAX_PCI_DEVS = 16;
 static constexpr int MAX_IOMMU_PAGES = 256; // 1 MB of tracked pages per domain
 
+// Virtual VGA device (BDF 0:1:0) — provides a framebuffer BAR for headless
+// VFIO testing. Allocates a backing buffer; guests map BAR 0 and render
+// into their linear window. Class 0x03 (display controller).
+static constexpr uint32_t VVGA_BUS = 0;
+static constexpr uint32_t VVGA_DEV = 1;
+static constexpr uint32_t VVGA_FN = 0;
+
 struct bar_map {
     bool used;
     uint32_t sid;

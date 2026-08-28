@@ -46,7 +46,7 @@ extern "C" EFI_STATUS __attribute__((ms_abi)) efi_main(EFI_HANDLE image_handle,
                             'n','e','t','.','w','a','s','m',0};
     static CHAR16 pp9[] = {'b','o','o','t','\\','m','o','d','u','l','e','s','\\',
                            'p','9','.','w','a','s','m',0};
-    static CHAR16 pconf[] = {'e','t','c','\\','i','n','i','t','.','c','o','n','f',0};
+    static CHAR16 pconf[] = {'i','n','i','t','.','c','o','n','f',0};
     static CHAR16 papp2[] = {'v','m','\\','a','p','p','2',0};
     static CHAR16 pgate[] = {'v','m','\\','g','a','t','e',0};
     void *cimg = 0, *limg = 0, *fimg = 0, *a2img = 0, *iimg = 0, *shimg = 0,

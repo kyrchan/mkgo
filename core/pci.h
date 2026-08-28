@@ -36,6 +36,10 @@ int pci_msix_find(uint32_t bus, uint32_t dev, uint32_t fn, struct pci_msix *out)
 int pci_msix_enable(uint32_t bus, uint32_t dev, uint32_t fn, const struct pci_msix *m, uint16_t num_vecs);
 int pci_msix_set_vector(uint32_t bus, uint32_t dev, uint32_t fn, const struct pci_msix *m, uint16_t vec, uint64_t addr, uint16_t data);
 
+// Virtual framebuffer (headless VFIO test device). BDF 0:2:0.
+void pci_vfb_init(uint32_t width, uint32_t height);
+bool pci_is_vfb(uint32_t bus, uint32_t dev, uint32_t fn);
+
 #ifdef __cplusplus
 }
 #endif

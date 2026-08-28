@@ -14,6 +14,9 @@ OVMF_CODE := $(firstword $(foreach d,$(ROOT)/usr/share/OVMF /usr/share/OVMF /usr
 OVMF_VARS := $(firstword $(foreach d,$(ROOT)/usr/share/OVMF /usr/share/OVMF /usr/share/ovmf,$(wildcard $(d)/OVMF_VARS_4M.fd) $(wildcard $(d)/OVMF_VARS.fd)))
 
 QEMU_ENV := LD_LIBRARY_PATH=$(ROOT)/usr/lib/x86_64-linux-gnu
+MFORMAT := $(shell command -v mformat 2>/dev/null || echo $(ROOT)/usr/bin/mformat)
+MMD     := $(shell command -v mmd 2>/dev/null || echo $(ROOT)/usr/bin/mmd)
+MCOPY   := $(shell command -v mcopy 2>/dev/null || echo $(ROOT)/usr/bin/mcopy)
 KVM_FLAG ?= $(shell [ -w /dev/kvm ] && echo -enable-kvm || echo -accel tcg)
 
 CC      := gcc
@@ -292,15 +295,18 @@ $(BUILD)/disk-p9.img: $(BUILD)/BOOTX64.EFI build/test_p9.wasm \
 $(BUILD)/disk-p10.img: $(BUILD)/BOOTX64.EFI build/test_p10a.wasm \
                        build/test_p10b.wasm services/fs/fs.wasm \
                        services/console/console.wasm services/login/login.wasm \
-                       $(BUILD)/etc_users.txt | $(BUILD) $(IMG)
-	$(IMG) $@ 64 \
-	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
-	  services/fs/fs.wasm:/boot/modules/fs.wasm \
-	  services/console/console.wasm:/boot/modules/console.wasm \
-	  services/login/login.wasm:/boot/modules/login.wasm \
-	  build/test_p10a.wasm:/vm/app \
-	  build/test_p10b.wasm:/vm/app2 \
-	  $(BUILD)/etc_users.txt:/etc/users
+                       $(BUILD)/etc_users.txt | $(BUILD)
+	dd if=/dev/zero of=$@ bs=1M count=0 seek=64 status=none
+	$(MFORMAT) -i $@ ::
+	$(MMD) -i $@ ::/EFI ::/EFI/BOOT ::/vm ::/boot ::/boot/modules ::/etc
+	$(MCOPY) -i $@ $(BUILD)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
+	$(MCOPY) -i $@ services/fs/fs.wasm ::/boot/modules/fs.wasm
+	$(MCOPY) -i $@ services/console/console.wasm ::/boot/modules/console.wasm
+	$(MCOPY) -i $@ services/login/login.wasm ::/boot/modules/login.wasm
+	$(MCOPY) -i $@ build/test_p10a.wasm ::/vm/app
+	$(MCOPY) -i $@ build/test_p10b.wasm ::/vm/app2
+	printf 'console console.wasm 0\nfs fs.wasm 10\nlogin login.wasm 8\nshell shell.wasm 8\n' | $(MCOPY) -i $@ - ::/init.conf
+	printf 'u1:1001:u1salt$$%s:0x18\n' "$$(echo -n 'u1saltu1' | sha256sum | cut -d' ' -f1)" | $(MCOPY) -i $@ - ::/etc/users
 
 # Phase 11: VFIO smoke test disk (p11.wasm as /vm/app, legacy mode)
 $(BUILD)/disk-p11.img: $(BUILD)/BOOTX64.EFI build/test_p11.wasm | $(BUILD) $(IMG)
