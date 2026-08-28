@@ -1,10 +1,10 @@
 # QUALITY.txt — rolling summary (LANE=VERIFY) — regenerated each pass
-# Last pass: 2026-08-28 10:30 UTC — MAIN@f6632b5 (committed GREEN, dirty graphics rewrite) · SVC@d789b35 (committed, dirty netclient BUILD BREAK) · re-poll3
+# Last pass: 2026-08-28 10:45 UTC — MAIN@f6632b5 (committed GREEN) · SVC@d789b35 (committed, dirty Yield FIXED) · re-poll4
 
 | repo | head reviewed | mechanical | open BLOCKERs | open MAJORs | trend |
 |---|---|---|---|---|---|
-| MAIN  | f6632b5 (committed) + dirty 5 files (graphics/main.go rewrite + 4 wasm rebuilds) | committed HEAD builds clean; `make test-p11` PASS; `make clean && make` PASS; test-g1 PASS; 5 fuzz targets PASS | 0 (committed: F187-F195 series unchanged) | 0 (committed: F190-F193 series) | stable; working-tree builds clean |
-| SVC   | d789b35 (committed) + dirty 4 files (netclient BUILD BREAK + fs redirect + tests) | committed: go vet clean, -race green; dirty: `go build` FAILS at guests/lib (F223 Yield) | 1 (F223 dirty — NetClient.Yield missing) | 0 | build break blocks fs/net tests |
+| MAIN  | f6632b5 (committed) + dirty 13 files (graphics rewrite + ALL wasm rebuilds) | committed HEAD builds clean; `make test-p11` PASS; test-g1 PASS; 5 fuzz PASS | 0 (committed: F187-F195 series) | 0 (committed: F190-F193 series) | stable; working-tree builds clean |
+| SVC   | d789b35 (committed) + dirty 5 files (netclient Yield FIXED + netconn_test + fs redirect + tests) | committed: -race green; dirty: `go build` PASS (F223 fixed); full suite -race PASS | 0 (F223 CLOSED) | 0 | healthy; all tests green |
 | TLS   | 1ccd2bf (no delta) | no test files | 0 | 0 | healthy; stable |
 
 ## Phase 11 gate — GREEN (committed HEAD f6632b5)
@@ -16,15 +16,14 @@ No real IOMMU enforcement, no physical LFB copy, no MSI-X yet.
 ## Test matrix — GREEN @f6632b5 (committed)
 - Committed HEAD f6632b5: test-g1 PASS, test-p4 PASS, test-p10 PASS, test-p11 PASS (TCG only).
 - MAIN working tree: builds clean; graphics wasm renders as ppa/ppb (expected WIP).
-- SVC working tree: `go build` FAILS (F223) → fs/net tests BLOCKED.
+- SVC working tree: `go build` PASS; full suite -race green (fs 6.0s, net 3.9s, console/init/login/shell).
 
 ## Open BLOCKERs
 ### Committed HEAD (inherited, unchanged):
 - F187: vfio_doorbell_wait race on d.pending (no atomic/barrier).
 - F188: pci_read32/write32 non-atomic CFG_ADDR/CFG_DATA pair.
 - F189: alloc_window bump-allocator never reclaims.
-### Dirty working tree (new):
-- F223 BLOCKER: guests/lib/netclient.go NetListener.Accept() calls l.nc.Yield() — NetClient has no Yield method. Build broken for guests/lib + services/fs + services/net.
+### Dirty working tree: NONE (F223 CLOSED).
 
 ## Open MAJORs
 ### Committed HEAD:
@@ -45,16 +44,16 @@ No real IOMMU enforcement, no physical LFB copy, no MSI-X yet.
 - FuzzParseCanonicalHeader: PASS (430,729 execs/5s)
 
 ## Deltas reviewed this poll
-- MAIN dirty vs f6632b5: services/graphics/main.go (full rewrite: drawChar/drawString, unsafe.Slice fb copy, virtual VGA 0:1:0, removed busmaster/irq), services/graphics/init/shell wasm rebuilds. core/vfio.cc RESTORED to HEAD (prior gutted state reverted).
-- SVC dirty vs d789b35: guests/lib/netclient.go (+70 lines: NetConn/NetListener/DialTCP/ListenTCP — BUILD BREAK F223), services/fs/server.go (home redirect at authorize), services/fs/server_test.go (updated assertions), services/net/tcp_test.go (TestTCPSimultaneousClose).
-- Prior F223 (vfio.cc deleted) CLOSED by restoration; F219/F220/F221 superseded.
+- MAIN dirty vs f6632b5: services/graphics/main.go (full rewrite: drawChar/drawString, unsafe.Slice fb copy, virtual VGA 0:1:0, removed busmaster/irq), ALL service wasm rebuilds (console/fs/graphics/init/login/shell).
+- SVC dirty vs d789b35: guests/lib/netclient.go (Yield FIXED at line 57 — F223 CLOSED), guests/lib/netconn_test.go (NEW 259-line mockNetServer for NetConn/NetListener testing), services/fs/server.go (home redirect at authorize), services/fs/server_test.go (updated assertions), services/net/tcp_test.go (TestTCPSimultaneousClose).
+- Prior F223 (netclient Yield build break) CLOSED; F219/F220/F221 superseded by current review.
 
 ## Key observations
 - v2 ABI transition latent: all services abi_ver=1, kernel abi_ver=2, no enforcement yet.
 - MAIN working-tree builds clean; graphics rewrite is WIP Phase 11 progression.
-- SVC build break (F223) is a one-line fix: add NetClient.Yield delegation.
+- SVC F223 fixed by adding NetClient.Yield delegation; netconn_test.go adds mock-based test coverage for new NetConn/NetListener types.
 
 ## Process notes
 - Fuzz targets run with -fuzztime=5s; 5/5 PASS.
 - Never emitting ALL PHASES COMPLETE (coordinator decides).
-- Branch heads: MAIN@f6632b5 (dirty 5 files), SVC@d789b35 (dirty 4 files), TLS@1ccd2bf.
+- Branch heads: MAIN@f6632b5 (dirty 13 files), SVC@d789b35 (dirty 5 files), TLS@1ccd2bf.
