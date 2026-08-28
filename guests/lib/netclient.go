@@ -53,6 +53,9 @@ func BindNet(k Kernel, roleTag string) (*NetClient, error) {
 // SetBudget overrides the reply poll budget (tests).
 func (n *NetClient) SetBudget(b int) { n.c.Budget = b }
 
+// Yield cooperatively reschedules (delegates to the kernel).
+func (n *NetClient) Yield() { n.c.k.Yield() }
+
 func (n *NetClient) call(op uint16, payload []byte) ([]byte, error) {
 	rep, err := n.c.InboxRequest(n.h, op, payload)
 	if err != nil {
@@ -193,4 +196,74 @@ func (n *NetClient) Close(sock uint16) error {
 		return err
 	}
 	return statusOf(rep)
+}
+
+// NetConn is a stream-oriented wrapper over a TCP socket id, providing
+// io.ReadWriteCloser semantics for guest code. It is NOT safe for
+// concurrent use; guests that need concurrency should serialize.
+type NetConn struct {
+	nc   *NetClient
+	sock uint16
+}
+
+// DialTCP opens a TCP connection to ip:rport and returns a NetConn.
+func DialTCP(nc *NetClient, ip [4]byte, rport uint16) (*NetConn, error) {
+	s, err := nc.OpenTCPOutbound()
+	if err != nil {
+		return nil, err
+	}
+	if err := nc.Connect(s, ip, rport); err != nil {
+		_ = nc.Close(s)
+		return nil, err
+	}
+	return &NetConn{nc: nc, sock: s}, nil
+}
+
+// ListenTCP binds a TCP listener on port and returns a NetListener.
+func ListenTCP(nc *NetClient, port uint16) (*NetListener, error) {
+	s, err := nc.OpenTCPListen(port)
+	if err != nil {
+		return nil, err
+	}
+	return &NetListener{nc: nc, sock: s}, nil
+}
+
+// Read implements io.Reader.
+func (c *NetConn) Read(p []byte) (int, error) {
+	return c.nc.Recv(c.sock, p)
+}
+
+// Write implements io.Writer.
+func (c *NetConn) Write(p []byte) (int, error) {
+	return c.nc.Send(c.sock, p)
+}
+
+// Close tears down the underlying socket.
+func (c *NetConn) Close() error {
+	return c.nc.Close(c.sock)
+}
+
+// NetListener accepts inbound TCP connections on a bound port.
+type NetListener struct {
+	nc   *NetClient
+	sock uint16
+}
+
+// Accept blocks until a handshake completes; returns a NetConn over the
+// same socket id (the server routes subsequent recvs to the accepted
+// child). Polls with zero-byte RECVs; the caller must ensure the
+// NetClient has budget for the reply.
+func (l *NetListener) Accept() (*NetConn, error) {
+	for {
+		// A zero-byte RECV triggers the server to pull the accepted
+		// child; status=errState means none ready yet.
+		_, err := l.nc.Recv(l.sock, make([]byte, 0))
+		if err == nil {
+			return &NetConn{nc: l.nc, sock: l.sock}, nil
+		}
+		if err != ErrNetState {
+			return nil, err
+		}
+		l.nc.Yield()
+	}
 }

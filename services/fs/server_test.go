@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 	"time"
 
@@ -287,6 +288,80 @@ func TestMultiuserRootingAndDenials(t *testing.T) {
 	}
 	if err := admin.Create("/rootfile"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestHomeListingIsolation pins the /home listing leak fix: a registered
+// user listing /home must see only their OWN home — other users' homes
+// are invisible (existence hidden), and a guest cannot list /home at all.
+func TestHomeListingIsolation(t *testing.T) {
+	k := lib.NewFakeKernel()
+	stop := make(chan struct{})
+	defer close(stop)
+	startServer(t, k, stop)
+
+	restoreAdmin := k.As(0)
+	admin := newUidClient(t, k, "admin0", 0)
+	for _, d := range []string{"/home/u1", "/home/u2"} {
+		if err := admin.Mkdir(d); err != nil && err != ErrExists && err != lib.ErrFSExists {
+			t.Fatalf("admin mkdir %s: %v", d, err)
+		}
+	}
+	if err := admin.Create("/home/u1/secret.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.WriteFile("/home/u1/secret.txt", 0, []byte("u1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := admin.Create("/home/u2/notes.txt"); err != nil {
+		t.Fatal(err)
+	}
+	restoreAdmin()
+
+	// u1 lists /home → sees the contents of their OWN home (/home/u1),
+	// NOT a listing of all users' homes (which would leak existence).
+	u1 := newUidClient(t, k, "u1sess", uint32(1001), "u1", lib.CapFocus)
+	scopeU1 := k.As(1001)
+	defer scopeU1()
+	sub, err := u1.List("/home")
+	if err != nil {
+		t.Fatalf("u1 list /home: %v", err)
+	}
+	if len(sub) != 1 || !strings.EqualFold(sub[0].Name, "SECRET.TXT") {
+		t.Fatalf("u1 /home should show own home contents, got: %+v", sub)
+	}
+	// u1 CAN list their own home contents via the absolute path too
+	subAbs, err := u1.List("/home/u1")
+	if err != nil || len(subAbs) != 1 || !strings.EqualFold(subAbs[0].Name, "SECRET.TXT") {
+		t.Fatalf("u1 own listing wrong: %+v err=%v", subAbs, err)
+	}
+
+	// u2 lists /home → sees the contents of their OWN home (/home/u2),
+	// NOT u1's home (existence hidden).
+	u2 := newUidClient(t, k, "u2sess", uint32(1002), "u2", lib.CapFocus)
+	scopeU2 := k.As(1002)
+	defer scopeU2()
+	ents2, err := u2.List("/home")
+	if err != nil {
+		t.Fatalf("u2 list /home: %v", err)
+	}
+	if len(ents2) != 1 || !strings.EqualFold(ents2[0].Name, "NOTES.TXT") {
+		t.Fatalf("u2 /home should show own home contents, got: %+v", ents2)
+	}
+
+	// guest cannot list /home at all
+	guestScope := k.As(7777)
+	guest := newUidClient(t, k, "guestx", uint32(7777))
+	if _, err := guest.List("/home"); err != lib.ErrFSNoEntry {
+		t.Fatalf("guest list /home: %v", err)
+	}
+	guestScope()
+
+	// admin sees everything
+	restoreAdmin()
+	admEnts, err := admin.List("/home")
+	if err != nil || len(admEnts) != 2 {
+		t.Fatalf("admin /home listing wrong: %+v err=%v", admEnts, err)
 	}
 }
 

@@ -332,3 +332,24 @@ Everything known is consolidated there: symptoms, environment, ranked
 hypotheses (#1 accidental modern/VIRTIO_F_VERSION_1 negotiation via
 byte-wide GUEST_FEATURES write), evidence paths, next steps.
 MAINLINE meanwhile continues Phase 10 regression matrix + kfs gate.
+
+## QA backlog (carried from lane/services merge, 2026-08-29)
+- **F7 (MINOR)**: services/tools/addabiver has no tests. It stamps the
+  abi_ver custom section the kernel hard-refuses modules without; silent
+  corruption here bricks boot. Action: golden-file round-trip test
+  (raw wasm in → custom section bytes asserted) when touching tools/.
+- **F19 (NOTE)**: guests/lib/frame.go InboxRequest encodes reply channel
+  as {u16 len, bytes} LStr while ABI v1.1 + kernel parsers use fixed
+  char rname[16]. Noted so the encoding decision isn't lost; resolve when
+  the canonical header is finalized.
+- Resolved in lane/services: F3 races (block.go mutex, shell_test.go mu,
+  init_test.go recorder.mu), F17 (kernel implements kern_input_recv +
+  kern_focus_set), F20 (host.go FakeKernel gained LOGIN/SETCONF cases).
+
+## MERGE NOTE (2026-08-29)
+lane/services merged into master. IMPORTANT: lane/services was still at
+abi_ver=1 while master is abi_ver=2 (VFIO/pci/virtio_net). Resolution took
+MASTER's Makefile + MASTER's *.wasm binaries (abi_ver=2 kernel-compatible);
+lane's service *source* (services/*.go, guests/lib/*, fuzz/net/usb tests)
+was integrated. Services MUST be rebuilt (`make`) to refresh *.wasm from the
+new source — otherwise shipped binaries are stale vs source.
