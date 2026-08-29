@@ -62,9 +62,11 @@ Verified: test-p11b PASS (`graphics: fb_present ok` + `graphics: all ok`) with K
 
 Note: test-p10's `sched_run()` does not return to print `KERNEL-OK` because long-running service sessions (console/login/fs/shell) keep the scheduler alive — pre-existing behavior, `timeout 600 || true` handles it. The gate string checks still pass via serial log grep.
 
-### ⚡ Stale .wasm binaries rebuilt (2026-08-29)
+### ⚡ Stale .wasm binaries rebuilt + interactive UX tuning (2026-08-29)
 
-Committed service .wasm binaries were stale relative to source — init.wasm lacked the `defaultPollEvery=10000` sweep throttle (`a100c59`), causing hundreds of registry LIST requests in a tight loop after login startup. All services rebuilt from current source: console, fs, init, login, net, shell. LIST spam reduced from hundreds to 2 in test-p10.
+Committed service .wasm binaries were stale relative to source — init.wasm lacked the `defaultPollEvery` sweep throttle (`a100c59`), causing hundreds of registry LIST requests during login startup. All services rebuilt from current source: console, fs, init, login, net, shell. LIST spam in test-p10 reduced from hundreds to 2.
+
+Added graphics.wasm to disk-p7.img boot modules + `graphics graphics.wasm 300 respawn=no` in init.conf so `make run-gfx` shows the MOTD ("Welcome to the capability microkernel") rendered to the framebuffer via graphics.wasm's VFIO PCI display path, alongside the shell on serial. Raised `defaultPollEvery` from 10000 to 100000: reduces registry LIST spam from ~1/s to ~0.1/s during long interactive sessions.
 
 ## ⚡ CURRENT STATUS (2026-08-28 — Phase 10 GREEN on v2.0, Phase 11 VFIO in progress) — atomic bump
 
