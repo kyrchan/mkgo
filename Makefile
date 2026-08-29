@@ -265,8 +265,8 @@ $(BUILD)/disk-p5b.img: $(BUILD)/BOOTX64.EFI build/test_p5b.wasm \
 $(BUILD)/disk-p7.img: $(BUILD)/BOOTX64.EFI services/fs/fs.wasm \
                       services/console/console.wasm services/login/login.wasm \
                       services/init/init.wasm services/shell/shell.wasm \
-                      $(BUILD)/etc_users.txt | $(BUILD) $(IMG)
-	printf 'console console.wasm 0\nfs fs.wasm 10\nlogin login.wasm 8\nshell shell.wasm 8\n' > $(BUILD)/init.conf.tmp
+                      build/graphics.wasm $(BUILD)/etc_users.txt | $(BUILD) $(IMG)
+	printf 'console console.wasm 0\nfs fs.wasm 10\nlogin login.wasm 8\nshell shell.wasm 8\ngraphics graphics.wasm 300 respawn=no\n' > $(BUILD)/init.conf.tmp
 	$(IMG) $@ 64 \
 	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
 	  services/fs/fs.wasm:/boot/modules/fs.wasm \
@@ -274,6 +274,7 @@ $(BUILD)/disk-p7.img: $(BUILD)/BOOTX64.EFI services/fs/fs.wasm \
 	  services/login/login.wasm:/boot/modules/login.wasm \
 	  services/init/init.wasm:/boot/modules/init.wasm \
 	  services/shell/shell.wasm:/boot/modules/shell.wasm \
+	  build/graphics.wasm:/boot/modules/graphics.wasm \
 	  $(BUILD)/init.conf.tmp:/init.conf \
 	  $(BUILD)/etc_users.txt:/etc/users
 

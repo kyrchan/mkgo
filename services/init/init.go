@@ -82,7 +82,7 @@ func ParseKnobs(text string) map[string]string {
 
 const (
 	maxSpawnFails    = 5
-	defaultPollEvery = 10000
+	defaultPollEvery = 100000
 	// listSaturationCap mirrors the kernel LIST record cap
 	// (core/kernsvc.cc: sched_list(..., 12), no truncation flag).
 	listSaturationCap = 12
