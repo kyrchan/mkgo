@@ -136,3 +136,22 @@ func TestCRLFTrimmed(t *testing.T) {
 		t.Fatalf("CR leaked: %q", out.String())
 	}
 }
+
+func TestEchoRedraw(t *testing.T) {
+	b := kern.NewBus()
+	stop := make(chan struct{})
+	defer close(stop)
+	out := startConsole(b, stop)
+
+	// Echo redraw: '\r' prefix → emit '\r' + payload, no [console] tag, no \n.
+	if err := b.SendTo(kern.NameConsole, []byte("\r> ls")); err != nil {
+		t.Fatal(err)
+	}
+	waitOutput(t, out, "\r> ls")
+
+	// A tagged message after the redraw should appear on the same line.
+	if err := b.SendTo(kern.NameConsole, []byte("[shell] etc/")); err != nil {
+		t.Fatal(err)
+	}
+	waitOutput(t, out, "\r> ls[shell] etc/\n")
+}

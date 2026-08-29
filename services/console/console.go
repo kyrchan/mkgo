@@ -72,7 +72,29 @@ func Serve(k kern.Kernel, out io.Writer, opts Options) {
 }
 
 // render appends one normalized line (datagram + "\n") onto dst.
+//
+// Echo/redraw protocol: a message whose first byte is '\r' is a shell
+// input-redraw.  It carries "\r> <buffer>" — the leading '\r' resets the
+// serial cursor to column 0 so the next redraw overwrites the previous
+// line in place.  We emit the '\r' and the payload *without* the
+// [console] tag and *without* a trailing '\n', so successive redraws
+// stay on the same terminal line until a tagged datagram arrives (which
+// naturally advances).
 func render(dst, msg []byte) []byte {
+	if len(msg) > 0 && msg[0] == '\r' {
+		content := bytes.TrimRight(msg[1:], "\r")
+		hasNL := len(content) > 0 && content[len(content)-1] == '\n'
+		if hasNL {
+			content = content[:len(content)-1]
+		}
+		dst = append(dst, '\r')
+		dst = append(dst, content...)
+		if hasNL {
+			dst = append(dst, '\n')
+		}
+		return dst
+	}
+
 	m := bytes.TrimRight(msg, "\r\n")
 	if len(m) == 0 {
 		return dst // kernel rejects empty sends; be safe anyway

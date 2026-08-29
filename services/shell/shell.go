@@ -107,9 +107,15 @@ func stopped(ch <-chan struct{}) bool {
 }
 
 // out relays one tagged line through the console service.
+// Prefix [sh\0\0\0\0\0]  ensures bytes [4:8] are null (F32 uid stamping
+// for root writes \x00 there — no-op on pre-filled nulls).
 func (s *Shell) out(line string) {
-	msg := "[shell] " + line
-	s.k.PortSend(s.con, []byte(msg))
+	msg := []byte("[sh")
+	msg = append(msg, 0, 0, 0, 0, 0)
+	msg = append(msg, ']')
+	msg = append(msg, ' ')
+	msg = append(msg, []byte(line)...)
+	s.k.PortSend(s.con, msg)
 }
 
 func (s *Shell) prompt() { s.out("> ") }
@@ -120,17 +126,46 @@ func (s *Shell) key(ev lib.InputEvent) {
 	case '\r', '\n':
 		line := strings.TrimSpace(string(s.line))
 		s.line = s.line[:0]
+		s.echoEnter()
 		s.exec(line)
 		s.prompt()
 	case 8, 127: // backspace / delete
 		if len(s.line) > 0 {
 			s.line = s.line[:len(s.line)-1]
 		}
+		s.echo()
 	default:
 		if ev.Codepoint >= 32 && len(s.line) < 512 {
 			s.line = append(s.line, rune(ev.Codepoint))
 		}
+		s.echo()
 	}
+}
+
+// echo redraws the prompt and current input buffer in-place using '\r'
+// so the serial terminal overwrites the previous line on each keystroke.
+// The console service's render() treats the leading '\r' as "no newline,
+// no tag" redraw mode.
+//
+// Bytes [3:8] are null-padded: the kernel's F32 uid stamping overwrites
+// bytes [4:8] with the sender's uid. For a root shell (uid=0) the stamp
+// writes \x00, which is a no-op on our pre-filled nulls — invisible on
+// the terminal and harmless.
+func (s *Shell) echo() {
+	msg := []byte{'\r', '>', ' '}
+	msg = append(msg, 0, 0, 0, 0, 0)
+	msg = append(msg, []byte(string(s.line))...)
+	s.k.PortSend(s.con, msg)
+}
+
+// echoEnter sends the final echo redraw with a trailing newline so
+// render() advances the cursor after the typed command is displayed.
+func (s *Shell) echoEnter() {
+	msg := []byte{'\r', '>', ' '}
+	msg = append(msg, 0, 0, 0, 0, 0)
+	msg = append(msg, []byte(string(s.line))...)
+	msg = append(msg, '\n')
+	s.k.PortSend(s.con, msg)
 }
 
 // resolve joins a user-supplied path with the session root when relative.

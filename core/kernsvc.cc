@@ -77,13 +77,19 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
     g_rname[16] = 0;
     const uint8_t *payload = data + 24;
     uint32_t plen = len - 24;
-    console_puts("[ksvc] ep=");
-    console_puts(epname);
-    console_puts(" op=");
-    console_hex64(op);
-    console_puts(" rname=");
-    console_puts(g_rname);
-    console_puts("\n");
+    /* Suppress verbose debug for routine LIST/ENUM polls (op=1 on registry/devman):
+     * init's sweep and console's devman queries fire these every few seconds,
+     * drowning the serial log. Keep verbose traces for SPAWN/LOGIN/KILL/etc. */
+    bool is_routine_poll = (op == 1);
+    if (!is_routine_poll) {
+        console_puts("[ksvc] ep=");
+        console_puts(epname);
+        console_puts(" op=");
+        console_hex64(op);
+        console_puts(" rname=");
+        console_puts(g_rname);
+        console_puts("\n");
+    }
 
     /* All §7 replies are CANONICAL: {u16 op,u16 seq,u32 uid=0,
      * char rname[16], body@24}. guests/lib Registry/Devman/Power clients

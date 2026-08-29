@@ -31,3 +31,9 @@ printf 'cat /etc/motd\r' >&3; sleep 10
 sleep 3
 
 kill "$QPID" 2>/dev/null
+# Verify echo: the typed command should appear as an in-place redraw
+# (\r> cat /etc/motd) before the command output. The console service's
+# render() treats the leading '\r' as "no newline, no tag" redraw mode.
+# Shell null-pads bytes [3:8] for F32 uid-stamping compat, so strip
+# nulls before matching.
+tr -d '\000' < "$LOG" | grep -a $'\r> cat /etc/motd'
