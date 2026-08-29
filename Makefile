@@ -294,16 +294,17 @@ $(BUILD)/disk-p9.img: $(BUILD)/BOOTX64.EFI build/test_p9.wasm \
 	  $(BUILD)/init-p9.conf.tmp:/init.conf \
 	  $(BUILD)/etc_users.txt:/etc/users
 
-# Phase 10 disk: legacy slots carry the two user drivers + /etc/users
+# Phase 10 disk: multiuser services + graphics integration
 $(BUILD)/disk-p10.img: $(BUILD)/BOOTX64.EFI build/test_p10a.wasm \
                        build/test_p10b.wasm services/fs/fs.wasm \
                        services/console/console.wasm services/login/login.wasm \
-                       $(BUILD)/etc_users.txt | $(BUILD) $(IMG)
+                       build/graphics.wasm $(BUILD)/etc_users.txt | $(BUILD) $(IMG)
 	$(IMG) $@ 64 \
 	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
 	  services/fs/fs.wasm:/boot/modules/fs.wasm \
 	  services/console/console.wasm:/boot/modules/console.wasm \
 	  services/login/login.wasm:/boot/modules/login.wasm \
+	  build/graphics.wasm:/boot/modules/graphics.wasm \
 	  build/test_p10a.wasm:/vm/app \
 	  build/test_p10b.wasm:/vm/app2 \
 	  $(BUILD)/etc_users.txt:/etc/users
