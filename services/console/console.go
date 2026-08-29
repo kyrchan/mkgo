@@ -53,13 +53,45 @@ func Serve(k kern.Kernel, out io.Writer, opts Options) {
 
 	buf := make([]byte, kern.MaxMsg)
 	line := make([]byte, 0, kern.MaxMsg+len(defaultTag))
+	/* When a non-echo datagram arrives while the line is mid-redraw
+	 * (no trailing \n on the previous echo), prepend \r\n so the
+	 * message starts on its own line rather than clobbering the
+	 * shell prompt.  After the tagged message, re-emit the cached
+	 * prompt so the cursor is never left without a "> " leader. */
+	prevEcho := false
+	var lastEcho []byte
 	for {
 		n := k.PortRecv(h, buf)
 		if n > 0 {
+			isEcho := n > 0 && buf[0] == '\r'
+			if isEcho {
+				lastEcho = append(lastEcho[:0], buf[:int(n)]...)
+			}
+			if !isEcho && prevEcho {
+				out.Write([]byte("\r\n"))
+				if opts.Mirror != nil {
+					opts.Mirror.Write([]byte("\r\n"))
+				}
+			}
 			rendered := render(line[:0], buf[:int(n)])
 			out.Write(rendered)
 			if opts.Mirror != nil {
 				opts.Mirror.Write(rendered)
+			}
+			if !isEcho && prevEcho && len(lastEcho) > 0 {
+				/* Re-emit the last echo redraw (prompt) after the
+				 * tagged message so the shell prompt is visible.
+				 * The re-emitted prompt is itself a non-terminated
+				 * echo redraw, so subsequent tagged messages will
+				 * also be preceded by a line break + redraw. */
+				pmpt := render(make([]byte, 0, len(lastEcho)+2), lastEcho)
+				out.Write(pmpt)
+				if opts.Mirror != nil {
+					opts.Mirror.Write(pmpt)
+				}
+				prevEcho = !bytes.HasSuffix(pmpt, []byte("\n"))
+			} else {
+				prevEcho = isEcho && !bytes.HasSuffix(rendered, []byte("\n"))
 			}
 		}
 		if opts.Stop != nil && stopped(opts.Stop) {

@@ -149,9 +149,11 @@ func TestEchoRedraw(t *testing.T) {
 	}
 	waitOutput(t, out, "\r> ls")
 
-	// A tagged message after the redraw should appear on the same line.
+	// A tagged message after a non-terminated echo redraw should end the
+	// echo line, print the message, then re-emit the cached prompt so the
+	// cursor is never left without a "> " leader.
 	if err := b.SendTo(kern.NameConsole, []byte("[shell] etc/")); err != nil {
 		t.Fatal(err)
 	}
-	waitOutput(t, out, "\r> ls[shell] etc/\n")
+	waitOutput(t, out, "\r> ls\r\n[shell] etc/\n\r> ls")
 }

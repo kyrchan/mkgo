@@ -7,12 +7,12 @@
 package main
 
 import (
-	"os"
-
 	lib "kernel.lane/guests/lib"
 )
 
 func main() {
-	os.Stdout.WriteString("[login] ready\n")
-	Serve(lib.Real(), LoginOptions{})
+	k := lib.Real()
+	var conh lib.Handle = lib.InvalidHandle
+	consoleOut(k, &conh, "ready\n")
+	Serve(k, LoginOptions{})
 }

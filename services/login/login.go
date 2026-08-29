@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"os"
 	"strconv"
 	"strings"
 
@@ -50,6 +49,26 @@ const (
 
 const opFSRegister = uint16(8)
 
+// consoleOut sends a tagged line through the console service port.
+// The handle is cached after the first successful bind.
+//
+// Prefix [lg\0\0\0\0\0\0]  ensures bytes [3:8] are null: the kernel's F32
+// uid-stamping writes uid==0 (\x00) at bytes [4:8] for a root session —
+// a no-op on our pre-filled nulls, so no corruption of the tag.
+func consoleOut(k lib.Kernel, conh *lib.Handle, msg string) {
+	if *conh == lib.InvalidHandle {
+		*conh = k.PortBind(lib.NameConsole)
+	}
+	if *conh != lib.InvalidHandle {
+		line := []byte{'[', 'l', 'g'}
+		line = append(line, 0, 0, 0, 0, 0) // bytes [3:8] null-padded
+		line = append(line, ']')
+		line = append(line, ' ')
+		line = append(line, []byte(msg)...)
+		k.PortSend(*conh, line)
+	}
+}
+
 func (o *LoginOptions) shell() string {
 	if o.ShellModule != "" {
 		return o.ShellModule
@@ -79,13 +98,14 @@ func Serve(k lib.Kernel, opts LoginOptions) {
 
 	// Phase 10: prefer /etc/users; fall back to opts.DefaultUsers.
 	users := opts.Users
+	var conh lib.Handle = lib.InvalidHandle
 	if len(users) == 0 {
 		if loaded, err := loadUsersFromFS(k); err == nil && len(loaded) > 0 {
 			users = loaded
-			os.Stdout.WriteString("[login] loaded " + strconv.Itoa(len(loaded)) + " users from /etc/users\n")
+			consoleOut(k, &conh, "loaded "+strconv.Itoa(len(loaded))+" users from /etc/users\n")
 		} else {
 			users = DefaultUsers
-			os.Stdout.WriteString("[login] using default user table\n")
+			consoleOut(k, &conh, "using default user table\n")
 		}
 	}
 
@@ -94,7 +114,7 @@ func Serve(k lib.Kernel, opts LoginOptions) {
 	for {
 		n := k.PortRecv(h, buf)
 		if n > 8 {
-			kernAuth(k, reg, replies, buf[:int(n)], users, opts.shell())
+			kernAuth(k, reg, replies, buf[:int(n)], users, opts.shell(), &conh)
 		}
 		if stopped(opts.Stop) {
 			return
@@ -187,7 +207,7 @@ func verifyPassword(u User, password string) bool {
 	return hex.EncodeToString(sum[:]) == u.Hash
 }
 
-func kernAuth(k lib.Kernel, reg *lib.RegistryClient, replies *lib.ReplyBook, req []byte, users []User, shell string) {
+func kernAuth(k lib.Kernel, reg *lib.RegistryClient, replies *lib.ReplyBook, req []byte, users []User, shell string, conh *lib.Handle) {
 	hdr, ok := lib.ParseHeader(req)
 	if !ok || hdr.Op != opAuth || hdr.RNam == "" {
 		return
@@ -219,13 +239,13 @@ func kernAuth(k lib.Kernel, reg *lib.RegistryClient, replies *lib.ReplyBook, req
 		rep = appendStatus(rep, statusOK, u.Mask, sid)
 		focusShell(k)
 		k.PortSend(rh, rep)
-		registerFS(k, u)
+		registerFS(k, u, conh)
 		return
 	}
 	k.PortSend(rh, rep)
 }
 
-func registerFS(k lib.Kernel, u *User) {
+func registerFS(k lib.Kernel, u *User, conh *lib.Handle) {
 	fh := lib.InvalidHandle
 	for i := 0; i < 200 && fh == lib.InvalidHandle; i++ {
 		fh = k.PortBind(lib.NameFS)
@@ -250,7 +270,7 @@ func registerFS(k lib.Kernel, u *User) {
 	lib.Put64(m[:], u.Mask)
 	pl = append(pl, m[:]...)
 	if _, err := c.InboxRequest(fh, opFSRegister, pl); err != nil {
-		os.Stdout.WriteString("[login] fsreg failed: " + err.Error() + "\n")
+		consoleOut(k, conh, "fsreg failed: "+err.Error()+"\n")
 	}
 }
 

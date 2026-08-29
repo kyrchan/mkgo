@@ -118,7 +118,12 @@ func (s *Shell) out(line string) {
 	s.k.PortSend(s.con, msg)
 }
 
-func (s *Shell) prompt() { s.out("> ") }
+// prompt writes "> " at the start of the current terminal line using
+// the echo redraw protocol (\r prefix => no [console] tag, no trailing
+// newline), so the cursor sits right after the space waiting for input.
+func (s *Shell) prompt() {
+	s.k.PortSend(s.con, []byte{'\r', '>', ' '})
+}
 
 // key applies one input event to the line editor.
 func (s *Shell) key(ev lib.InputEvent) {

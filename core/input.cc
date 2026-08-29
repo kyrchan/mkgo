@@ -5,8 +5,17 @@
 #include "plat.h"
 #include "sched.h"
 #include "ports.h"
+#include <stdio.h>
+#include <cstring>
 
 #define QLEN 256
+
+/* Kernel debug routed through the console service (not direct UART)
+ * so the console's prevEcho logic can separate it from the shell's
+ * in-place echo redraw. */
+static void klog(const char *msg) {
+    ports_enqueue_by_name("console", msg, (uint32_t)strlen(msg));
+}
 
 static struct {
     uint8_t kind[QLEN];
@@ -41,11 +50,9 @@ void input_poll(void) {
     for (int n = 0; n < 64 && console_rx_ready(); n++) {
         uint8_t b = (uint8_t)console_rx_byte();
         if (total % 8 == 0) {
-            console_puts("[in] #");
-            console_hex64(total);
-            console_puts(" f=");
-            console_hex64((uint64_t)(int64_t)focus_sid);
-            console_puts("\n");
+            char buf[64];
+            snprintf(buf, sizeof(buf), "[in] #%d f=%d", total, focus_sid);
+            klog(buf);
         }
         total++;
         push_byte(b);
@@ -57,13 +64,9 @@ int input_recv(uint32_t sid, void *out, uint32_t cap) {
         return 0;
     static int dbg;
     if (dbg++ < 3 && inq.qn > 0) {
-        console_puts("[irecv] sid=");
-        console_hex64(sid);
-        console_puts(" focus=");
-        console_hex64((uint64_t)(int64_t)focus_sid);
-        console_puts(" qn=");
-        console_hex64((uint64_t)inq.qn);
-        console_puts("\n");
+        char buf[64];
+        snprintf(buf, sizeof(buf), "[irecv] sid=%u focus=%d qn=%u", sid, focus_sid, inq.qn);
+        klog(buf);
     }
     if (inq.qn > 0)
         dbg = 100;
@@ -86,15 +89,15 @@ int input_recv(uint32_t sid, void *out, uint32_t cap) {
 
 int input_focus_set(uint32_t caller_sid, int handle) {
     if (!(sched_capmask_of(caller_sid) & SCHED_CAP_FOCUS)) {
-        console_puts("[input] set: no FOCUS cap\n");
+        klog("[input] set: no FOCUS cap");
         return -1;
     }
     int owner = ports_owner_of_handle(caller_sid, handle);
     if (owner <= 0)
         return -1;
     focus_sid = owner;
-    console_puts("[input] focus -> '");
-    console_puts(sched_name_of((uint32_t)owner));
-    console_puts("'\n");
+    char buf[64];
+    snprintf(buf, sizeof(buf), "[input] focus -> '%s'", sched_name_of((uint32_t)owner));
+    klog(buf);
     return 0;
 }
