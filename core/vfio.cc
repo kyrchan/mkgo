@@ -101,32 +101,14 @@ void vfio_init(const struct boot_info *bi) {
     msi_vector_bitmap = 0;
     fb_w = 1024; fb_h = 768; fb_bpp = 32;
     fb_has_display = false;
-    // Prefer the EFI GOP framebuffer (firmware display) for scanout. This makes
-    // guest renders reach the single firmware window. Falls back to a real PCI
-    // display device (e.g. bochs-display), then to a headless pool buffer.
+    // Prefer a real PCI display device (e.g. bochs-display) for scanout
+    // because QEMU scans its framebuffer to the display window. The GOP
+    // framebuffer is a firmware memory region that no display device
+    // scans out. Fall back to GOP only when no PCI display is present.
     scanout_enabled = false;
     scanout_phys = 0;
     scanout_size = 0;
-    if (bi && bi->fb_phys != 0 && bi->fb_size >= (fb_w * fb_h * 4)) {
-        scanout_phys = (uint32_t)bi->fb_phys;
-        scanout_size = (uint32_t)bi->fb_size;
-        scanout_enabled = true;
-        fb_has_display = true;
-        if (bi->fb_width != 0) fb_w = bi->fb_width;
-        if (bi->fb_height != 0) fb_h = bi->fb_height;
-        if (bi->fb_bpp != 0) fb_bpp = bi->fb_bpp;
-        if (bi->fb_stride != 0) fb_stride = bi->fb_stride;
-        console_puts("[vfio] scanout: GOP fb phys=");
-        console_hex64(scanout_phys);
-        console_puts(" size=");
-        console_hex64(scanout_size);
-        console_puts(" ");
-        console_hex64(fb_w);
-        console_puts("x");
-        console_hex64(fb_h);
-        console_puts("\n");
-    } else {
-        // No GOP — try a real PCI display device for scanout
+    {
         uint32_t disp_phys = 0, disp_size = 0;
         if (pci_find_display(&disp_phys, &disp_size) == 0 && disp_size >= (fb_w * fb_h * 4)) {
             scanout_phys = disp_phys;
@@ -138,6 +120,24 @@ void vfio_init(const struct boot_info *bi) {
             console_hex64(scanout_phys);
             console_puts(" size=");
             console_hex64(scanout_size);
+            console_puts("\n");
+        } else if (bi && bi->fb_phys != 0 && bi->fb_size >= (fb_w * fb_h * 4)) {
+            scanout_phys = (uint32_t)bi->fb_phys;
+            scanout_size = (uint32_t)bi->fb_size;
+            scanout_enabled = true;
+            fb_has_display = true;
+            if (bi->fb_width != 0) fb_w = bi->fb_width;
+            if (bi->fb_height != 0) fb_h = bi->fb_height;
+            if (bi->fb_bpp != 0) fb_bpp = bi->fb_bpp;
+            if (bi->fb_stride != 0) fb_stride = bi->fb_stride;
+            console_puts("[vfio] scanout: GOP fb phys=");
+            console_hex64(scanout_phys);
+            console_puts(" size=");
+            console_hex64(scanout_size);
+            console_puts(" ");
+            console_hex64(fb_w);
+            console_puts("x");
+            console_hex64(fb_h);
             console_puts("\n");
         } else {
             console_puts("[vfio] scanout: headless (no display)\n");

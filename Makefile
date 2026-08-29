@@ -337,6 +337,7 @@ QEMU_BASE := -L $(ROOT)/usr/share/qemu -L $(ROOT)/usr/share/seabios -machine q35
 	-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 	-drive if=pflash,format=raw,file=$(BUILD)/VARS.fd \
 	-device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+	-device bochs-display \
 	-display none -no-reboot -net none
 
 image: $(BUILD)/disk-p7.img

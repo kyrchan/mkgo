@@ -142,7 +142,7 @@ void kmain(const struct boot_info *bi) {
           if (l_) sched_spawn_named("login", l_, bi->mod_login_len, 0, 0);
           if (s_) sched_spawn_named("shell", s_, bi->mod_shell_len, 0, 0);
           if (g_) sched_spawn_named("graphics", g_, bi->mod_graphics_len,
-                                        0, SCHED_CAP_FB);
+                                        0, SCHED_CAP_FB | SCHED_CAP_PCI);
 
         /* two payload slots; app2 defaults to another copy of app */
         const uint8_t *progB = bi->prog2

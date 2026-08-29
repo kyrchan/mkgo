@@ -48,6 +48,20 @@ What landed: VFB virtual PCI device at BDF 0:1:0 (`pci.cc`), `pci_is_vfb` bypass
 
 Non-fatal notes: `[vfio] iommu: domain full` (M1 — `iommu_map_pages` return ignored, proceeds anyway); `[bind] no such port: fs` in legacy payload-slot mode (no fs server spawned; motd read fails gracefully, renders placeholder). Phase 10 negative tests / KVM-TCG matrix / Phase 9 net still pending per the phase plan.
 
+### ⚡ Phase 11 framebuffer rendering fix — working tree (2026-08-29)
+
+Three root causes in graphics.wasm framebuffer rendering, all fixed in working tree:
+
+1. **kmain.cc:144** — graphics.wasm spawned in legacy payload-slot mode with only `SCHED_CAP_FB`, missing `SCHED_CAP_PCI`. Without CAP_PCI, `vfio_map_bar` rejects the BAR mapping (`no CAP_PCI sid=...`), so graphics.wasm cannot map the framebuffer BAR. Fix: `SCHED_CAP_FB | SCHED_CAP_PCI`.
+
+2. **Makefile:340** — QEMU config used `-display none` with no PCI display device. No display device means `pci_find_display` returns nothing and no framebuffer is scanned out to a visible window. Fix: added `-device bochs-display` (provides PCI display with mappable FB BAR). Kept `-display none` for headless test compatibility — the BOCHS device provides PCI enumeration + memory-mapped FB without requiring a VNC port.
+
+3. **core/vfio.cc:104-145** — `vfio_init` preferred the EFI GOP framebuffer (firmware memory region) over the PCI display's framebuffer. QEMU does not scan the GOP framebuffer to any display output, so guest pixels never reach a visible screen. Fix: scanout priority now prefers a real PCI display device (bochs) first; falls back to GOP only when no PCI display is present.
+
+Verified: test-p11b PASS (`graphics: fb_present ok` + `graphics: all ok`) with KVM. Serial shows `[vfio] scanout: PCI display fb phys=0x80000000`, `fb_set_mode hw`, `map_bar ok`, `fb_present ok`. test-p10 PASS (p10a + p10b all ok) with graphics.wasm also working in the multiuser legacy-mode disk.
+
+Note: test-p10's `sched_run()` does not return to print `KERNEL-OK` because long-running service sessions (console/login/fs/shell) keep the scheduler alive — pre-existing behavior, `timeout 600 || true` handles it. The gate string checks still pass via serial log grep.
+
 ## ⚡ CURRENT STATUS (2026-08-28 — Phase 10 GREEN on v2.0, Phase 11 VFIO in progress) — atomic bump
 
 Phase 10 **tagged** `f03fa00` on `v1.3/0x01` (all gates g1-p10 TCG green, p8a harness fix, p10 14 markers). **Atomic bump** to `v2.0/0x02` landed: `abi/ABI.md:1` v2.0 (`§12 PCI/VFIO §13 FB §14 doorbell §15 block`), `core/engine.cc:56` `av!=2`, `Makefile:86-163` stamping `2`, all `*.wasm` rebuilt `02` (verified `g1`+`p10` PASS on `v2.0` KVM, `p10` 14 markers still green).
