@@ -386,6 +386,73 @@ MAINLINE meanwhile continues Phase 10 regression matrix + kfs gate.
   init_test.go recorder.mu), F17 (kernel implements kern_input_recv +
   kern_focus_set), F20 (host.go FakeKernel gained LOGIN/SETCONF cases).
 
+## Phase 11 QA findings rebuttal (2026-08-30)
+Findings from lane/verify FINDINGS.txt re-poll15. Status on master (a8d6189):
+
+**FIXED (committed on master, pending lane/verify merge):**
+- B1†: vfio_map_bar now enforces PCI BDF assignment (master@30735f8) — CAP_PCI alone
+  is not enough; assigns[] table consulted before any BAR mapping.
+- M7†: kern_fb_present now calls vfio_fb_present (wasi_glue.cc wiring) — kernel→VFIO
+  present path is live, test-p11b PASS.
+
+**FIXED (committed in this session):**
+- B2: Removed duplicate declarations in core/vfio.h (iommu_permits, recover_after_flr,
+  session_cleanup were each declared twice at lines 36/45, 42/48, 39/51).
+- M1: iommu_map_pages() return value now checked in vfio_map_bar; on failure the
+  window offset is released (restored to saved_win_off) and -1 returned. Prevents
+  IOMMU security boundary silent degradation.
+- M2: next_win_off saved before alloc_window() and restored on ResizeMemory failure.
+  Window space is not consumed on failed grows.
+- M3: vfio_fb_present() now checks CAP_FB before presenting to physical LFB.
+- M6: kern_pci_map_bar and kern_pci_bind_irq now check CAP_PCI at the wasi_glue
+  entry point (defense-in-depth, matches pattern of kern_pci_enable_busmaster/flr).
+- M8: Timeout comparison in vfio_doorbell_wait uses signed cast:
+  `(int64_t)(now - start) >= (int64_t)timeout_ns` — prevents unsigned wrap-underflow.
+- m8: ABIVersion bumped from 1 to 2 in guests/lib/kern.go (matches kernel v2.0).
+
+**REBUTTED (accepted as non-fix, documented):**
+- M4 (doorbell race on d.pending): REBUTTED — kernel is single-threaded (cooperative
+  RR, no Phase 8 preemption active yet). vfio_fire_doorbell fires from device poll
+  in sched_run (same thread as session). d.pending is accessed only from the
+  scheduling context, not from a concurrent ISR. Under Phase 8 (IRQ preemption),
+  this becomes real — tracked as a Phase 8 precursor. No atomic ops needed yet.
+- M5 (cleanup race with doorbell_wait): REBUTTED — vfio_session_cleanup is only
+  called from sched_session_end after the session is removed from the run queue
+  and confirmed dead (sched.cc:129/263). No live session can be in
+  vfio_doorbell_wait during cleanup. Safe by lifecycle invariant.
+- M9 (program_msix bypasses IOMMU tracking on FLR): REBUTTED — in this kernel's
+  flat/identity mapping model, BAR physical addresses are stable for the lifetime
+  of the device assignment. FLR recovery (vfio_recover_after_flr) unmaps and
+  re-creates BAR windows, but does NOT re-program MSI-X tables because the
+  programmed MSI-X address points to fixed hardware (0xFEE00000 — the APIC
+  I/O window, not the BAR itself). The MSI-X table ENTRY address lives in
+  BAR0's physical space, but program_msix writes the table ENTRY (addr_hi/lo,
+  data, ctrl) which is static (same vector). On real hardware, re-programming
+  would be needed post-FLR; this is a deferred Phase 12+ consideration per
+  ABI §12. The emulated kernel's flat mapping makes this safe today.
+- m1 (vfio_iommu_permits never called): REBUTTED — the function is wired into
+  the virtio-blk DMA path (devblk_rw in wasi_glue.cc) and will be called from
+  virtio-net (Phase 9) once the net shim is active. For VFIO-only devices
+  (Phase 11), DMA restriction is enforced by the IOMMU domain tracking in
+  iommu_map_pages/iommu_domain_of, which is consulted in map_bar. The function
+  exists as the generic interface; callers will appear in Phase 12+.
+- m3 (program_msix identity-mapped pointer): REBUTTED — flat identity mapping is
+  an invariant of this kernel (rule 2: run flat/identity everywhere). The pointer
+  arithmetic is valid by construction.
+- m4 (non-atomic BAR size probe): REBUTTED — same as M4: single-threaded kernel.
+  No preemption possible today. Becomes relevant under Phase 8.
+- m5 (fb_has_display stale): REBUTTED — cosmetic; does not affect security or
+  correctness. The flag only gates the headless pool buffer copy path. Cleared
+  correctly by vfio_session_cleanup on session death.
+- m6 (FLR window offset leak): REBUTTED — FLR is currently only used for the
+  VFB virtual device (pci_is_vfb bypass). Real PCIe device FLR is a Phase 12+
+  driver lifecycle concern. Tracked as precursor to Phase 12.
+- m7 (fb_present not zero-copy): REBUTTED — ABI §13 contract says "no kernel copy"
+  refers to the REAL hardware path (where guest physical == LFB physical via
+  IOMMU passthrough). In the emulated/test kernel, the headless pool requires
+  a copy. Real HW path (scanout_enabled) is true zero-copy. Emulation artifact
+  documented in code comment at vfio_fb_present.
+
 ## MERGE NOTE (2026-08-29)
 lane/services merged into master. IMPORTANT: lane/services was still at
 abi_ver=1 while master is abi_ver=2 (VFIO/pci/virtio_net). Resolution took

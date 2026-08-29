@@ -213,11 +213,11 @@ ALL PHASES COMPLETE
 - **Gate**: two users logged in concurrently; negative tests prove u2
   cannot open u1's files, send to u1's private ports, or inherit caps.
 
-Phase order/priority: 7 → 8 → 9 (stretch; drop if week ends) → 10 → 11 → 12 → 13.
+Phase order/priority: 0→1→2→3→4→5→6(opt)→7→8→9→10→11 ✅ 12 → 13.
 Completion definition: **ALL PHASES COMPLETE means every phase gate in this
 document is green** (Phases 0–13 as numbered above; Phase 6 stays optional).
 
-### Phase 11 (future, not this cycle) — VFIO foundation + framebuffer
+### Phase 11 ✅ — VFIO foundation + framebuffer (complete, gated)
 **The true microkernel endgame begins.** VFIO (Virtual Function I/O) is a
 generic device-passthrough foundation: the kernel provides IOMMU management,
 region mapping, and interrupt routing — all future PCIe drivers reuse it with
@@ -254,7 +254,7 @@ region mapping, and interrupt routing — all future PCIe drivers reuse it with
 **Gate**: display `cat /etc/motd` output through graphics.wasm to a visible
 console window (framebuffer writes reach the screen).
 
-### Phase 12 (future, not this cycle) — Wireless + USB (all via VFIO)
+### Phase 12 (in progress) — Wireless + USB (all via VFIO)
 Prerequisite: Phase 11 VFIO foundation. All devices use VFIO passthrough —
 **no per-device kernel shims**. Drivers are pure Go→wasm.
 
@@ -272,7 +272,7 @@ Prerequisite: Phase 11 VFIO foundation. All devices use VFIO passthrough —
 with host BlueZ over pty and answers an ATT read; wlan.wasm associates with
 an offload module and passes one UDP datagram end-to-end.
 
-### Phase 13 (future) — Hypervisor matrix: VirtualBox & VMware
+### Phase 13 (next priority) — Hypervisor matrix: VirtualBox & VMware
 All three hypervisors boot UEFI, so the boot path is unchanged. VFIO
 foundation (Phase 11) handles all PCIe devices generically. This phase adds
 only **legacy/non-PCIe adapters** and hypervisor-specific backends.

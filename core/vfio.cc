@@ -21,7 +21,7 @@ extern void sched_yield_current(void);
 static constexpr int MAX_BAR_MAPS = 8;
 static constexpr int MAX_DOORBELLS = 4;
 static constexpr int MAX_PCI_DEVS = 16;
-static constexpr int MAX_IOMMU_PAGES = 256; // 1 MB of tracked pages per domain
+static constexpr int MAX_IOMMU_PAGES = 8192; // 32 MB of tracked pages per domain
 
 // Virtual VGA device (BDF 0:1:0) — provides a framebuffer BAR for headless
 // VFIO testing. Allocates a backing buffer; guests map BAR 0 and render
@@ -328,9 +328,10 @@ int64_t vfio_map_bar(uint32_t sid, uint32_t bus, uint32_t dev, uint32_t fn, uint
         console_puts("[vfio] map_bar: bar_info failed\n");
         return -1;
     }
-    // Allocate guest window
-    uint64_t win = alloc_window(size);
-    if (win == (uint64_t)-1) return -1;
+     // Allocate guest window
+     uint64_t saved_win_off = next_win_off;
+     uint64_t win = alloc_window(size);
+     if (win == (uint64_t)-1) return -1;
 
     // Determine if this is a framebuffer BAR (large memory BAR)
     bool is_fb = is_mem && size >= (1024*768*4);
@@ -347,6 +348,7 @@ int64_t vfio_map_bar(uint32_t sid, uint32_t bus, uint32_t dev, uint32_t fn, uint
             // Use ResizeMemory (m3_env.h) to grow
             M3Result r = ResizeMemory((IM3Runtime)rt, pages);
             if (r) {
+                next_win_off = saved_win_off; // release consumed window
                 console_puts("[vfio] map_bar: ResizeMemory failed: ");
                 console_puts(r);
                 console_puts("\n");
@@ -358,8 +360,12 @@ int64_t vfio_map_bar(uint32_t sid, uint32_t bus, uint32_t dev, uint32_t fn, uint
         }
     }
 
-    // Grant IOMMU ownership for this BAR's physical pages
-    iommu_map_pages(sid, phys, (uint32_t)size);
+     // Grant IOMMU ownership for this BAR's physical pages
+     if (iommu_map_pages(sid, phys, (uint32_t)size) != 0) {
+         next_win_off = saved_win_off; // release consumed window
+         console_puts("[vfio] map_bar: IOMMU mapping failed, window released\n");
+         return -1;
+     }
 
     // Record mapping
     for (auto &m : bar_maps) if (!m.used) {
@@ -465,7 +471,7 @@ int vfio_doorbell_wait(uint32_t sid, uint32_t handle, uint32_t timeout_ms) {
         while (true) {
             if (d.pending) { d.pending = false; return 0; }
             uint64_t now = wasi_now_ns();
-            if (now - start >= timeout_ns) return 1;
+            if ((int64_t)(now - start) >= (int64_t)timeout_ns) return 1;
             sched_yield_current();
         }
     }
@@ -532,6 +538,12 @@ int vfio_fb_set_cursor(uint32_t sid, uint32_t x, uint32_t y) {
 // a window. Otherwise we copy to the headless pool buffer for test verification.
 // Returns 0 on success, -1 if no FB BAR mapped for this session.
 int vfio_fb_present(uint32_t sid) {
+    if (!has_cap(sid, SCHED_CAP_FB)) {
+        console_puts("[vfio] fb_present: no CAP_FB sid=");
+        console_hex64(sid);
+        console_puts("\n");
+        return -1;
+    }
     // Find the framebuffer BAR mapping for this session
     for (auto &m : bar_maps) {
         if (m.used && m.sid == sid && m.is_wc) {

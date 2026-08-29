@@ -41,15 +41,6 @@ void vfio_session_cleanup(uint32_t sid);
 // FLR recovery: unmap/unbind a device and re-issue FLR
 int vfio_recover_after_flr(uint32_t sid, uint32_t bus, uint32_t dev, uint32_t fn);
 
-// IOMMU security boundary
-bool vfio_iommu_permits(uint32_t sid, uint64_t phys, uint32_t size);
-
-// FLR recovery: re-bind after GPU reset
-int vfio_recover_after_flr(uint32_t sid, uint32_t bus, uint32_t dev, uint32_t fn);
-
-// Session cleanup: release all VFIO resources owned by a session
-void vfio_session_cleanup(uint32_t sid);
-
 #ifdef __cplusplus
 }
 #endif

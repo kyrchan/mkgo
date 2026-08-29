@@ -753,7 +753,9 @@ m3ApiRawFunction(kern_pci_map_bar) {
     m3ApiGetArg(int32_t, dev)
     m3ApiGetArg(int32_t, fn)
     m3ApiGetArg(int32_t, bar)
-    int64_t off = vfio_map_bar(sched_current_sid(), (uint32_t)bus,(uint32_t)dev,(uint32_t)fn,(uint32_t)bar);
+    uint32_t sid = sched_current_sid();
+    if (!(sched_capmask_of(sid) & SCHED_CAP_PCI)) m3ApiReturn(-1);
+    int64_t off = vfio_map_bar(sid, (uint32_t)bus,(uint32_t)dev,(uint32_t)fn,(uint32_t)bar);
     m3ApiReturn(off);
 }
 m3ApiRawFunction(kern_pci_unmap_bar) {
@@ -783,7 +785,9 @@ m3ApiRawFunction(kern_pci_bind_irq) {
     m3ApiGetArg(int32_t, dev)
     m3ApiGetArg(int32_t, fn)
     m3ApiGetArg(int32_t, type)
-    int h = vfio_bind_irq(sched_current_sid(), (uint32_t)bus,(uint32_t)dev,(uint32_t)fn,(uint32_t)type);
+    uint32_t sid = sched_current_sid();
+    if (!(sched_capmask_of(sid) & SCHED_CAP_PCI)) m3ApiReturn(-1);
+    int h = vfio_bind_irq(sid, (uint32_t)bus,(uint32_t)dev,(uint32_t)fn,(uint32_t)type);
     m3ApiReturn(h);
 }
 m3ApiRawFunction(kern_pci_flr) {
