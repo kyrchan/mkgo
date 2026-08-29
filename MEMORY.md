@@ -58,9 +58,13 @@ Three root causes in graphics.wasm framebuffer rendering, all fixed in working t
 
 3. **core/vfio.cc:104-145** — `vfio_init` preferred the EFI GOP framebuffer (firmware memory region) over the PCI display's framebuffer. QEMU does not scan the GOP framebuffer to any display output, so guest pixels never reach a visible screen. Fix: scanout priority now prefers a real PCI display device (bochs) first; falls back to GOP only when no PCI display is present.
 
-Verified: test-p11b PASS (`graphics: fb_present ok` + `graphics: all ok`) with KVM. Serial shows `[vfio] scanout: PCI display fb phys=0x80000000`, `fb_set_mode hw`, `map_bar ok`, `fb_present ok`. test-p10 PASS (p10a + p10b all ok) with graphics.wasm also working in the multiuser legacy-mode disk.
+Verified: test-p11b PASS (`graphics: fb_present ok` + `graphics: all ok`) with KVM. Serial shows `[vfio] scanout: PCI display fb phys=0x80000000`, `fb_set_mode hw`, `map_bar ok`, `fb_present ok`. test-p10 PASS (p10a + p10b all ok) with graphics.wasm also working in the multiuser legacy-mode disk. test-p7 PASS (shell ready + MOTD via `cat /etc/motd`).
 
 Note: test-p10's `sched_run()` does not return to print `KERNEL-OK` because long-running service sessions (console/login/fs/shell) keep the scheduler alive — pre-existing behavior, `timeout 600 || true` handles it. The gate string checks still pass via serial log grep.
+
+### ⚡ Stale .wasm binaries rebuilt (2026-08-29)
+
+Committed service .wasm binaries were stale relative to source — init.wasm lacked the `defaultPollEvery=10000` sweep throttle (`a100c59`), causing hundreds of registry LIST requests in a tight loop after login startup. All services rebuilt from current source: console, fs, init, login, net, shell. LIST spam reduced from hundreds to 2 in test-p10.
 
 ## ⚡ CURRENT STATUS (2026-08-28 — Phase 10 GREEN on v2.0, Phase 11 VFIO in progress) — atomic bump
 
