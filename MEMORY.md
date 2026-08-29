@@ -8,6 +8,16 @@ decisions, and gotchas. Update at milestones or near context limits.
 
 **Gates: g1 g2 g3 p4 p5a p5b p7 p8a p8b ALL PASS + make test-kernel 44/44 + unit tests.**
 
+### Fleet config — 2026-08-29
+All agents/lanes now use `kilo/poolside/laguna-s-2.1:free`. Config files updated: `kernel/{opencode.json,kilo.json,.kilo/kilo.json}`, `kernel-lane-{services,tools,verify,docs}/opencode.json`, `kernel-lane-{tools,verify}/kilo.json`, `kernel-gatecheck/opencode.json`.
+
+### Loader fix — 2026-08-29 (core/loader.cc)
+The ESP loader cached `cached_root` and never closed file handles. OVMF corrupts handles on `Close(root)`, but the cached root became unusable after the first `Open` because the leaked file handle corrupted OVMF's internal state.
+
+Fix: `open_volume()` re-opens the volume per call (re-locate + OpenVolume each time), closes the file handle after read via `EFI_FILE_PROTOCOL::Close`, but does NOT close the root handle. This lets subsequent file opens succeed on the same volume.
+
+Verified: `test-g1 PASS`, `test-p10 PASS` (p10a/p10b multiuser negatives). The kernel now boots to `KERNEL-OK` and all file loads succeed.
+
 ### Blocker-hardening batch landed (each commit = finding + regression test):
 - F13 ports_name_owned_by creator-vs-binder · F18 kernsvc NACK status -1 on all
   fall-throughs · F32 port_send uid stamping (spoof-proof identity) ·
