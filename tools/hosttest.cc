@@ -100,9 +100,36 @@ bool sched_is_login(uint32_t sid) { return ports_name_owned_by(sid, "login"); }
 
 extern "C" {
 /* ---------------- arch stubs ---------------- */
-void console_putc(char c) { fputc(c, stderr); }
-void console_puts(const char *s) { fputs(s, stderr); }
-void console_hex64(uint64_t v) { fprintf(stderr, "%llx", (unsigned long long)v); }
+/* Host-side console stub mirrors the x86_64 at_line_start logic so
+ * that unit-test output is consistent with the real kernel path. */
+static bool host_at_line_start = true;
+void console_putc(char c) {
+    if (c == '\n') {
+        host_at_line_start = true;
+        fputc('\r', stderr);
+        fputc('\n', stderr);
+        return;
+    }
+    if (c == '\r') {
+        host_at_line_start = false;
+        fputc('\r', stderr);
+        return;
+    }
+    if (host_at_line_start && ((uint8_t)c >= 0x20 || c == '\t')) {
+        fputs("\r\x1b[2K\r", stderr);
+    }
+    host_at_line_start = false;
+    fputc(c, stderr);
+}
+void console_puts(const char *s) {
+    while (*s) console_putc(*s++);
+}
+void console_hex64(uint64_t v) {
+    console_puts("0x");
+    static const char hexd[] = "0123456789abcdef";
+    for (int i = 60; i >= 0; i -= 4)
+        console_putc(hexd[(v >> i) & 0xF]);
+}
 int console_rx_ready(void) { return 0; }
 int console_rx_byte(void) { return -1; }
 void cpu_halt(void) { exit(3); }
