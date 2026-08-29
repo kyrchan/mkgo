@@ -345,6 +345,11 @@ image: $(BUILD)/disk-p7.img
 run: $(BUILD)/disk-p7.img $(BUILD)/VARS.fd
 	env $(QEMU_ENV) $(QEMU) $(QEMU_BASE) -drive format=raw,file=$(BUILD)/disk-p7.img -serial stdio
 
+# Interactive run with GTK graphics window — shows framebuffer output visually.
+run-gfx: $(BUILD)/disk-p7.img $(BUILD)/VARS.fd
+	env $(QEMU_ENV) $(QEMU) $(subst -display none,-display gtk,$(QEMU_BASE)) \
+		-drive format=raw,file=$(BUILD)/disk-p7.img -serial stdio
+
 # quick smoke gate: smallest wasm guest through engine + WASI
 test: test-g1
 
