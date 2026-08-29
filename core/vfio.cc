@@ -90,6 +90,7 @@ static uint32_t msi_vector_bitmap = 0;
 static uint32_t scanout_phys = 0;
 static uint32_t scanout_size = 0;
 static bool scanout_enabled = false;
+static bool scanout_bochs = false;
 
 void vfio_init(const struct boot_info *bi) {
     for (auto &m : bar_maps) m.used = false;
@@ -131,6 +132,7 @@ void vfio_init(const struct boot_info *bi) {
             scanout_phys = disp_phys;
             scanout_size = disp_size;
             scanout_enabled = true;
+            scanout_bochs = true;
             fb_has_display = true;
             console_puts("[vfio] scanout: PCI display fb phys=");
             console_hex64(scanout_phys);
@@ -489,8 +491,9 @@ int vfio_fb_set_mode(uint32_t sid, uint32_t w, uint32_t h, uint32_t bpp) {
     fb_w = w; fb_h = h; fb_bpp = bpp;
     fb_has_display = true;
     // Program Bochs DISPI for real display hardware (0x01CE index, 0x01CF data).
-    // Only when a real display device is present (scanout_enabled).
-    if (scanout_enabled) {
+    // Only when a real Bochs display device is present (scanout_bochs).
+    // GOP framebuffer must NOT have Bochs DISPI registers programmed.
+    if (scanout_bochs) {
         outw(0x01CE, 0x0000); (void)inw(0x01CF); // ID (read to ack)
         outw(0x01CE, 0x0004); outw(0x01CF, 0x0041); // ENABLE: enable + LFB + clear
         outw(0x01CE, 0x0001); outw(0x01CF, (uint16_t)w);   // XRES
@@ -501,6 +504,8 @@ int vfio_fb_set_mode(uint32_t sid, uint32_t w, uint32_t h, uint32_t bpp) {
         outw(0x01CE, 0x0008); outw(0x01CF, 0);            // X_OFFSET
         outw(0x01CE, 0x0009); outw(0x01CF, 0);            // Y_OFFSET
         console_puts("[vfio] fb_set_mode hw ");
+    } else if (scanout_enabled) {
+        console_puts("[vfio] fb_set_mode ");
     } else {
         console_puts("[vfio] fb_set_mode ");
     }

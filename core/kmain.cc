@@ -125,22 +125,24 @@ void kmain(const struct boot_info *bi) {
          * CAP_PCI|CAP_FB). */
          const uint64_t GATE = bi->gate_mask ? bi->gate_mask : SCHED_CAP_KILL;
          /* boot services from ESP when present (Phase-4 style) */
-         const uint8_t *c_ = (const uint8_t *)(uintptr_t)bi->mod_console;
-         const uint8_t *l_ = (const uint8_t *)(uintptr_t)bi->mod_login;
-         const uint8_t *f_ = (const uint8_t *)(uintptr_t)bi->mod_fs;
-         const uint8_t *g_ = (const uint8_t *)(uintptr_t)bi->mod_graphics;
-         if (c_) sched_spawn_named("console", c_, bi->mod_console_len, 0, 0);
-         int sfs = -1;
-         if (f_) {
-             /* fs must be up before login binds its port */
-             sfs = sched_spawn_named("fs", f_, bi->mod_fs_len, 0,
-                                     SCHED_CAP_FSADM);
-             if (sfs > 0)
-                 devblk_attach();
-         }
-         if (l_) sched_spawn_named("login", l_, bi->mod_login_len, 0, 0);
-         if (g_) sched_spawn_named("graphics", g_, bi->mod_graphics_len,
-                                       0, SCHED_CAP_FB);
+          const uint8_t *c_ = (const uint8_t *)(uintptr_t)bi->mod_console;
+          const uint8_t *l_ = (const uint8_t *)(uintptr_t)bi->mod_login;
+          const uint8_t *f_ = (const uint8_t *)(uintptr_t)bi->mod_fs;
+          const uint8_t *s_ = (const uint8_t *)(uintptr_t)bi->mod_shell;
+          const uint8_t *g_ = (const uint8_t *)(uintptr_t)bi->mod_graphics;
+          if (c_) sched_spawn_named("console", c_, bi->mod_console_len, 0, 0);
+          int sfs = -1;
+          if (f_) {
+              /* fs must be up before login binds its port */
+              sfs = sched_spawn_named("fs", f_, bi->mod_fs_len, 0,
+                                      SCHED_CAP_FSADM);
+              if (sfs > 0)
+                  devblk_attach();
+          }
+          if (l_) sched_spawn_named("login", l_, bi->mod_login_len, 0, 0);
+          if (s_) sched_spawn_named("shell", s_, bi->mod_shell_len, 0, 0);
+          if (g_) sched_spawn_named("graphics", g_, bi->mod_graphics_len,
+                                        0, SCHED_CAP_FB);
 
         /* two payload slots; app2 defaults to another copy of app */
         const uint8_t *progB = bi->prog2

@@ -147,6 +147,9 @@ services/shell/shell.wasm: services/shell/shell.wasm.raw
 build/graphics.wasm: services/graphics/graphics.wasm
 	cp $< $@
 
+build/shell.wasm: services/shell/shell.wasm
+	cp $< $@
+
 build/test_p5a.raw: guests/p5a/main.go $(wildcard guests/lib/*.go)
 	cd guests/p5a && GOOS=wasip1 GOARCH=wasm go build -o ../../$@ .
 build/test_p5a.wasm: build/test_p5a.raw
@@ -296,15 +299,16 @@ $(BUILD)/disk-p9.img: $(BUILD)/BOOTX64.EFI build/test_p9.wasm \
 
 # Phase 10 disk: multiuser services + graphics integration
 $(BUILD)/disk-p10.img: $(BUILD)/BOOTX64.EFI build/test_p10a.wasm \
-                       build/test_p10b.wasm services/fs/fs.wasm \
-                       services/console/console.wasm services/login/login.wasm \
-                       build/graphics.wasm $(BUILD)/etc_users.txt | $(BUILD) $(IMG)
+                        build/test_p10b.wasm services/fs/fs.wasm \
+                        services/console/console.wasm services/login/login.wasm \
+                        build/graphics.wasm build/shell.wasm $(BUILD)/etc_users.txt | $(BUILD) $(IMG)
 	$(IMG) $@ 64 \
 	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
 	  services/fs/fs.wasm:/boot/modules/fs.wasm \
 	  services/console/console.wasm:/boot/modules/console.wasm \
 	  services/login/login.wasm:/boot/modules/login.wasm \
 	  build/graphics.wasm:/boot/modules/graphics.wasm \
+	  build/shell.wasm:/boot/modules/shell.wasm \
 	  build/test_p10a.wasm:/vm/app \
 	  build/test_p10b.wasm:/vm/app2 \
 	  $(BUILD)/etc_users.txt:/etc/users
