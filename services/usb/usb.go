@@ -14,20 +14,42 @@ import (
 	lib "kernel.lane/guests/lib"
 )
 
-// --- xHCI capability register offsets ---
+// --- xHCI capability register offsets (abi/ABI.md §12 MMIO at PCI BAR0) ---
 const (
 	xhciCapLength  = 0x00 // CAPLENGTH: size of operational regs
 	xhciHcVersion  = 0x02 // HCIVERSION
 	xhciHcsParams1 = 0x04 // HCSPARAMS1: max ports[31:24], max slots[23:16]
 	xhciHcsParams2 = 0x08 // HCSPARAMS2
 	xhciHccParams1 = 0x10 // HCCPARAMS1
+	xhciDbOff      = 0x14 // DBOFF: Doorbell Array offset (dwords, RO)
+	xhciRtsOff     = 0x18 // RTSOFF: Runtime Register space offset (RO)
 )
+
+// MMIO is the register-window access surface both the host stub (MockBAR,
+// a byte slice simulating the PCI BAR) and the real wasip1 deployment (a
+// slice over the PciMapBar window) provide. Register offsets are absolute
+// within the BAR, little-endian.
+type MMIO interface {
+	rd8(off int) uint8
+	rd32(off int) uint32
+	wr32(off int, v uint32)
+}
 
 // --- operational register offsets (relative to operational base = CAPLENGTH) ---
 const (
 	xhciUsbCmd     = 0x00 // USBCMD
 	xhciUsbSts     = 0x04 // USBSTS
 	xhciPortScBase = 0x400 // PORTSC base (per-port, 0x10 stride)
+)
+
+// --- runtime / doorbell layout ---
+// xHCI doorbell registers live at MMIO[DBOFF] (read from cap 0x14), one
+// 32-bit register per device slot (indexed by slot ID 1..N). Each holds a
+// DB Target field (low byte = RType|endpoint) telling the HC which ring to
+// process. See xHCI spec §4.7/§5.6.
+const (
+	xhciDbStride    = 4   // bytes per doorbell register
+	xhciMaxSlots    = 255 // slot IDs 1..255
 )
 
 // --- USBCMD bits ---
@@ -60,22 +82,33 @@ const (
 const minBar = 0x500
 
 // UsbController is a host-testable xHCI host controller skeleton. It reads
-// and writes controller registers through a mock BAR that simulates PCI
-// MMIO. The same driver code targets real hardware by swapping the mock for
-// the kern_pci_map_bar window (ABI §12).
+// and writes controller registers through an MMIO window that simulates PCI
+// BAR MMIO. The same driver code targets real hardware by swapping the mock
+// for the PciMapBar window (ABI §12).
 type UsbController struct {
-	bar      *MockBAR
+	bar      MMIO
 	base     int // operational register base (CAPLENGTH)
 	maxPorts int // from HCSPARAMS1[31:24]
+
+	// dbOff is the doorbell-array MMIO offset (read once from DBOFF cap reg).
+	dbOff int
+	// slots tracks enabled device slots (slotID -> slot). On real hardware the
+	// slots are tracked by the device/device-context arrays in guest RAM; here
+	// we model just enough to submit control transfers on EP0.
+	slots     map[int]*XhciSlot
+	pendingDB map[int]int // slotID -> endpoint ring target (door bell pending)
+	// nextCompletion is the head of the host-side completion log (test-only).
+	completions []*Completion
 }
 
-// NewUsbController creates a controller backed by a mock BAR. It reads the
-// capability registers to size the operational region and port count.
-func NewUsbController(bar *MockBAR) (*UsbController, error) {
+// NewUsbController creates a controller backed by an MMIO window (mock or
+// real). It reads the capability registers to size the operational region
+// and port count.
+func NewUsbController(bar MMIO) (*UsbController, error) {
 	if bar == nil {
-		return nil, errors.New("usb: nil BAR")
+		return nil, errors.New("usb: nil MMIO")
 	}
-	c := &UsbController{bar: bar}
+	c := &UsbController{bar: bar, slots: map[int]*XhciSlot{}, pendingDB: map[int]int{}}
 	c.base = int(bar.rd8(xhciCapLength))
 	if c.base == 0 {
 		c.base = 0x40
@@ -83,6 +116,10 @@ func NewUsbController(bar *MockBAR) (*UsbController, error) {
 	c.maxPorts = int((bar.rd32(xhciHcsParams1) >> 24) & 0xFF)
 	if c.maxPorts == 0 || c.maxPorts > 16 {
 		c.maxPorts = 4
+	}
+	c.dbOff = int(bar.rd32(xhciDbOff))
+	if c.dbOff == 0 {
+		c.dbOff = 0x180 // sane default if DBOFF reads as 0
 	}
 	return c, nil
 }

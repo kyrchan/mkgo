@@ -46,15 +46,8 @@ static void push_byte(uint8_t b) {
 }
 
 void input_poll(void) {
-    static int total;
     for (int n = 0; n < 64 && console_rx_ready(); n++) {
         uint8_t b = (uint8_t)console_rx_byte();
-        if (total % 8 == 0) {
-            char buf[64];
-            snprintf(buf, sizeof(buf), "[in] #%d f=%d", total, focus_sid);
-            klog(buf);
-        }
-        total++;
         push_byte(b);
     }
 }
@@ -62,14 +55,6 @@ void input_poll(void) {
 int input_recv(uint32_t sid, void *out, uint32_t cap) {
     if (!out || cap < 4)
         return 0;
-    static int dbg;
-    if (dbg++ < 3 && inq.qn > 0) {
-        char buf[64];
-        snprintf(buf, sizeof(buf), "[irecv] sid=%u focus=%d qn=%u", sid, focus_sid, inq.qn);
-        klog(buf);
-    }
-    if (inq.qn > 0)
-        dbg = 100;
     if ((int32_t)sid != focus_sid)
         return 0; /* only the focused session receives */
     uint32_t maxrec = cap / 4;

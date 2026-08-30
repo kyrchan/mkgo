@@ -4,6 +4,7 @@
  * bits enforced here; every rejection is audited to serial (§10). */
 #include "ports.h"
 #include "lib.h"
+#include "mm.h"
 #include "sched.h"
 #include "plat.h"
 #include "vfio.h"
@@ -182,9 +183,59 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
             for (; j < 16 && payload[j]; j++)
                 modname[j] = (char)payload[j];
             modname[j] = 0;
+            /* Extract argv from the SPAWN payload (F27).
+             * Layout: [16..79] path, [80..83] capmask, [86..87] argc,
+             * [88..] argv strings (NUL-separated).
+             * Must copy into persistent memory: the payload buffer is
+             * freed after this handler returns (F42). */
+            const char *argv[8] = {0};
+            int argc = 0;
+            int argv_total = 0;
+            if (plen >= 88) {
+                uint16_t na = get16(payload + 86);
+                const char *ap = (const char *)payload + 88;
+                const char *end = (const char *)payload + plen;
+                for (int i = 0; i < (int)na && i < 6; i++) {
+                    int sl = 0;
+                    while (ap + sl < end && ap[sl] != 0)
+                        sl++;
+                    argv_total += sl + 1;
+                    ap += sl + 1;
+                    argc++;
+                }
+            }
+            char *argv_store = (char *)mm_alloc(argv_total + 16, 1);
+            if (!argv_store) {
+                knack();
+                return;
+            }
+            /* argv[0] = program name (modname) */
+            int k = 0;
+            for (; modname[k] && k < 15; k++)
+                argv_store[k] = modname[k];
+            argv_store[k] = 0;
+            argv[0] = argv_store;
+            argc = 1;
+            if (plen >= 88 && argv_store) {
+                uint16_t na = get16(payload + 86);
+                const char *ap = (const char *)payload + 88;
+                const char *end = (const char *)payload + plen;
+                for (int i = 0; i < (int)na && argc < 7; i++) {
+                    int sl = 0;
+                    while (ap + sl < end && ap[sl] != 0)
+                        sl++;
+                    if (k + 1 + sl + 1 > (int)argv_total + 16)
+                        break;
+                    memcpy(argv_store + k + 1, ap, sl);
+                    argv_store[k + 1 + sl] = 0;
+                    argv[argc++] = argv_store + k + 1;
+                    k += sl + 1;
+                    ap += sl + 1;
+                }
+            }
             /* name of new session = module name (v1) */
             int nsid = sched_spawn_image(modname, sched_uid_of(from_sid), want,
-                                         modname);
+                                         modname, argv, argc);
             if (nsid > 0 && !strcmp(modname, "net")) {
                 /* net needs room for §6 windows at 64 MiB offset */
                 vmod_grow_session(sched_runtime_of((uint32_t)nsid),

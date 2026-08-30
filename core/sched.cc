@@ -105,11 +105,11 @@ void sched_init(void) {
 }
 
 int sched_spawn_image(const char *name, uint32_t uid, uint64_t capmask,
-                      const char *modname) {
+                      const char *modname, const char *const *argv, int argc) {
     for (int i = 0; i < MAX_IMAGES; i++) {
         if (images[i].used && !strcmp(images[i].name, modname))
-            return sched_spawn_named(name, images[i].blob, images[i].len, uid,
-                                     capmask);
+            return sched_spawn_named_argv(name, images[i].blob, images[i].len,
+                                          uid, capmask, argv, argc);
     }
     return -1;
 }

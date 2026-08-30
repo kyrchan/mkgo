@@ -88,7 +88,8 @@ int sched_kill(uint32_t sid) {
     return 0;
 }
 uint32_t sched_list(uint32_t *, char (*)[16], uint32_t) { return 0; }
-int sched_spawn_image(const char *, uint32_t, uint64_t, const char *) {
+int sched_spawn_image(const char *, uint32_t, uint64_t, const char *,
+                      const char *const *, int) {
     return -1;
 }
 bool sched_is_login(uint32_t); /* defined after ports.h is in scope below */

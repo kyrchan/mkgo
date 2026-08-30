@@ -60,9 +60,10 @@ uint32_t sched_count(void);
 uint32_t sched_list(uint32_t *out /* sid,uid,state triples interleaved */,
                     char names[][16], uint32_t max);
 int sched_kill(uint32_t sid);
-/* SPAWN from preloaded image table; returns sid or negative errno-style */
+/* SPAWN from preloaded image table; returns sid or negative errno-style.
+ * argv/argc (may be NULL/0) are passed to the spawned session. */
 int sched_spawn_image(const char *name, uint32_t uid, uint64_t capmask,
-                      const char *modname);
+                      const char *modname, const char *const *argv, int argc);
 void sched_preload_image(const char *name, const uint8_t *blob, uint64_t len);
 int  sched_session_by_name(const char *name); /* sid | -1 */
 void *sched_runtime_of(uint32_t sid);
