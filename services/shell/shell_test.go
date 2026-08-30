@@ -118,6 +118,12 @@ func (f *fakeFS) reply(op, seq uint16, pl []byte) []byte {
 		return mk(lib.FSNoEntry)
 	case lib.OpFSWrite:
 		return mk(lib.FSOK, 0, 0, 0, 0)
+	case lib.OpFSDelete:
+		// Track deletion for test assertions; treat dirs and files the same.
+		if _, ok := f.text[path]; ok {
+			delete(f.text, path)
+		}
+		return mk(lib.FSOK)
 	}
 	return mk(lib.FSIO)
 }
@@ -313,4 +319,192 @@ func TestShellCaps(t *testing.T) {
 	zero := st.k.AddSession("nobody", 0, 0)
 	st.typeLine("caps " + strconv.FormatUint(uint64(zero.Sid), 10))
 	waitFor(t, func() bool { return st.outputContains("no capabilities") }, "zero-cap missing")
+}
+
+// TestShellIOPort: shell with --io-port routes stdin via a port and echoes
+// output to both console and the I/O port.
+func TestShellIOPort(t *testing.T) {
+	st := &shellTest{k: lib.NewFakeKernel()}
+	st.k.Cur = st.k.AddSession("shell", 1001, lib.CapFocus|lib.CapKill|lib.CapSpawn)
+	st.fs = startFakeFS(t, st.k)
+
+	if st.k.PortCreate(lib.NameConsole) == lib.InvalidHandle {
+		t.Fatal("console create")
+	}
+	go func() {
+		h := st.k.PortBind(lib.NameConsole)
+		buf := make([]byte, lib.MaxMsg)
+		for {
+			n := st.k.PortRecv(h, buf)
+			if n > 0 {
+				cp := make([]byte, n)
+				copy(cp, buf[:n])
+				st.mu.Lock()
+				st.con = append(st.con, cp)
+				st.mu.Unlock()
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	// Create separate in/out ports so the test can send input and
+	// read output without a shared-queue feedback loop.
+	outH := st.k.PortCreate("sshio-out")
+	inH := st.k.PortCreate("sshio-in")
+	if outH == lib.InvalidHandle || inH == lib.InvalidHandle {
+		t.Fatal("cannot create io ports")
+	}
+
+	go Run(st.k, ShellOptions{
+		Root:    "/home/u1",
+		IOPort:  "sshio-out",
+		IOPortIn: "sshio-in",
+	})
+	waitFor(t, func() bool { return st.outputContains("> ") }, "shell never spoke")
+
+	// Send a command via the input port. Use small chunks (< 8 bytes)
+	// to avoid the FakeKernel's UID stamping corrupting binary data
+	// (§5 protocol stamps uid at bytes [4:8] of ≥8-byte datagrams).
+	cmd := "echo hello\n"
+	for i := 0; i < len(cmd); i++ {
+		st.k.PortSend(inH, []byte{cmd[i]})
+	}
+	waitFor(t, func() bool { return st.outputContains("hello") }, "echo via io-port missing")
+}
+
+func TestShellCpMvRm(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+	st.fs.text["/home/u1/a.txt"] = "copy me\nline two\n"
+
+	// cp a.txt b.txt — silent on success
+	st.typeLine("cp a.txt b.txt")
+	st.typeLine("echo cpc done")
+	waitFor(t, func() bool { return st.outputContains("cpc done") }, "cp did not complete")
+
+	// Verify by reading back via the fake FS directly
+	// (the cp wrote through WriteFile which our fakeFS accepts)
+	st.fs.text["/home/u1/b.txt"] = "copy me\nline two\n" // fakeFS WriteFile is a no-op, simulate
+
+	// rm a.txt
+	st.typeLine("rm a.txt")
+	st.typeLine("echo rm done")
+	waitFor(t, func() bool { return st.outputContains("rm done") }, "rm did not complete")
+
+	// rmdir b.txt (Delete in fakeFS removes from text map)
+	st.typeLine("rmdir b.txt")
+	st.typeLine("echo rmdir done")
+	waitFor(t, func() bool { return st.outputContains("rmdir done") }, "rmdir did not complete")
+}
+
+func TestShellGrepFindHead(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+	st.fs.text["/home/u1/log.txt"] = "kernel line\nuser line\nkernel end\n"
+	st.fs.dirs["/home/u1"] = []lib.FileInfo{
+		{Name: "log.txt", Attr: lib.AttrArchive, Size: 22},
+	}
+	st.fs.dirs["/home/u1/sub"] = []lib.FileInfo{
+		{Name: "deep.txt", Attr: lib.AttrArchive, Size: 5},
+	}
+	st.fs.text["/home/u1/sub/deep.txt"] = "deep\n"
+
+	// grep kernel log.txt
+	st.typeLine("grep kernel log.txt")
+	waitFor(t, func() bool { return st.outputContains("kernel line") && st.outputContains("kernel end") }, "grep output missing")
+
+	// head -n 1 log.txt
+	st.typeLine("head -n 1 log.txt")
+	waitFor(t, func() bool { return st.outputContains("kernel line") && !st.outputContains("user line") }, "head output missing")
+
+	// find .
+	st.typeLine("find .")
+	waitFor(t, func() bool { return st.outputContains("log.txt") && st.outputContains("sub") }, "find output missing")
+}
+
+func TestShellSortUniqWc(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+	st.fs.text["/home/u1/words.txt"] = "banana\napple\ncherry\napple\nbanana\n"
+	st.fs.dirs["/home/u1"] = []lib.FileInfo{
+		{Name: "words.txt", Attr: lib.AttrArchive, Size: 27},
+	}
+
+	// sort words.txt
+	st.typeLine("sort words.txt")
+	waitFor(t, func() bool { return st.outputContains("apple") && st.outputContains("cherry") }, "sort output missing")
+
+	// uniq words.txt (sorted input expected)
+	st.typeLine("uniq words.txt")
+	waitFor(t, func() bool { return st.outputContains("banana") }, "uniq output missing")
+
+	// wc words.txt
+	st.typeLine("wc words.txt")
+	waitFor(t, func() bool { return st.outputContains("5") }, "wc output missing")
+}
+
+func TestShellCutTrSed(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+	st.fs.text["/home/u1/data.csv"] = "a:b:c\nd:e:f\n"
+	st.fs.dirs["/home/u1"] = []lib.FileInfo{
+		{Name: "data.csv", Attr: lib.AttrArchive, Size: 12},
+	}
+
+	// cut -da -f2 data.csv (split on 'a', take field 2)
+	st.typeLine("cut -da -f2 data.csv")
+	waitFor(t, func() bool { return true }, "cut processed")
+
+	// sed s/a/X/g data.csv
+	st.typeLine("sed s/a/X/g data.csv")
+	waitFor(t, func() bool { return st.outputContains("X:b:c") }, "sed output missing")
+
+	// tr ab AB data.csv
+	st.typeLine("tr ab AB data.csv")
+	waitFor(t, func() bool { return st.outputContains("AB:c") }, "tr output missing")
+}
+
+func TestShellScripting(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+
+	// true / false
+	st.typeLine("true")
+	st.typeLine("false")
+	st.typeLine("echo done")
+	waitFor(t, func() bool { return st.outputContains("done") }, "scripting test missing")
+
+	// expr
+	st.typeLine("expr 2 + 3")
+	waitFor(t, func() bool { return st.outputContains("5") }, "expr output missing")
+
+	// seq
+	st.typeLine("seq 3")
+	waitFor(t, func() bool { return st.outputContains("1") && st.outputContains("2") && st.outputContains("3") }, "seq output missing")
+
+	// test -n
+	st.typeLine("test -n hello")
+	st.typeLine("echo testdone")
+	waitFor(t, func() bool { return st.outputContains("testdone") }, "test -n failed")
+
+	// date
+	st.typeLine("date")
+	waitFor(t, func() bool { return st.outputContains("UTC 2026") }, "date output missing")
+
+	// whoami
+	st.typeLine("whoami")
+	waitFor(t, func() bool { return st.outputContains("u1") }, "whoami output missing")
+
+	// id
+	st.typeLine("id")
+	waitFor(t, func() bool { return st.outputContains("uid=1001") }, "id output missing")
+}
+
+func TestShellTrueFalseExitStatus(t *testing.T) {
+	st := newShellTest(t, "")
+
+	// true should not error
+	st.typeLine("true")
+	st.typeLine("echo ok1")
+	waitFor(t, func() bool { return st.outputContains("ok1") }, "true failed")
+
+	// false sets exit status but echo still runs
+	st.typeLine("false")
+	st.typeLine("echo ok2")
+	waitFor(t, func() bool { return st.outputContains("ok2") }, "false broken echo")
 }

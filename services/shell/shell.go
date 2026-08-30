@@ -1,8 +1,11 @@
 package main
 
 import (
+	"errors"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	lib "kernel.lane/guests/lib"
 )
@@ -20,17 +23,28 @@ type ShellOptions struct {
 	Root string
 	// Stop closes to end the loop (tests); nil runs forever.
 	Stop <-chan struct{}
+	// IOPort, when non-empty, enables port-based I/O mode: the shell
+	// binds to a port named IOPort for outbound data (shell → host)
+	// and IOPortIn for inbound data (host → shell). When IOPortIn is
+	// empty, IOPort is used for both (real kernel supports bidirectional
+	// per-handle queue routing; FakeKernel tests use separate ports).
+	IOPort  string
+	IOPortIn string
 }
 
 // Shell bundles one shell session's dependencies.
 type Shell struct {
-	k    lib.Kernel
-	fs   *lib.FSClient
-	reg  *lib.RegistryClient
-	con  lib.Handle // bind handle of "console"
-	root string
-
-	line []rune
+	k      lib.Kernel
+	fs     *lib.FSClient
+	reg    *lib.RegistryClient
+	con    lib.Handle // bind handle of "console"
+	root   string
+	uid    uint32
+	env    map[string]string
+	ioh    lib.Handle // handle for --io-port output (InvalidHandle if unused)
+	ioin   lib.Handle // handle for --io-in input (InvalidHandle if unused)
+	line   []rune
+	exitStatus int
 }
 
 // Run drives a shell session until Stop.
@@ -44,9 +58,23 @@ func Run(k lib.Kernel, opts ShellOptions) {
 	}
 
 	// NOTE: 0 is a VALID port handle; only -1 means "none".
-	sh := &Shell{k: k, root: opts.Root, con: lib.InvalidHandle}
+	sh := &Shell{k: k, root: opts.Root, con: lib.InvalidHandle, ioh: lib.InvalidHandle, ioin: lib.InvalidHandle}
 	if sh.root == "" {
 		sh.root = "/" // init-spawned shells get the global root
+	}
+	if opts.IOPort != "" {
+		sh.ioh = k.PortCreate(opts.IOPort)
+		if sh.ioh == lib.InvalidHandle {
+			sh.ioh = k.PortBind(opts.IOPort)
+		}
+		inName := opts.IOPortIn
+		if inName == "" {
+			inName = opts.IOPort
+		}
+		sh.ioin = k.PortBind(inName)
+		if sh.ioin == lib.InvalidHandle {
+			sh.ioin = k.PortCreate(inName)
+		}
 	}
 	for sh.con == lib.InvalidHandle {
 		sh.con = k.PortBind(lib.NameConsole)
@@ -74,7 +102,21 @@ func Run(k lib.Kernel, opts ShellOptions) {
 	sh.out("shell ready (user root: " + sh.rootLabel() + ")")
 	sh.prompt()
 	buf := make([]byte, lib.RecvBufLen) // fits both v1 and v1.3 records
+	iobuf := make([]byte, 4096)
+	ioin := sh.ioin // capture for loop
 	for {
+		if ioin != lib.InvalidHandle {
+			n := k.PortRecv(ioin, iobuf)
+			if n > 0 {
+				for _, b := range iobuf[:n] {
+					ev := lib.InputEvent{Kind: lib.KeyDown, Codepoint: uint16(b)}
+					sh.key(ev)
+				}
+			}
+			if n < 0 {
+				return
+			}
+		}
 		n := k.InputRecv(buf)
 		if n >= lib.InputRecLen {
 			if ev, ok := lib.DecodeInputEvent(buf[:n]); ok && ev.Kind == lib.KeyDown {
@@ -95,6 +137,19 @@ func (s *Shell) rootLabel() string {
 		return "/"
 	}
 	return s.root
+}
+
+func (s *Shell) userName() string {
+	if s.reg != nil {
+		if list, err := s.reg.List(); err == nil {
+			for _, si := range list {
+				if si.Name == lib.NameShell && lib.Alive(si.State) {
+					return lib.Username(si.UID)
+				}
+			}
+		}
+	}
+	return "unknown"
 }
 
 func stopped(ch <-chan struct{}) bool {
@@ -119,13 +174,23 @@ func (s *Shell) out(line string) {
 	msg = append(msg, ' ')
 	msg = append(msg, []byte(line)...)
 	s.k.PortSend(s.con, msg)
+	if s.ioh != lib.InvalidHandle {
+		s.k.PortSend(s.ioh, msg)
+	}
+}
+
+// toConsole sends a message to the console port only (not the io output
+// port). Used for terminal redraw protocol messages that should not
+// be relayed back to the SSH/text client.
+func (s *Shell) toConsole(msg []byte) {
+	s.k.PortSend(s.con, msg)
 }
 
 // prompt writes "> " at the start of the current terminal line using
 // the echo redraw protocol (\r prefix => no [console] tag, no trailing
 // newline), so the cursor sits right after the space waiting for input.
 func (s *Shell) prompt() {
-	s.k.PortSend(s.con, []byte{'\r', '>', ' '})
+	s.toConsole([]byte{'\r', '>', ' '})
 }
 
 // key applies one input event to the line editor.
@@ -164,7 +229,7 @@ func (s *Shell) echo() {
 	msg = append(msg, 0, 0, 0, 0, 0)
 	msg = append(msg, []byte(string(s.line))...)
 	msg = append(msg, '\x1b', '[', 'K') // clear to end of line (fixes backspace)
-	s.k.PortSend(s.con, msg)
+	s.toConsole(msg)
 }
 
 // echoEnter sends the final echo redraw with a trailing newline so
@@ -174,7 +239,7 @@ func (s *Shell) echoEnter() {
 	msg = append(msg, 0, 0, 0, 0, 0)
 	msg = append(msg, []byte(string(s.line))...)
 	msg = append(msg, '\x1b', '[', 'K', '\n')
-	s.k.PortSend(s.con, msg)
+	s.toConsole(msg)
 }
 
 // resolve joins a user-supplied path with the session root when relative.
@@ -194,6 +259,32 @@ func (s *Shell) resolve(p string) string {
 	return s.root + "/" + p
 }
 
+// readAll reads the entire file at path through the fs client, returning
+// the concatenated bytes. Returns nil on error (caller prints the error).
+func (s *Shell) readAll(path string) ([]byte, error) {
+	if s.fs == nil {
+		return nil, errors.New("fs unavailable")
+	}
+	buf := make([]byte, 4096)
+	var data []byte
+	off := uint64(0)
+	for {
+		n, err := s.fs.ReadFile(path, off, buf)
+		if err != nil {
+			return data, err
+		}
+		if n == 0 {
+			break
+		}
+		data = append(data, buf[:n]...)
+		off += uint64(n)
+		if n < len(buf) {
+			break
+		}
+	}
+	return data, nil
+}
+
 func (s *Shell) exec(line string) {
 	if line == "" {
 		return
@@ -202,7 +293,7 @@ func (s *Shell) exec(line string) {
 	cmd, args := fields[0], fields[1:]
 	switch cmd {
 	case "help":
-		s.out("built-ins: echo ls cat stat kill-session sessions caps run help vi pwd cd mkdir rm touch")
+		s.out("built-ins: echo ls cat stat cp mv rmdir grep find head tail wc sort uniq tr cut sed sleep true false test date clear whoami id env printenv kill-session sessions caps run help vi pwd cd mkdir rm touch")
 	case "echo":
 		s.out(strings.Join(args, " "))
 	case "pwd":
@@ -213,14 +304,66 @@ func (s *Shell) exec(line string) {
 		s.cmdMkdir(args)
 	case "rm":
 		s.cmdRm(args)
+	case "rmdir":
+		s.cmdRmdir(args)
 	case "touch":
 		s.cmdTouch(args)
+	case "cp":
+		s.cmdCp(args)
+	case "mv":
+		s.cmdMv(args)
 	case "ls":
 		s.cmdLs(args)
 	case "cat":
 		s.cmdCat(args)
 	case "stat":
 		s.cmdStat(args)
+	case "grep":
+		s.cmdGrep(args)
+	case "find":
+		s.cmdFind(args)
+	case "head":
+		s.cmdHead(args)
+	case "tail":
+		s.cmdTail(args)
+	case "wc":
+		s.cmdWc(args)
+	case "sort":
+		s.cmdSort(args)
+	case "uniq":
+		s.cmdUniq(args)
+	case "tr":
+		s.cmdTr(args)
+	case "cut":
+		s.cmdCut(args)
+	case "sed":
+		s.cmdSed(args)
+	case "sleep":
+		s.cmdSleep(args)
+	case "true":
+		return
+	case "false":
+		s.exitStatus = 1
+	case "test", "[":
+		s.cmdTest(args)
+	case "expr":
+		s.cmdExpr(args)
+	case "seq":
+		s.cmdSeq(args)
+	case "env":
+		s.cmdEnv(args)
+	case "printenv":
+		s.cmdPrintenv(args)
+	case "date":
+		s.cmdDate(args)
+	case "clear":
+		s.toConsole([]byte{'\x1b', '[', '2', 'J', '\x1b', '[', 'H'})
+	case "reset":
+		s.toConsole([]byte{'\x1b', '[', 'c'})
+	case "whoami":
+		s.out(s.userName())
+	case "id":
+		s.cmdId(args)
 	case "vi":
 		s.cmdVi(args)
 	case "kill-session":
@@ -504,4 +647,588 @@ func (s *Shell) ownMask() uint64 {
 		}
 	}
 	return 0
+}
+
+func (s *Shell) cmdRmdir(args []string) {
+	if s.fs == nil || len(args) == 0 {
+		s.out("usage: rmdir <dir>")
+		return
+	}
+	for _, a := range args {
+		p := s.resolve(a)
+		if err := s.fs.Delete(p); err != nil {
+			s.out("rmdir: " + a + ": " + err.Error())
+		}
+	}
+}
+
+func (s *Shell) cmdCp(args []string) {
+	if s.fs == nil || len(args) < 2 {
+		s.out("usage: cp <src> <dst>")
+		return
+	}
+	src := s.resolve(args[0])
+	dst := s.resolve(args[1])
+	buf := make([]byte, 2048)
+	var data []byte
+	n, err := s.fs.ReadFile(src, 0, buf)
+	if err != nil {
+		s.out("cp: " + err.Error())
+		return
+	}
+	data = append(data, buf[:n]...)
+	off := uint64(n)
+	for n == len(buf) {
+		n, err = s.fs.ReadFile(src, off, buf)
+		if err != nil {
+			break
+		}
+		data = append(data, buf[:n]...)
+		off += uint64(n)
+	}
+	if err := s.fs.Create(dst); err != nil {
+		s.out("cp: create " + args[1] + ": " + err.Error())
+		return
+	}
+	if _, err := s.fs.WriteFile(dst, 0, data); err != nil {
+		s.out("cp: write " + args[1] + ": " + err.Error())
+	}
+}
+
+func (s *Shell) cmdMv(args []string) {
+	if s.fs == nil || len(args) < 2 {
+		s.out("usage: mv <src> <dst>")
+		return
+	}
+	src := s.resolve(args[0])
+	dst := s.resolve(args[1])
+	buf := make([]byte, 2048)
+	var data []byte
+	n, err := s.fs.ReadFile(src, 0, buf)
+	if err != nil {
+		s.out("mv: " + err.Error())
+		return
+	}
+	data = append(data, buf[:n]...)
+	off := uint64(n)
+	for n == len(buf) {
+		n, err = s.fs.ReadFile(src, off, buf)
+		if err != nil {
+			break
+		}
+		data = append(data, buf[:n]...)
+		off += uint64(n)
+	}
+	if err := s.fs.Create(dst); err != nil {
+		s.out("mv: create " + args[1] + ": " + err.Error())
+		return
+	}
+	if _, err := s.fs.WriteFile(dst, 0, data); err != nil {
+		s.out("mv: write " + args[1] + ": " + err.Error())
+		return
+	}
+	if err := s.fs.Delete(src); err != nil {
+		s.out("mv: delete " + args[0] + ": " + err.Error())
+	}
+}
+
+func (s *Shell) cmdGrep(args []string) {
+	if len(args) == 0 {
+		s.out("usage: grep <pattern> [file]")
+		return
+	}
+	pat := args[0]
+	if len(args) < 2 {
+		s.out("grep: stdin not supported in v1")
+		return
+	}
+	path := s.resolve(args[1])
+	data, err := s.readAll(path)
+	if err != nil {
+		s.out("grep: " + err.Error())
+		return
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	for _, ln := range lines {
+		if strings.Contains(ln, pat) {
+			s.out(ln)
+		}
+	}
+}
+
+func (s *Shell) cmdFind(args []string) {
+	if s.fs == nil || len(args) == 0 {
+		s.out("usage: find <path>")
+		return
+	}
+	root := s.resolve(args[0])
+	s.findWalk(root, root)
+}
+
+func (s *Shell) findWalk(base, path string) {
+	ents, err := s.fs.List(path)
+	if err != nil {
+		return
+	}
+	for _, e := range ents {
+		full := path
+		if !strings.HasSuffix(full, "/") {
+			full += "/"
+		}
+		full += e.Name
+		s.out(full)
+		if e.IsDir() {
+			s.findWalk(base, full)
+		}
+	}
+}
+
+func (s *Shell) cmdHead(args []string) {
+	if len(args) < 2 {
+		s.out("usage: head -n <N> <file>")
+		return
+	}
+	n, err := strconv.Atoi(args[1])
+	if err != nil {
+		s.out("head: bad -n value")
+		return
+	}
+	path := s.resolve(args[2])
+	data, err := s.readAll(path)
+	if err != nil {
+		s.out("head: " + err.Error())
+		return
+	}
+	lines := strings.Split(string(data), "\n")
+	for i := 0; i < n && i < len(lines); i++ {
+		if lines[i] != "" {
+			s.out(lines[i])
+		}
+	}
+}
+
+func (s *Shell) cmdTail(args []string) {
+	if len(args) < 2 {
+		s.out("usage: tail -n <N> <file>")
+		return
+	}
+	n, err := strconv.Atoi(args[1])
+	if err != nil {
+		s.out("tail: bad -n value")
+		return
+	}
+	path := s.resolve(args[2])
+	data, err := s.readAll(path)
+	if err != nil {
+		s.out("tail: " + err.Error())
+		return
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	start := len(lines) - n
+	if start < 0 {
+		start = 0
+	}
+	for i := start; i < len(lines); i++ {
+		s.out(lines[i])
+	}
+}
+
+func (s *Shell) cmdWc(args []string) {
+	if len(args) == 0 {
+		s.out("usage: wc <file>")
+		return
+	}
+	path := s.resolve(args[0])
+	buf, err := s.readAll(path)
+	if err != nil {
+		s.out("wc: " + err.Error())
+		return
+	}
+	lines := strings.Count(string(buf), "\n")
+	words := len(strings.Fields(string(buf)))
+	s.out(strconv.Itoa(lines) + " " + strconv.Itoa(words) + " " + strconv.Itoa(len(buf)))
+}
+
+func (s *Shell) cmdSort(args []string) {
+	if len(args) == 0 {
+		s.out("usage: sort <file>")
+		return
+	}
+	path := s.resolve(args[0])
+	buf, err := s.readAll(path)
+	if err != nil {
+		s.out("sort: " + err.Error())
+		return
+	}
+	lines := strings.Split(strings.TrimRight(string(buf), "\n"), "\n")
+	sort.Strings(lines)
+	for _, ln := range lines {
+		s.out(ln)
+	}
+}
+
+func (s *Shell) cmdUniq(args []string) {
+	if len(args) == 0 {
+		s.out("usage: uniq <file>")
+		return
+	}
+	path := s.resolve(args[0])
+	buf, err := s.readAll(path)
+	if err != nil {
+		s.out("uniq: " + err.Error())
+		return
+	}
+	lines := strings.Split(strings.TrimRight(string(buf), "\n"), "\n")
+	var prev string
+	for _, ln := range lines {
+		if ln != prev {
+			s.out(ln)
+		}
+		prev = ln
+	}
+}
+
+func (s *Shell) cmdTr(args []string) {
+	if len(args) < 2 {
+		s.out("usage: tr <set1> <set2> [file]")
+		return
+	}
+	set1 := args[0]
+	set2 := args[1]
+	if len(args) > 2 {
+		path := s.resolve(args[2])
+		buf, err := s.readAll(path)
+		if err != nil {
+			s.out("tr: " + err.Error())
+			return
+		}
+		text := string(buf)
+		mapping := make(map[rune]rune)
+		for i, r := range set1 {
+			if i < len(set2) {
+				mapping[r] = rune(set2[i])
+			} else {
+				mapping[r] = rune(set2[len(set2)-1])
+			}
+		}
+		out := strings.Map(func(r rune) rune {
+			if repl, ok := mapping[r]; ok {
+				return repl
+			}
+			return r
+		}, text)
+		for _, ln := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+			if ln != "" {
+				s.out(ln)
+			}
+		}
+	} else {
+		s.out("tr: stdin not supported in v1")
+	}
+}
+
+func (s *Shell) cmdCut(args []string) {
+	if len(args) < 2 {
+		s.out("usage: cut -d<sep> -f<fields> [file]")
+		return
+	}
+	delim := " "
+	fields := []int{1}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if strings.HasPrefix(a, "-d") && len(a) > 2 {
+			delim = string(a[2])
+		} else if strings.HasPrefix(a, "-f") {
+			fpart := a[2:]
+			fds := strings.Split(fpart, ",")
+			fields = fields[:0]
+			for _, fd := range fds {
+				n, err := strconv.Atoi(fd)
+				if err == nil {
+					fields = append(fields, n)
+				}
+			}
+		}
+	}
+	if len(args) < len(fields) {
+		s.out("cut: no file specified")
+		return
+	}
+	// find the file argument (last non-flag arg)
+	var path string
+	for i := len(args) - 1; i >= 0; i-- {
+		if !strings.HasPrefix(args[i], "-") {
+			path = args[i]
+			break
+		}
+	}
+ 	if path == "" {
+		s.out("cut: no file specified")
+		return
+	}
+	full := s.resolve(path)
+	buf, err := s.readAll(full)
+	if err != nil {
+		s.out("cut: " + err.Error())
+		return
+	}
+	lines := strings.Split(strings.TrimRight(string(buf), "\n"), "\n")
+	for _, ln := range lines {
+		parts := strings.Split(ln, delim)
+		var selected []string
+		for _, f := range fields {
+			if f > 0 && f <= len(parts) {
+				selected = append(selected, parts[f-1])
+			}
+		}
+		s.out(strings.Join(selected, delim))
+	}
+}
+
+func (s *Shell) cmdSed(args []string) {
+	if len(args) < 2 {
+		s.out("usage: sed <script> <file>")
+		return
+	}
+	script := args[0]
+	var subs []sedSub
+	for _, part := range strings.Split(script, ";") {
+		parts := strings.SplitN(part, "/", 4)
+		if len(parts) >= 4 && parts[0] == "s" {
+			subs = append(subs, sedSub{old: parts[1], repl: parts[2], all: len(parts) > 3 && parts[3] == "g"})
+		}
+	}
+	if len(subs) == 0 {
+		s.out("sed: only s/old/new/[] supported in v1")
+		return
+	}
+	path := s.resolve(args[1])
+	buf, err := s.readAll(path)
+	if err != nil {
+		s.out("sed: " + err.Error())
+		return
+	}
+	lines := strings.Split(strings.TrimRight(string(buf), "\n"), "\n")
+	for _, ln := range lines {
+		out := ln
+		for _, sub := range subs {
+			if sub.all {
+				out = strings.ReplaceAll(out, sub.old, sub.repl)
+			} else {
+				out = strings.Replace(out, sub.old, sub.repl, 1)
+			}
+		}
+		s.out(out)
+	}
+}
+
+type sedSub struct {
+	old  string
+	repl string
+	all  bool
+}
+
+func (s *Shell) cmdSleep(args []string) {
+	if len(args) == 0 {
+		s.out("usage: sleep <seconds>")
+		return
+	}
+	n, err := strconv.Atoi(args[0])
+	if err != nil {
+		s.out("sleep: bad duration")
+		return
+	}
+	if s.k.HasClock() {
+		start := s.k.ClockMs()
+		for s.k.ClockMs()-start < uint64(n)*1000 {
+			s.k.Yield()
+		}
+	} else {
+		time.Sleep(time.Duration(n) * time.Second)
+	}
+}
+
+func (s *Shell) cmdTest(args []string) {
+	// Minimal: test -n str, test -z str, test -f file, test -d file, test str = str
+	s.exitStatus = 0
+	if len(args) == 0 {
+		s.exitStatus = 1
+		return
+	}
+	i := 0
+	for i < len(args) {
+		a := args[i]
+		switch a {
+		case "-n":
+			if i+1 >= len(args) || len(args[i+1]) == 0 {
+				s.exitStatus = 1
+			}
+			i += 2
+		case "-z":
+			if i+1 < len(args) && len(args[i+1]) == 0 {
+				s.exitStatus = 0
+			} else {
+				s.exitStatus = 1
+			}
+			i += 2
+		case "-f":
+			if i+1 >= len(args) {
+				s.exitStatus = 1
+				return
+			}
+			st, err := s.fs.Stat(s.resolve(args[i+1]))
+			if err != nil || st.IsDir() {
+				s.exitStatus = 1
+			}
+			i += 2
+		case "-d":
+			if i+1 >= len(args) {
+				s.exitStatus = 1
+				return
+			}
+			st, err := s.fs.Stat(s.resolve(args[i+1]))
+			if err != nil || !st.IsDir() {
+				s.exitStatus = 1
+			}
+			i += 2
+		case "=":
+			if i < 1 || i+1 >= len(args) {
+				s.exitStatus = 1
+				return
+			}
+			left := args[i-1]
+			right := args[i+1]
+			if left != right {
+				s.exitStatus = 1
+			}
+			i += 2
+		default:
+			s.exitStatus = 1
+			return
+		}
+	}
+}
+
+func (s *Shell) cmdExpr(args []string) {
+	// Simple: expr <num> + <num>, expr <num> - <num>, expr <num> = <num>
+	if len(args) < 3 {
+		s.out("usage: expr <num> +|-|= <num>")
+		return
+	}
+	left, err := strconv.Atoi(args[0])
+	if err != nil {
+		s.out("expr: not a number")
+		return
+	}
+	op := args[1]
+	right, err := strconv.Atoi(args[2])
+	if err != nil {
+		s.out("expr: not a number")
+		return
+	}
+	switch op {
+	case "+":
+		s.out(strconv.Itoa(left + right))
+	case "-":
+		s.out(strconv.Itoa(left - right))
+	case "=":
+		if left == right {
+			s.out("1")
+		} else {
+			s.out("0")
+		}
+		s.exitStatus = 0
+		if left != right {
+			s.exitStatus = 1
+		}
+	default:
+		s.out("expr: unknown op " + op)
+	}
+}
+
+func (s *Shell) cmdSeq(args []string) {
+	if len(args) < 1 {
+		s.out("usage: seq <last>")
+		return
+	}
+	if len(args) == 1 {
+		last, err := strconv.Atoi(args[0])
+		if err != nil {
+			s.out("seq: bad number")
+			return
+		}
+		for i := 1; i <= last; i++ {
+			s.out(strconv.Itoa(i))
+		}
+	} else {
+		start, err := strconv.Atoi(args[0])
+		step := 1
+		last := start
+		if len(args) == 2 {
+			last, err = strconv.Atoi(args[1])
+		} else if len(args) > 2 {
+			step, err = strconv.Atoi(args[1])
+			last, err = strconv.Atoi(args[2])
+		}
+		if err != nil {
+			s.out("seq: bad number")
+			return
+		}
+		if step == 0 {
+			return
+		}
+		if step > 0 {
+			for i := start; i <= last; i += step {
+				s.out(strconv.Itoa(i))
+			}
+		} else {
+			for i := start; i >= last; i += step {
+				s.out(strconv.Itoa(i))
+			}
+		}
+	}
+}
+
+func (s *Shell) cmdEnv(args []string) {
+	for e := range s.env {
+		s.out(e + "=" + s.env[e])
+	}
+}
+
+func (s *Shell) cmdPrintenv(args []string) {
+	if len(args) == 0 {
+		s.cmdEnv(nil)
+		return
+	}
+	for e := range s.env {
+		if e == args[0] {
+			s.out(s.env[e])
+			return
+		}
+	}
+	s.exitStatus = 1
+}
+
+func (s *Shell) cmdDate(args []string) {
+	if s.k.HasClock() {
+		ms := s.k.ClockMs()
+		t := time.Unix(int64(ms/1000), 0).UTC()
+		s.out(t.Format("Mon Jan 2 15:04:05 UTC 2006"))
+	} else {
+		s.out(time.Now().UTC().Format("Mon Jan 2 15:04:05 UTC 2006"))
+	}
+}
+
+func (s *Shell) cmdId(args []string) {
+	uid := s.uid
+	if s.reg != nil {
+		if list, err := s.reg.List(); err == nil {
+			for _, si := range list {
+				if si.Name == lib.NameShell && lib.Alive(si.State) {
+					uid = si.UID
+				}
+			}
+		}
+	}
+	s.out("uid=" + strconv.FormatUint(uint64(uid), 10) + " (" + lib.Username(uid) + ")")
 }
