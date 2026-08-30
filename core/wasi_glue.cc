@@ -830,6 +830,30 @@ m3ApiRawFunction(kern_doorbell_wait) {
     int r = vfio_doorbell_wait(sched_current_sid(), (uint32_t)handle,(uint32_t)timeout_ms);
     m3ApiReturn(r);
 }
+m3ApiRawFunction(kern_vmware_backdoor) {
+    m3ApiReturnType(int32_t)
+    m3ApiGetArg(int32_t, op)
+    m3ApiGetArgMem(uint32_t *, time_low)
+    m3ApiGetArgMem(uint32_t *, time_high)
+    int r = 0;
+    switch (op) {
+        case 0: // present
+            r = vmware_backdoor_present();
+            break;
+        case 1: // get_time
+            {
+                uint32_t low = 0, high = 0;
+                vmware_backdoor_get_time(&low, &high);
+                r = (int)low;
+                if (time_low)  *time_low = low;
+                if (time_high) *time_high = high;
+            }
+            break;
+        default:
+            r = -1;
+    }
+    m3ApiReturn(r);
+}
 
 struct link_entry2 {
     const char *name;
@@ -858,6 +882,7 @@ static const link_entry2 kernlinks[] = {
     {"kern_fb_set_cursor", "i(ii)", kern_fb_set_cursor, 0},
     {"kern_fb_present", "i()", kern_fb_present, 0},
     {"kern_doorbell_wait", "i(ii)", kern_doorbell_wait, 0},
+    {"kern_vmware_backdoor", "i(iPP)", kern_vmware_backdoor, 0},
 };
 #define NKERN (sizeof(kernlinks) / sizeof(kernlinks[0]))
 

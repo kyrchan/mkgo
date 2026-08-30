@@ -28,6 +28,12 @@ void virtio_net_init(void);
 void virtio_net_poll(void);
 int virtio_net_available(void);
 
+/* VMware backdoor (Phase 13, optional — I/O port 0x5658 RPC) */
+int vmware_backdoor_present(void);
+void vmware_backdoor_get_time(uint32_t *low, uint32_t *high);
+void vmware_backdoor_get_uuid(uint8_t *out16);
+void vmware_backdoor_log(const uint8_t *msg, uint32_t len);
+
 /* cpu */
 void cpu_dump_features(void);
 int  cpu_enable_vector(void); /* 0 = vector unit live */

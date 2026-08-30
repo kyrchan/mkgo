@@ -39,7 +39,8 @@ ARCH_OBJS := $(BUILD)/arch/x86_64/uart.o $(BUILD)/arch/x86_64/cpu.o \
              $(BUILD)/arch/x86_64/traps.o $(BUILD)/arch/x86_64/traps_s.o \
              $(BUILD)/arch/x86_64/ctx_s.o $(BUILD)/arch/x86_64/irq0_stub_s.o \
              $(BUILD)/arch/x86_64/paging.o $(BUILD)/arch/x86_64/vector.o \
-             $(BUILD)/arch/x86_64/timer.o $(BUILD)/arch/x86_64/math.o
+             $(BUILD)/arch/x86_64/timer.o $(BUILD)/arch/x86_64/math.o \
+             $(BUILD)/arch/x86_64/vmware_backdoor.o
 
 WASM3_SRC := $(wildcard third_party/wasm3/*.c)
 WASM3_OBJS := $(patsubst %.c,$(BUILD)/wasm3/%.o,$(notdir $(WASM3_SRC)))
@@ -147,6 +148,18 @@ services/shell/shell.wasm: services/shell/shell.wasm.raw
 build/graphics.wasm: services/graphics/graphics.wasm
 	cp $< $@
 
+# Phase 12+13 service wasm copy rules
+build/usb.wasm: services/usb/usb.wasm
+	cp $< $@
+build/bt.wasm: services/bt/bt.wasm
+	cp $< $@
+build/wlan.wasm: services/wlan/wlan.wasm
+	cp $< $@
+build/e1000.wasm: services/e1000/e1000.wasm
+	cp $< $@
+build/ahci.wasm: services/ahci/ahci.wasm
+	cp $< $@
+
 build/shell.wasm: services/shell/shell.wasm
 	cp $< $@
 
@@ -180,6 +193,33 @@ build/test_p10b.wasm: build/test_p10b.raw
 build/test_p11.raw: guests/p11/main.go $(wildcard guests/lib/*.go)
 	cd guests/p11 && GOOS=wasip1 GOARCH=wasm go build -o ../../$@ .
 build/test_p11.wasm: build/test_p11.raw
+	python3 scripts/add_abiver.py $< $@ 2
+
+# Phase 12: USB/BT/WLAN services + Phase 13: E1000/AHCI
+# Build targets for new VFIO drivers
+services/usb/usb.wasm.raw: $(wildcard services/usb/*.go) $(wildcard guests/lib/*.go)
+	cd services/usb && GOOS=wasip1 GOARCH=wasm go build -o usb.wasm.raw .
+services/usb/usb.wasm: services/usb/usb.wasm.raw
+	python3 scripts/add_abiver.py $< $@ 2
+
+services/bt/bt.wasm.raw: $(wildcard services/bt/*.go) $(wildcard guests/lib/*.go)
+	cd services/bt && GOOS=wasip1 GOARCH=wasm go build -o bt.wasm.raw .
+services/bt/bt.wasm: services/bt/bt.wasm.raw
+	python3 scripts/add_abiver.py $< $@ 2
+
+services/wlan/wlan.wasm.raw: $(wildcard services/wlan/*.go) $(wildcard guests/lib/*.go)
+	cd services/wlan && GOOS=wasip1 GOARCH=wasm go build -o wlan.wasm.raw .
+services/wlan/wlan.wasm: services/wlan/wlan.wasm.raw
+	python3 scripts/add_abiver.py $< $@ 2
+
+services/e1000/e1000.wasm.raw: $(wildcard services/e1000/*.go) $(wildcard guests/lib/*.go)
+	cd services/e1000 && GOOS=wasip1 GOARCH=wasm go build -o e1000.wasm.raw .
+services/e1000/e1000.wasm: services/e1000/e1000.wasm.raw
+	python3 scripts/add_abiver.py $< $@ 2
+
+services/ahci/ahci.wasm.raw: $(wildcard services/ahci/*.go) $(wildcard guests/lib/*.go)
+	cd services/ahci && GOOS=wasip1 GOARCH=wasm go build -o ahci.wasm.raw .
+services/ahci/ahci.wasm: services/ahci/ahci.wasm.raw
 	python3 scripts/add_abiver.py $< $@ 2
 
 
@@ -439,6 +479,8 @@ test-p11b: $(BUILD)/disk-p11b.img $(BUILD)/VARS.fd
 # Phase 11 gfx: legacy-mode disk — graphics.wasm at /vm/app, no init.conf
 $(BUILD)/disk-p11-gfx.img: $(BUILD)/BOOTX64.EFI build/graphics.wasm | $(BUILD)
 	$(call MKDISK,$@,build/graphics.wasm)
+ 
+.PHONY: test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10 test-p11 test-p11b test-p11-gfx test-p12 test-p13 test-all
 
 .PHONY: test-p11-gfx
 test-p11-gfx: $(BUILD)/disk-p11-gfx.img $(BUILD)/VARS.fd
@@ -446,6 +488,36 @@ test-p11-gfx: $(BUILD)/disk-p11-gfx.img $(BUILD)/VARS.fd
 	@grep -q 'graphics: all ok' $(BUILD)/serial.log \
 	    && echo "TEST PASS (p11-gfx legacy graphics)" \
 	    || { echo "TEST FAIL (p11-gfx)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -40; exit 1; }
+
+# Phase 12: USB + BT + WLAN services boot as /vm/app with CAP_PCI
+$(BUILD)/disk-p12.img: $(BUILD)/BOOTX64.EFI build/usb.wasm services/bt/bt.wasm services/wlan/wlan.wasm | $(BUILD) $(IMG)
+	$(IMG) $@ 64 \
+	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+	  build/usb.wasm:/vm/app \
+	  services/bt/bt.wasm:/boot/modules/bt.wasm \
+	  services/wlan/wlan.wasm:/boot/modules/wlan.wasm
+
+.PHONY: test-p12
+test-p12: $(BUILD)/disk-p12.img $(BUILD)/VARS.fd
+	$(call RUN_QEMU,$(BUILD)/disk-p12.img)
+	@grep -q 'e1000.*all ok\|usb.*all ok' $(BUILD)/serial.log \
+	    && echo "TEST PASS (p12 usb+bt+wlan)" \
+	    || { echo "TEST FAIL (p12)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -30; exit 1; }
+
+# Phase 13: E1000 + AHCI VFIO drivers boot as /vm/app and /vm/app2 (legacy mode)
+$(BUILD)/disk-p13.img: $(BUILD)/BOOTX64.EFI services/e1000/e1000.wasm services/ahci/ahci.wasm | $(BUILD) $(IMG)
+	$(IMG) $@ 64 \
+	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+	  services/e1000/e1000.wasm:/vm/app \
+	  services/ahci/ahci.wasm:/vm/app2
+
+.PHONY: test-p13
+test-p13: $(BUILD)/disk-p13.img $(BUILD)/VARS.fd
+	$(call RUN_QEMU,$(BUILD)/disk-p13.img)
+	@grep -q 'e1000.*all ok' $(BUILD)/serial.log \
+	    && grep -q 'ahci.*all ok' $(BUILD)/serial.log \
+	    && echo "TEST PASS (p13 e1000+ahci)" \
+	    || { echo "TEST FAIL (p13)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -30; exit 1; }
 
 .PHONY: test-p9
 test-p9: $(BUILD)/disk-p9.img $(BUILD)/VARS.fd
@@ -519,7 +591,7 @@ $(BUILD)/ht/vfio_hoststub.o: core/vfio_hoststub.cc core/vfio.h | $(BUILD)
 test-kernel: $(BUILD)/hosttest
 	$(BUILD)/hosttest
 
-test-all: test-kernel test-unit test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10 test-p11 test-p11b
+test-all: test-kernel test-unit test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10 test-p11 test-p11b test-p12 test-p13
 
 # Phase 10: KVM+TCG matrix — every gate green under both accelerators.
 # KVM_FLAG is overridable ( ?= ) so matrix targets can force an accelerator.
