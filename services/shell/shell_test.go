@@ -635,3 +635,39 @@ func TestShellChcaps(t *testing.T) {
 	st.typeLine("chcaps 1 +CAP_NET")
 	waitFor(t, func() bool { return st.outputContains("chcaps:") }, "chcaps output missing")
 }
+
+func TestShellPkg(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+
+	st.typeLine("pkg list")
+	waitFor(t, func() bool { return st.outputContains("pkg list") }, "pkg list missing")
+
+	st.typeLine("pkg install hello.wasm")
+	waitFor(t, func() bool { return st.outputContains("pkg install: hello.wasm") }, "pkg install missing")
+
+	st.typeLine("pkg remove hello")
+	waitFor(t, func() bool { return st.outputContains("pkg remove: hello") }, "pkg remove missing")
+}
+
+func TestShellSysctl(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+
+	st.typeLine("sysctl quantum_ms=20")
+	waitFor(t, func() bool { return st.outputContains("sysctl") }, "sysctl output missing")
+}
+
+func TestShellInitctl(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+
+	st.typeLine("initctl restart fs")
+	waitFor(t, func() bool { return st.outputContains("initctl: restart fs") }, "initctl restart missing")
+}
+
+func TestShellCheckconf(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+	st.fs.text["/etc/init.conf"] = "console /boot/modules/console.wasm 0x3\nfs /boot/modules/fs.wasm 0x7\nlogin /boot/modules/login.wasm 0x5\n"
+	st.fs.text["/etc/users"] = "u1:1001::0x3\n"
+
+	st.typeLine("checkconf")
+	waitFor(t, func() bool { return st.outputContains("checkconf: OK") }, "checkconf missing")
+}

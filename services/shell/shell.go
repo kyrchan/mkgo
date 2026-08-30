@@ -300,7 +300,7 @@ func (s *Shell) exec(line string) {
 	cmd, args := fields[0], fields[1:]
 	switch cmd {
 	case "help":
-		s.out("built-ins: echo ls cat stat cp mv rmdir grep find head tail wc sort uniq tr cut sed sleep true false test date clear whoami id env printenv kill-session sessions caps run help vi pwd cd mkdir rm touch passwd top dmesg memstat audit ping nc http netstat ipaddr ssh")
+		s.out("built-ins: echo ls cat stat cp mv rmdir grep find head tail wc sort uniq tr cut sed sleep true false test date clear whoami id env printenv kill-session sessions caps run help vi pwd cd mkdir rm touch passwd top dmesg memstat audit ping nc http netstat ipaddr ssh ports sessinfo caphint chcaps pkg")
 	case "echo":
 		s.out(strings.Join(args, " "))
 	case "pwd":
@@ -409,8 +409,16 @@ func (s *Shell) exec(line string) {
 		s.cmdSessinfo(args)
 	case "caphint":
 		s.cmdCaphint(args)
-	case "chcaps":
+  	case "chcaps":
 		s.cmdChcaps(args)
+	case "pkg":
+		s.cmdPkg(args)
+	case "sysctl":
+		s.cmdSysctl(args)
+	case "initctl":
+		s.cmdInitctl(args)
+	case "checkconf":
+		s.cmdCheckconf(args)
 	default:
 		s.out("sh: unknown command: " + cmd)
 	}
@@ -1556,4 +1564,111 @@ func (s *Shell) cmdChcaps(args []string) {
 		return
 	}
 	s.out("chcaps: not yet implemented (audit trail required in Phase 10)")
+}
+
+func (s *Shell) cmdPkg(args []string) {
+	if len(args) < 1 {
+		s.out("usage: pkg <list|install|remove|update> [module]")
+		return
+	}
+	sub := args[0]
+	switch sub {
+	case "list":
+		s.out("pkg list: pending Phase 18 (module index on fs.wasm)")
+	case "install":
+		if len(args) < 2 {
+			s.out("usage: pkg install <module.wasm>")
+			return
+		}
+		s.out("pkg install: " + args[1] + " -> /boot/modules/ (signature check pending)")
+	case "remove":
+		if len(args) < 2 {
+			s.out("usage: pkg remove <module>")
+			return
+		}
+		s.out("pkg remove: " + args[1])
+	case "update":
+		s.out("pkg update: pending Phase 18 (module index refresh)")
+	default:
+		s.out("pkg: unknown subcommand '" + sub + "'")
+	}
+}
+
+func (s *Shell) cmdSysctl(args []string) {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		s.out("usage: sysctl <key=value|key>")
+		return
+	}
+	if s.fs == nil {
+		s.out("sysctl: fs unavailable")
+		return
+	}
+	// kernel.conf is read by init; shell just displays the request
+	s.out("sysctl: " + args[0] + " (applied via registry port — Phase 19)")
+}
+
+func (s *Shell) cmdInitctl(args []string) {
+	if len(args) == 0 {
+		s.out("usage: initctl <restart <service>|reload-conf>")
+		return
+	}
+	cmd := args[0]
+	switch cmd {
+	case "restart":
+		if len(args) < 2 {
+			s.out("usage: initctl restart <service>")
+			return
+		}
+		s.out("initctl: restart " + args[1] + " (via registry SPAWN — Phase 19)")
+	case "reload-conf":
+		s.out("initctl: reload-conf (init re-reads /etc/init.conf)")
+	default:
+		s.out("initctl: unknown subcommand '" + cmd + "'")
+	}
+}
+
+func (s *Shell) cmdCheckconf(args []string) {
+	if s.fs == nil {
+		s.out("checkconf: fs unavailable")
+		return
+	}
+	// Check /etc/init.conf
+	data, err := s.readAll("/etc/init.conf")
+	if err != nil {
+		s.out("checkconf: cannot read /etc/init.conf: " + err.Error())
+		return
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	errors := 0
+	for i, ln := range lines {
+		ln = strings.TrimSpace(ln)
+		if ln == "" || strings.HasPrefix(ln, "#") {
+			continue
+		}
+		// Format: <name> <path> <capmask-hex> [respawn]
+		fields := strings.Fields(ln)
+		if len(fields) < 3 {
+			s.out("checkconf: line " + strconv.Itoa(i+1) + ": too few fields")
+			errors++
+		}
+	}
+	// Check /etc/users
+	data, err = s.readAll("/etc/users")
+	if err != nil {
+		s.out("checkconf: cannot read /etc/users: " + err.Error())
+	} else {
+		lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+		for i, ln := range lines {
+			parts := strings.SplitN(ln, ":", 4)
+			if len(parts) < 3 {
+				s.out("checkconf: /etc/users line " + strconv.Itoa(i+1) + ": bad format")
+				errors++
+			}
+		}
+	}
+	if errors == 0 {
+		s.out("checkconf: OK")
+	} else {
+		s.out("checkconf: " + strconv.Itoa(errors) + " error(s)")
+	}
 }
