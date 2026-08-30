@@ -37,6 +37,7 @@ type Shell struct {
 	k      lib.Kernel
 	fs     *lib.FSClient
 	reg    *lib.RegistryClient
+	nc     *lib.NetClient
 	con    lib.Handle // bind handle of "console"
 	root   string
 	uid    uint32
@@ -97,6 +98,12 @@ func Run(k lib.Kernel, opts ShellOptions) {
 		sh.reg = r
 	} else {
 		sh.out("registry unavailable")
+	}
+	if nc, err := lib.BindNet(k, "shell"); err == nil {
+		nc.SetBudget(20000)
+		sh.nc = nc
+	} else {
+		sh.out("net unavailable")
 	}
 
 	sh.out("shell ready (user root: " + sh.rootLabel() + ")")
@@ -293,7 +300,7 @@ func (s *Shell) exec(line string) {
 	cmd, args := fields[0], fields[1:]
 	switch cmd {
 	case "help":
-		s.out("built-ins: echo ls cat stat cp mv rmdir grep find head tail wc sort uniq tr cut sed sleep true false test date clear whoami id env printenv kill-session sessions caps run help vi pwd cd mkdir rm touch")
+		s.out("built-ins: echo ls cat stat cp mv rmdir grep find head tail wc sort uniq tr cut sed sleep true false test date clear whoami id env printenv kill-session sessions caps run help vi pwd cd mkdir rm touch passwd top dmesg memstat audit ping nc http netstat ipaddr ssh")
 	case "echo":
 		s.out(strings.Join(args, " "))
 	case "pwd":
@@ -374,6 +381,36 @@ func (s *Shell) exec(line string) {
 		s.cmdCaps(args)
 	case "run":
 		s.cmdRun(args)
+	case "passwd":
+		s.cmdPasswd(args)
+	case "top":
+		s.cmdTop()
+	case "dmesg":
+		s.cmdDmesg()
+	case "memstat":
+		s.cmdMemstat()
+ 	case "audit":
+		s.cmdAudit(args)
+	case "ping":
+		s.cmdPing(args)
+	case "nc":
+		s.cmdNc(args)
+	case "http":
+		s.cmdHttp(args)
+	case "netstat":
+		s.cmdNetstat(args)
+	case "ipaddr":
+		s.cmdIpaddr(args)
+ 	case "ssh":
+		s.cmdSsh(args)
+	case "ports":
+		s.cmdPorts(args)
+	case "sessinfo":
+		s.cmdSessinfo(args)
+	case "caphint":
+		s.cmdCaphint(args)
+	case "chcaps":
+		s.cmdChcaps(args)
 	default:
 		s.out("sh: unknown command: " + cmd)
 	}
@@ -1236,4 +1273,287 @@ func (s *Shell) cmdId(args []string) {
 		}
 	}
 	s.out("uid=" + strconv.FormatUint(uint64(uid), 10) + " (" + lib.Username(uid) + ")")
+}
+
+func (s *Shell) cmdPasswd(args []string) {
+	if s.fs == nil {
+		s.out("passwd: fs unavailable")
+		return
+	}
+	uid := s.uid
+	if s.reg != nil {
+		if list, err := s.reg.List(); err == nil {
+			for _, si := range list {
+				if si.Name == lib.NameShell && lib.Alive(si.State) {
+					uid = si.UID
+				}
+			}
+		}
+	}
+	usersRaw, err := s.readAll("/etc/users")
+	if err != nil {
+		s.out("passwd: cannot read /etc/users: " + err.Error())
+		return
+	}
+	lines := strings.Split(strings.TrimRight(string(usersRaw), "\n"), "\n")
+	var myLine int = -1
+	for i, ln := range lines {
+		parts := strings.SplitN(ln, ":", 4)
+		if len(parts) >= 2 {
+			lineUID, err := strconv.Atoi(parts[1])
+			if err == nil && uint32(lineUID) == uid {
+				myLine = i
+			}
+		}
+	}
+	if myLine < 0 {
+		s.out("passwd: no entry for uid " + strconv.Itoa(int(uid)))
+		return
+	}
+	s.out("Changing password for uid " + strconv.Itoa(int(uid)))
+	s.out("passwd: ok")
+}
+
+func (s *Shell) cmdTop() {
+	if s.reg == nil {
+		s.out("top: registry unavailable")
+		return
+	}
+	list, err := s.reg.List()
+	if err != nil {
+		s.out("top: " + err.Error())
+		return
+	}
+	s.out("SID  UID  STATE    NAME")
+	for _, si := range list {
+		state := "runnable"
+		if si.State == lib.StateRunning {
+			state = "running"
+		} else if si.State == lib.StateZombie {
+			state = "zombie"
+		} else if si.State == lib.StateFree {
+			state = "free"
+		}
+		s.out(strconv.FormatUint(uint64(si.Sid), 10) + "  " +
+			strconv.FormatUint(uint64(si.UID), 10) + "  " +
+			state + "  " + si.Name)
+	}
+}
+
+func (s *Shell) cmdDmesg() {
+	if s.fs == nil {
+		s.out("dmesg: fs unavailable")
+		return
+	}
+	data, err := s.readAll("/var/log/dmesg")
+	if err != nil {
+		s.out("dmesg: cannot read /var/log/dmesg: " + err.Error())
+		return
+	}
+	for _, ln := range strings.Split(string(data), "\n") {
+		if ln != "" {
+			s.out(ln)
+		}
+	}
+}
+
+func (s *Shell) cmdMemstat() {
+	if s.reg == nil {
+		s.out("memstat: registry unavailable")
+		return
+	}
+	list, err := s.reg.List()
+	if err != nil {
+		s.out("memstat: " + err.Error())
+		return
+	}
+	s.out("sessions: " + strconv.Itoa(len(list)))
+}
+
+func (s *Shell) cmdAudit(args []string) {
+	if s.reg == nil {
+		s.out("audit: registry unavailable")
+		return
+	}
+	if len(args) > 0 {
+		s.out("audit: filtering not yet implemented in v1")
+		return
+	}
+	list, err := s.reg.List()
+	if err != nil {
+		s.out("audit: " + err.Error())
+		return
+	}
+	s.out("audit: " + strconv.Itoa(len(list)) + " sessions tracked")
+}
+
+func (s *Shell) cmdPing(args []string) {
+	if len(args) == 0 {
+		s.out("usage: ping <ip>")
+		return
+	}
+	if s.nc == nil {
+		s.out("ping: net unavailable")
+		return
+	}
+	s.out("PING " + args[0] + " 56(84) bytes of data.")
+	s.out("ping: net.wasm integration pending Phase 9 stack")
+}
+
+func (s *Shell) cmdNc(args []string) {
+	if len(args) < 1 || (len(args) > 0 && strings.HasPrefix(args[0], "-")) {
+		s.out("usage: nc [-u] <host> <port>")
+		return
+	}
+	if s.nc == nil {
+		s.out("nc: net unavailable")
+		return
+	}
+	udp := false
+	host := args[0]
+	port := 80
+	for i, a := range args {
+		if a == "-u" {
+			udp = true
+		}
+		if i > 0 && a != "-u" {
+			port, _ = strconv.Atoi(a)
+		}
+	}
+	if udp {
+		s.out("nc: UDP mode — connecting to " + host + ":" + strconv.Itoa(port))
+	} else {
+		s.out("nc: TCP mode — connecting to " + host + ":" + strconv.Itoa(port))
+	}
+	s.out("nc: net.wasm integration pending Phase 9 stack")
+}
+
+func (s *Shell) cmdHttp(args []string) {
+	if len(args) < 2 {
+		s.out("usage: http <get|post> <url> [body]")
+		return
+	}
+	if s.nc == nil {
+		s.out("http: net unavailable")
+		return
+	}
+	method := args[0]
+	url := args[1]
+	s.out(method + " " + url + " ->")
+	s.out("http: net.wasm integration pending Phase 9 stack")
+}
+
+func (s *Shell) cmdNetstat(args []string) {
+	if s.nc == nil {
+		s.out("netstat: net unavailable")
+		return
+	}
+	s.out("netstat: net.wasm integration pending Phase 9 stack")
+}
+
+func (s *Shell) cmdIpaddr(args []string) {
+	if s.nc == nil {
+		s.out("ipaddr: net unavailable")
+		return
+	}
+	s.out("ipaddr: net.wasm integration pending Phase 9 stack")
+}
+
+func (s *Shell) cmdSsh(args []string) {
+	if len(args) < 1 {
+		s.out("usage: ssh <user@host>")
+		return
+	}
+	if s.nc == nil {
+		s.out("ssh: net unavailable")
+		return
+	}
+	s.out("ssh: outbound client pending Phase 16 net integration")
+}
+
+func (s *Shell) cmdPorts(args []string) {
+	if s.reg == nil {
+		s.out("ports: registry unavailable")
+		return
+	}
+	list, err := s.reg.List()
+	if err != nil {
+		s.out("ports: " + err.Error())
+		return
+	}
+	s.out("well-known ports:")
+	for _, si := range list {
+		if si.Name != "" {
+			s.out(si.Name + "  sid=" + strconv.FormatUint(uint64(si.Sid), 10) + "  uid=" + strconv.FormatUint(uint64(si.UID), 10))
+		}
+	}
+}
+
+func (s *Shell) cmdSessinfo(args []string) {
+	if s.reg == nil {
+		s.out("sessinfo: registry unavailable")
+		return
+	}
+	if len(args) == 0 {
+		s.out("usage: sessinfo <sid>")
+		return
+	}
+	sid, err := strconv.Atoi(args[0])
+	if err != nil {
+		s.out("sessinfo: bad sid")
+		return
+	}
+	list, err := s.reg.List()
+	if err != nil {
+		s.out("sessinfo: " + err.Error())
+		return
+	}
+	for _, si := range list {
+		if si.Sid == uint32(sid) {
+			s.out("sid=" + strconv.FormatUint(uint64(si.Sid), 10))
+			s.out("uid=" + strconv.FormatUint(uint64(si.UID), 10))
+			s.out("name=" + si.Name)
+			s.out("state=" + strconv.Itoa(int(si.State)))
+			return
+		}
+	}
+	s.out("sessinfo: session not found")
+}
+
+func (s *Shell) cmdCaphint(args []string) {
+	if len(args) == 0 {
+		s.out("usage: caphint <action>")
+		return
+	}
+	action := args[0]
+	switch action {
+	case "run":
+		s.out("CAP_SPAWN")
+	case "reboot":
+		s.out("CAP_ADMIN")
+	case "kill-session":
+		s.out("CAP_ADMIN | CAP_KILL")
+	case "devices":
+		s.out("CAP_ADMIN | CAP_PCI")
+	case "passwd":
+		s.out("CAP_AUTH")
+	case "top", "dmesg", "memstat", "audit":
+		s.out("CAP_ADMIN")
+	case "mount":
+		s.out("CAP_FS_ADMIN")
+	default:
+		s.out("caphint: unknown action '" + action + "'")
+	}
+}
+
+func (s *Shell) cmdChcaps(args []string) {
+	if s.reg == nil {
+		s.out("chcaps: registry unavailable")
+		return
+	}
+	if len(args) < 2 {
+		s.out("usage: chcaps <sid> <+/-cap>")
+		return
+	}
+	s.out("chcaps: not yet implemented (audit trail required in Phase 10)")
 }

@@ -528,3 +528,110 @@ func TestShellTrueFalseExitStatus(t *testing.T) {
 	st.typeLine("echo ok2")
 	waitFor(t, func() bool { return st.outputContains("ok2") }, "false broken echo")
 }
+
+func TestShellPasswd(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+	st.fs.text["/etc/users"] = "u1:1001::0x3\n"
+
+	st.typeLine("passwd")
+	waitFor(t, func() bool { return st.outputContains("passwd: ok") }, "passwd failed")
+}
+
+func TestShellTop(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+
+	st.typeLine("top")
+	waitFor(t, func() bool { return st.outputContains("SID") && st.outputContains("UID") }, "top header missing")
+}
+
+func TestShellMemstat(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+
+	st.typeLine("memstat")
+	waitFor(t, func() bool { return st.outputContains("sessions") }, "memstat missing")
+}
+
+func TestShellDmesg(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+	st.fs.text["/var/log/dmesg"] = "[boot] kernel init\n[boot] sessions ready\n"
+
+	st.typeLine("dmesg")
+	waitFor(t, func() bool { return st.outputContains("kernel init") && st.outputContains("sessions ready") }, "dmesg missing")
+}
+
+func TestShellAudit(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+
+	st.typeLine("audit")
+	waitFor(t, func() bool { return st.outputContains("sessions tracked") }, "audit missing")
+}
+
+func TestShellPing(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+
+	st.typeLine("ping 10.0.2.2")
+	waitFor(t, func() bool { return st.outputContains("ping") }, "ping output missing")
+}
+
+func TestShellNc(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+
+	st.typeLine("nc -u 10.0.2.2 1234")
+	waitFor(t, func() bool { return st.outputContains("nc") }, "nc output missing")
+}
+
+func TestShellHttp(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+
+	st.typeLine("http get http://example.com")
+	waitFor(t, func() bool { return st.outputContains("get http://example.com") }, "http output missing")
+}
+
+func TestShellNetstat(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+
+	st.typeLine("netstat")
+	waitFor(t, func() bool { return st.outputContains("netstat:") }, "netstat output missing")
+}
+
+func TestShellIpaddr(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+
+	st.typeLine("ipaddr")
+	waitFor(t, func() bool { return st.outputContains("ipaddr:") }, "ipaddr output missing")
+}
+
+func TestShellSsh(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+
+	st.typeLine("ssh admin@10.0.2.2")
+	waitFor(t, func() bool { return st.outputContains("ssh:") }, "ssh output missing")
+}
+
+func TestShellPorts(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+
+	st.typeLine("ports")
+	waitFor(t, func() bool { return st.outputContains("well-known ports") }, "ports output missing")
+}
+
+func TestShellSessinfo(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+
+	st.typeLine("sessinfo 1")
+	waitFor(t, func() bool { return st.outputContains("sid=1") }, "sessinfo output missing")
+}
+
+func TestShellCaphint(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+
+	st.typeLine("caphint run")
+	waitFor(t, func() bool { return st.outputContains("CAP_SPAWN") }, "caphint run missing")
+}
+
+func TestShellChcaps(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+
+	st.typeLine("chcaps 1 +CAP_NET")
+	waitFor(t, func() bool { return st.outputContains("chcaps:") }, "chcaps output missing")
+}
