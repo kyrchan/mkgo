@@ -202,6 +202,24 @@ func (st *shellTest) outputContains(want string) bool {
 	return false
 }
 
+func (st *shellTest) outputContainsAll(wants ...string) bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	for _, want := range wants {
+		found := false
+		for _, m := range st.con {
+			if strings.Contains(string(m), want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
 // ---- tests ----
 
 func TestShellEchoAndUnknown(t *testing.T) {
@@ -401,6 +419,8 @@ func TestShellGrepFindHead(t *testing.T) {
 	st.fs.text["/home/u1/log.txt"] = "kernel line\nuser line\nkernel end\n"
 	st.fs.dirs["/home/u1"] = []lib.FileInfo{
 		{Name: "log.txt", Attr: lib.AttrArchive, Size: 22},
+		{Name: "deep.txt", Attr: lib.AttrArchive, Size: 5},
+		{Name: "sub", Attr: lib.AttrDir},
 	}
 	st.fs.dirs["/home/u1/sub"] = []lib.FileInfo{
 		{Name: "deep.txt", Attr: lib.AttrArchive, Size: 5},
@@ -457,7 +477,7 @@ func TestShellCutTrSed(t *testing.T) {
 
 	// tr ab AB data.csv
 	st.typeLine("tr ab AB data.csv")
-	waitFor(t, func() bool { return st.outputContains("AB:c") }, "tr output missing")
+	waitFor(t, func() bool { return st.outputContains("A:B:c") }, "tr output missing")
 }
 
 func TestShellScripting(t *testing.T) {
@@ -466,16 +486,16 @@ func TestShellScripting(t *testing.T) {
 	// true / false
 	st.typeLine("true")
 	st.typeLine("false")
-	st.typeLine("echo done")
-	waitFor(t, func() bool { return st.outputContains("done") }, "scripting test missing")
+	st.typeLine("echo donex")
+	waitFor(t, func() bool { return st.outputContains("donex") }, "scripting test missing")
 
 	// expr
-	st.typeLine("expr 2 + 3")
-	waitFor(t, func() bool { return st.outputContains("5") }, "expr output missing")
+	st.typeLine("expr 7 + 3")
+	waitFor(t, func() bool { return st.outputContains("10") }, "expr output missing")
 
 	// seq
-	st.typeLine("seq 3")
-	waitFor(t, func() bool { return st.outputContains("1") && st.outputContains("2") && st.outputContains("3") }, "seq output missing")
+	st.typeLine("seq 5")
+	waitFor(t, func() bool { return st.outputContainsAll("1", "2", "3", "4", "5") }, "seq output missing")
 
 	// test -n
 	st.typeLine("test -n hello")

@@ -762,6 +762,11 @@ func (s *Shell) cmdFind(args []string) {
 		return
 	}
 	root := s.resolve(args[0])
+	if root == "." {
+		root = "/"
+	}
+	root = strings.TrimSuffix(root, "/.")
+	root = strings.TrimSuffix(root, "/./")
 	s.findWalk(root, root)
 }
 
