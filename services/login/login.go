@@ -275,7 +275,7 @@ func registerFS(k lib.Kernel, u *User, conh *lib.Handle) {
 }
 
 func doSpawn(k lib.Kernel, reg *lib.RegistryClient, shell string, u *User) uint32 {
-	sid, err := reg.Spawn(shell, shell, 0, u.Name)
+	sid, err := reg.Spawn(shell, shell, 0, "/home/"+u.Name)
 	if err != nil {
 		return spawnNone
 	}

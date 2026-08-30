@@ -45,6 +45,9 @@ func Run(k lib.Kernel, opts ShellOptions) {
 
 	// NOTE: 0 is a VALID port handle; only -1 means "none".
 	sh := &Shell{k: k, root: opts.Root, con: lib.InvalidHandle}
+	if sh.root == "" {
+		sh.root = "/" // init-spawned shells get the global root
+	}
 	for sh.con == lib.InvalidHandle {
 		sh.con = k.PortBind(lib.NameConsole)
 		if sh.con != lib.InvalidHandle {
@@ -160,6 +163,7 @@ func (s *Shell) echo() {
 	msg := []byte{'\r', '>', ' '}
 	msg = append(msg, 0, 0, 0, 0, 0)
 	msg = append(msg, []byte(string(s.line))...)
+	msg = append(msg, '\x1b', '[', 'K') // clear to end of line (fixes backspace)
 	s.k.PortSend(s.con, msg)
 }
 
@@ -169,7 +173,7 @@ func (s *Shell) echoEnter() {
 	msg := []byte{'\r', '>', ' '}
 	msg = append(msg, 0, 0, 0, 0, 0)
 	msg = append(msg, []byte(string(s.line))...)
-	msg = append(msg, '\n')
+	msg = append(msg, '\x1b', '[', 'K', '\n')
 	s.k.PortSend(s.con, msg)
 }
 
@@ -184,6 +188,9 @@ func (s *Shell) resolve(p string) string {
 	if !strings.HasPrefix(s.root, "/") {
 		return "/" + s.root + "/" + p
 	}
+	if s.root == "/" {
+		return "/" + p
+	}
 	return s.root + "/" + p
 }
 
@@ -195,15 +202,27 @@ func (s *Shell) exec(line string) {
 	cmd, args := fields[0], fields[1:]
 	switch cmd {
 	case "help":
-		s.out("built-ins: echo ls cat stat kill-session sessions caps run help")
+		s.out("built-ins: echo ls cat stat kill-session sessions caps run help vi pwd cd mkdir rm touch")
 	case "echo":
 		s.out(strings.Join(args, " "))
+	case "pwd":
+		s.cmdPwd()
+	case "cd":
+		s.cmdCd(args)
+	case "mkdir":
+		s.cmdMkdir(args)
+	case "rm":
+		s.cmdRm(args)
+	case "touch":
+		s.cmdTouch(args)
 	case "ls":
 		s.cmdLs(args)
 	case "cat":
 		s.cmdCat(args)
 	case "stat":
 		s.cmdStat(args)
+	case "vi":
+		s.cmdVi(args)
 	case "kill-session":
 		s.cmdKill(args)
 	case "sessions":
@@ -214,6 +233,75 @@ func (s *Shell) exec(line string) {
 		s.cmdRun(args)
 	default:
 		s.out("sh: unknown command: " + cmd)
+	}
+}
+
+func (s *Shell) cmdPwd() {
+	if s.root == "" {
+		s.out("/")
+	} else {
+		s.out(s.root)
+	}
+}
+
+func (s *Shell) cmdCd(args []string) {
+	if s.fs == nil {
+		s.out("fs unavailable")
+		return
+	}
+	target := "/"
+	if len(args) > 0 {
+		target = args[0]
+	}
+	path := s.resolve(target)
+	// must exist and be a directory
+	info, err := s.fs.Stat(path)
+	if err != nil {
+		s.out("cd: " + err.Error())
+		return
+	}
+	if !info.IsDir() {
+		s.out("cd: not a directory: " + target)
+		return
+	}
+	s.root = path
+}
+
+func (s *Shell) cmdMkdir(args []string) {
+	if s.fs == nil || len(args) == 0 {
+		s.out("usage: mkdir <dir>")
+		return
+	}
+	p := s.resolve(args[0])
+	if err := s.fs.Mkdir(p); err != nil {
+		s.out("mkdir: " + err.Error())
+		return
+	}
+}
+
+func (s *Shell) cmdRm(args []string) {
+	if s.fs == nil || len(args) == 0 {
+		s.out("usage: rm <file|dir>")
+		return
+	}
+	for _, a := range args {
+		p := s.resolve(a)
+		if err := s.fs.Delete(p); err != nil {
+			s.out("rm: " + a + ": " + err.Error())
+		}
+	}
+}
+
+func (s *Shell) cmdTouch(args []string) {
+	if s.fs == nil || len(args) == 0 {
+		s.out("usage: touch <file>")
+		return
+	}
+	for _, a := range args {
+		p := s.resolve(a)
+		if err := s.fs.Create(p); err != nil {
+			s.out("touch: " + a + ": " + err.Error())
+		}
 	}
 }
 

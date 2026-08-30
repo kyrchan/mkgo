@@ -28,7 +28,7 @@ func readRoot() string {
 		return ""
 	}
 	buf := make([]byte, bl)
-	var vecs [1]uint32
+	var vecs [16]uint32
 	args_get(&vecs[0], &buf[0])
 	// kernel fills buf as argc sequential NUL-terminated strings; entry 1
 	// is our config text (entry 0 = program name). Offsets in vecs[] are
