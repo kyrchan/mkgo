@@ -2,3 +2,5 @@ build/
 *.wasm.raw
 .kilo.pid
 .runner.pid
+*.wasm.raw
+shell.wasm.raw
