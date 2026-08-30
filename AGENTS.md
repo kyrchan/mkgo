@@ -213,9 +213,11 @@ ALL PHASES COMPLETE
 - **Gate**: two users logged in concurrently; negative tests prove u2
   cannot open u1's files, send to u1's private ports, or inherit caps.
 
-Phase order/priority: 0→1→2→3→4→5→6(opt)→7→8→9→10→11 ✅ 12 ✅ 13 ✅ → 14 → 15.
+Phase order/priority: 0→1→2→3→4→5→6(opt)→7→8→9→10→11 ✅ 12 ✅ 13 ✅ → 14 → 15 → 16 → 17 → 18 → 19.
 Completion definition: **ALL PHASES COMPLETE means every phase gate in this
-document is green** (Phases 0–13 as numbered above; Phase 6 stays optional).
+document is green** (Phases 0–19 as numbered above; Phase 6 stays optional).
+Phases 14–19 are the userland-expansion arc on top of the completed 0–13
+foundation; each is green only when its gate passes under `make test`.
 
 ### Phase 11 ✅ — VFIO foundation + framebuffer (complete, gated)
 **The true microkernel endgame begins.** VFIO (Virtual Function I/O) is a
@@ -309,6 +311,127 @@ Test recipes (headless, same grep-the-serial pattern as make test):
 - **Gate sketch**: one shared `make test-hv` that boots the SAME disk.img
   under all three hypervisors and asserts identical Phase-7 gate strings;
   devman ENUM output printed on serial proves which backends attached.
+
+### Phase 14 — Shell userland core (built-ins, non-POSIX)
+The daily-use tools, all as **shell built-ins** (no SPAWN, no fork/exec —
+in-process over `fs.wasm` + frozen WASI + timer). Logic is host-testable
+Go first (`go test` in services/shell), then wired as built-ins.
+
+- File ops: `cp`, `mv`, `rmdir` (completes mkdir/rm/touch/stat/ls/cat).
+- Text pipeline: `grep`, `find`, `head`, `tail`, `wc`, `sort`, `uniq`,
+  `tr`, `cut`, `sed` — pipes are in-shell (no separate processes).
+- Scripting primitives: `sleep` (timer window), `true`, `false`, `test`/`[`,
+  `expr`, `seq`, `env`, `printenv` (environ_* WASI).
+- Terminal/time: `clear`, `reset`, `date` (clock_time_get).
+- Identity: `whoami`, `id` (caps with no arg → self).
+- Non-POSIX discipline: these reuse POSIX *names* for familiarity only;
+  no POSIX syscalls, no signals, no uid/gid/perms. Authority stays
+  capability bits + namespace rooting.
+- Regression: one `go test` per built-in's logic; a scripted serial
+  pipeline in `make test`.
+- **Gate**: scripted serial session runs
+  `cp /etc/motd /tmp/m && grep -n kernel /tmp/m | sort | head -3` and
+  `sleep 1; date` — output reaches serial.
+
+### Phase 15 — Identity, auth & observability
+Make the multiuser/admin system legible and changeable. No su/sudo —
+caps granted only at login.
+
+- `passwd`: change own row in `/etc/users` (self-only own row;
+  CAP_FS_ADMIN for others); re-salt+hash; login.wasm honors new hash;
+  survives reboot (fs Phase 8).
+- `top`: live session monitor — refresh over registry LIST + scheduler
+  state + mm-pool free pages; quantum display.
+- `dmesg`/`log`: read the console audit ring buffer (v1 syslog path;
+  `/var/log` file sink stays post-v1 — documented deferral).
+- `memstat`: mm-pool dump (free/used pages; per-session quotas when those land).
+- `audit`: filter the audit relay by sid/event — capability-check trail
+  viewer (feeds Phase-10 hardening).
+- Regression: `go test` for passwd hashing + audit filter.
+- **Gate**: `top` shows 2 sessions live; `passwd` changes u1's password,
+  login rejects the old and accepts the new; `dmesg` prints the boot audit
+  trail including a recorded capability denial.
+
+### Phase 16 — Network client userland
+Turn `net.wasm` (Phase 9 stack) into shell-facing tools. Sockets are
+port-mediated via the "net" well-known name, not a global BSD-socket layer.
+
+- `ping`: ICMP echo via net.wasm.
+- `nc`: interactive UDP/TCP (promote the Phase-9 host test rig onto-system).
+- `http`: GET/POST client (thin wrapper over net.wasm TCP).
+- `netstat`/`ipaddr`: query net.wasm for interfaces/routes (user-facing;
+  devman ENUM stays admin).
+- `ssh` client: outbound (ssh server already exists; add client for
+  remote management from the shell).
+- Regression: `go test` for each client's framing/parsing (fuzz per
+  engineering practice #4).
+- **Gate**: `ping 10.0.2.2` prints replies; `http get http://10.0.2.2:8000/`
+  prints a status line; `nc -u` round-trips with a host listener.
+
+### Phase 17 — Capability & port introspection (non-POSIX layer)
+The distinctive tools with no POSIX analogue — make the authority and
+communication model legible.
+
+- `ports`: list well-known names (registry/devman/console/fs/net/login)
+  + owning sid + pending count — "netstat for message ports".
+- `sessinfo <sid>`: open fds (kernel-routed fd table), bound ports,
+  pending messages, cap bits, memory — deepens `sessions`.
+- `caphint <action>`: "which capability does run/reboot/pkg install/
+  devices need?" — self-documenting capability map derived from ABI §7.
+- `chcaps <sid> +/-<cap>`: admin grant/revoke cap bits on a live session
+  (CAP_ADMIN only, audited). This is the *capability* answer to the
+  POSIX chmod/chown urge — not file perms.
+- Regression: `go test` for the capability-map table; audit entry on
+  every chcaps.
+- **Gate**: `ports` lists all well-known servers + owners; `sessinfo
+  <shell-sid>` shows its fds/ports; `caphint run` names CAP_SPAWN; a
+  `chcaps` grant is audited and takes effect immediately.
+
+### Phase 18 — Package management & module integrity
+Safe third-party module distribution: signature-checked install on top
+of the kernel's existing `abi_ver` enforcement at instantiation.
+
+- `pkg install <file.wasm>`: verify signature + abi_ver, copy to
+  `/boot/modules`, update index. Signature scheme: ed25519 over the wasm
+  + its embedded abi_ver; trusted public keys in `/etc/trusted`.
+- `pkg list` / `pkg remove` / `pkg update`.
+- `module verify`: inspect a .wasm's embedded abi_ver + signature
+  (`addabiver` is the writer; this is the reader).
+- `module sign`: host-side signing tool in `tools/`.
+- Non-POSIX: install is not exec — modules run via registry SPAWN, never
+  setuid/shebang. CAP_SPAWN stays admin-only by default.
+- Threat model: STRIDE-lite pass over the package path (extends the
+  Phase-10 threat model); fuzz the signature/manifest parsers.
+- **Gate**: build+sign hello.wasm, `pkg install`, reboot, `run hello`
+  runs; a tampered-signature module is rejected; a mismatched-abi_ver
+  module is rejected by the kernel at instantiation.
+
+### Phase 19 — Supervision & config control surface
+Refine `init` + registry into a manageable control plane. No runlevels,
+no /etc/init.d symlinks — init.conf is a flat list, supervision is
+registry-LIST-driven.
+
+- `sysctl`/`knob`: read/set `/etc/kernel.conf` keys (quantum_ms, log
+  level) via the registry port — the kernel never parses the file; init
+  applies it.
+- `initctl`: tell init.wasm to restart/respawn a service, reload
+  `/etc/init.conf`, apply kernel.conf changes.
+- `checkconf`: validate `/etc/init.conf` + `/etc/users` + `/etc/trusted`
+  syntax before commit — prevents boot failures.
+- Extend `caps` to show cap source (login-issued vs `chcaps`-granted).
+- Regression: `go test` for each config parser (fuzz per practice #4).
+- **Gate**: `sysctl quantum_ms=20` applied via init→registry→scheduler
+  (visible in `top`); `initctl restart fs` respawns fs.wasm without
+  losing other sessions; `checkconf` rejects a malformed init.conf.
+
+**Userland-arc discipline (binding, Phases 14–19):** these phases add
+NO POSIX-isms — no fork/exec, no signals, no su/sudo, no uid/gid/perms,
+no global namespace. Authority = capability bits; communication = message
+ports; launch = registry SPAWN. Where a POSIX name is reused (grep, sed,
+ping, nc), only the user-facing behavior is copied; the implementation is
+shell built-ins or SPAWNed .wasm over ports, never a POSIX syscall surface.
+Every tool's logic is host-testable Go first (`go test`), then wired; each
+phase commits with its regression tests (practice #2).
 
 ### Parallel track — services/ (optional, start early)- `services/` Go packages (FS logic, login/auth logic) are ordinary
   host-testable Go (`go test`, no wasm needed initially) and have **no hard
