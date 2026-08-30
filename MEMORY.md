@@ -460,3 +460,42 @@ MASTER's Makefile + MASTER's *.wasm binaries (abi_ver=2 kernel-compatible);
 lane's service *source* (services/*.go, guests/lib/*, fuzz/net/usb tests)
 was integrated. Services MUST be rebuilt (`make`) to refresh *.wasm from the
 new source — otherwise shipped binaries are stale vs source.
+
+## ⚡ Phase 12 GREEN — USB + Bluetooth + WiFi via VFIO (2026-08-30)
+
+Phase 12 gates now PASS on committed HEAD:
+- **test-p12 PASS**: usb.wasm enumerates PCI, bt.wasm initializes H4 UART,
+  wlan.wasm initializes offload transport — `usb: all ok` on serial.
+
+Services (all Go→wasip1, pure VFIO over PCI BAR windows):
+- `services/usb/`: xHCI driver with TRB encoding, control transfers, port
+  management. Host-tested (12 tests) + wasip1 wasm build ✓.
+- `services/bt/`: Bluetooth HCI-over-UART (H4), ATT/GATT client. Host-tested
+  (11 tests) + wasip1 wasm build ✓.
+- `services/wlan/`: WiFi offload (ESP-Hosted style), DHCP DORA, netbridge
+  to net.wasm. wasip1 wasm build ✓.
+
+## ⚡ Phase 13 GREEN — E1000 + AHCI + VMware backdoor (2026-08-30)
+
+Phase 13 gates now PASS on committed HEAD:
+- **test-p13 PASS**: e1000.wasm + ahci.wasm boot via legacy dual-app mode,
+  both report `all ok` on serial.
+
+Services:
+- `services/e1000/`: E1000 NIC driver (EEPROM MAC read, TX/RX descriptor
+  rings, link status, polled completion). Host-tested (10 tests) + wasip1
+  wasm build ✓.
+- `services/ahci/`: AHCI SATA driver (HBA reset, port enumeration, CFIS
+  builder, READ SECTOR EXT, polled completion). Host-tested (10 tests) +
+  wasip1 wasm build ✓.
+- `arch/x86_64/vmware_backdoor.{cc,h}`: ~60 LOC native I/O port 0x5658 shim
+  for host time sync + UUID read + log channel. Registered as
+  `kern_vmware_backdoor` WASI import (present + get_time ops).
+- `core/plat.h`: added VMware backdoor declarations to arch contract.
+- `core/wasi_glue.cc`: wired `kern_vmware_backdoor` import.
+
+### Test harness notes
+- test-p12 uses legacy payload-slot mode: e1000/ahci at /vm/app and /vm/app2
+  (dual-app, admin gate caps). Both services gracefully handle missing PCI
+  devices (TCG without `-device e1000`/`ahci`).
+- KVM matrix pending (KVM host unavailable; TCG verified).
