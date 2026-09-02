@@ -24,6 +24,19 @@ struct port {
     char name[16];
     uint32_t qn, qh, qt; /* count, head, tail over ring */
     msg *ring[MAX_Q];
+    /* SMP-portability lock (commit F). On a single CPU, arch_irq_save
+     * alone makes the ring safe (no other CPU can enqueue while we're
+     * in the critical section). When AP cores are brought up, two
+     * cores can enqueue to the same port simultaneously, and
+     * arch_irq_save only protects against IRQs on the LOCAL CPU.
+     * This spinlock protects against the remote core.
+     *
+     * Ordering convention: arch_irq_save FIRST, then arch_spinlock_acquire.
+     * This is the only safe order: if we acquire the lock first and
+     * then an IRQ fires on the same CPU, the IRQ would try to take
+     * the same lock and deadlock. Taking irq_save first means the
+     * IRQ can't fire while we hold the lock. */
+    arch_spinlock_t lock;
 };
 
 static port ports[MAX_PORTS];
@@ -31,8 +44,10 @@ static port ports[MAX_PORTS];
 static int8_t htab[12][H_PER_SESS];
 
 void ports_init(void) {
-    for (int p = 0; p < MAX_PORTS; p++)
+    for (int p = 0; p < MAX_PORTS; p++) {
         ports[p].used = false;
+        arch_spinlock_init(&ports[p].lock);
+    }
     for (int s = 0; s < 12; s++)
         for (int h = 0; h < H_PER_SESS; h++)
             htab[s][h] = -1;
@@ -170,14 +185,22 @@ int port_send(uint32_t sid, int h, const void *data, const uint32_t len) {
      * must be in place for any future IRQ-context enqueue (e.g. an
      * MSI-X handler that posts a port message directly). The ring
      * read-then-write on qn/qh/qt is not atomic on its own; under
-     * preemption the IRQ could observe torn state. */
+     * preemption the IRQ could observe torn state.
+     *
+     * SMP-portability (commit F): arch_spinlock_acquire protects
+     * against a remote core doing the same enqueue. Order is
+     * irq_save FIRST, then spinlock_acquire -- see the struct doc
+     * in arch_lock.h for why that order is the only safe one. */
     arch_irq_state_t irq = arch_irq_save();
+    arch_spinlock_acquire(&p->lock);
     if (p->qn >= MAX_Q) {
+        arch_spinlock_release(&p->lock);
         arch_irq_restore(irq);
         return -2; /* would-block */
     }
     msg *m = (msg *)rt_malloc(sizeof(msg));
     if (!m) {
+        arch_spinlock_release(&p->lock);
         arch_irq_restore(irq);
         return -1;
     }
@@ -190,6 +213,7 @@ int port_send(uint32_t sid, int h, const void *data, const uint32_t len) {
     p->ring[p->qt] = m;
     p->qt = (p->qt + 1) % MAX_Q;
     p->qn++;
+    arch_spinlock_release(&p->lock);
     arch_irq_restore(irq);
     return 0;
 }
@@ -228,12 +252,15 @@ extern "C" bool ports_enqueue_by_name(const char *name, const void *data,
     for (int p = 0; p < MAX_PORTS; p++) {
         if (ports[p].used && !strcmp(ports[p].name, name)) {
             arch_irq_state_t irq = arch_irq_save();
+            arch_spinlock_acquire(&ports[p].lock);
             if (ports[p].qn >= MAX_Q) {
+                arch_spinlock_release(&ports[p].lock);
                 arch_irq_restore(irq);
                 return false;
             }
             msg *m = (msg *)rt_malloc(sizeof(msg));
             if (!m) {
+                arch_spinlock_release(&ports[p].lock);
                 arch_irq_restore(irq);
                 return false;
             }
@@ -243,6 +270,7 @@ extern "C" bool ports_enqueue_by_name(const char *name, const void *data,
             ports[p].ring[ports[p].qt] = m;
             ports[p].qt = (ports[p].qt + 1) % MAX_Q;
             ports[p].qn++;
+            arch_spinlock_release(&ports[p].lock);
             arch_irq_restore(irq);
             return true;
         }
@@ -256,12 +284,15 @@ void ports_kernel_enqueue(uint32_t sid, int h, const void *data, uint32_t len) {
     if (!p || !data || len == 0 || len > MSG_MAX)
         return;
     arch_irq_state_t irq = arch_irq_save();
+    arch_spinlock_acquire(&p->lock);
     if (p->qn >= MAX_Q) {
+        arch_spinlock_release(&p->lock);
         arch_irq_restore(irq);
         return; /* drop */
     }
     msg *m = (msg *)rt_malloc(sizeof(msg));
     if (!m) {
+        arch_spinlock_release(&p->lock);
         arch_irq_restore(irq);
         return;
     }
@@ -271,6 +302,7 @@ void ports_kernel_enqueue(uint32_t sid, int h, const void *data, uint32_t len) {
     p->ring[p->qt] = m;
     p->qt = (p->qt + 1) % MAX_Q;
     p->qn++;
+    arch_spinlock_release(&p->lock);
     arch_irq_restore(irq);
 }
 
@@ -284,8 +316,10 @@ int port_recv(uint32_t sid, int h, void *out, uint32_t cap) {
      * (port_send / ports_enqueue_by_name / ports_kernel_enqueue) also
      * holds irq-save; the symmetry is what makes the ring safe. */
     arch_irq_state_t irq = arch_irq_save();
+    arch_spinlock_acquire(&p->lock);
     msg *m = p->ring[p->qh];
     if (!m || p->qn == 0) {
+        arch_spinlock_release(&p->lock);
         arch_irq_restore(irq);
         return 0;
     }
@@ -294,6 +328,7 @@ int port_recv(uint32_t sid, int h, void *out, uint32_t cap) {
     uint32_t n = m->len <= cap ? m->len : cap;
     memcpy(out, m->data, n);
     rt_free(m);
+    arch_spinlock_release(&p->lock);
     arch_irq_restore(irq);
     return (int)n;
 }

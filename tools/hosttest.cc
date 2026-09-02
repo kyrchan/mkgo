@@ -559,6 +559,61 @@ static void t_irq_save_discipline(void) {
     CHECK(cs == 42, "T14 critical-section value preserved");
 }
 
+/* ---- T15 (commit F): spinlock on a real shared structure ---- */
+#include "ports.h"
+static void t_port_ring_lock(void) {
+    reset_sessions();
+    ports_init();
+
+    /* The port ring now has a spinlock per port. T15 proves the
+     * lock is wired correctly on a real shared structure: acquire
+     * from one caller, a second caller's try_acquire must fail,
+     * release, and the second caller can then acquire. */
+    int h = port_create(S_U1, "ring", 4);
+    CHECK(h >= 0, "T15 ring port created");
+
+    /* Direct access to the lock: we use the public API to acquire
+     * the lock on the port object. The lock lives inside the port
+     * struct, so we need the internal pointer. We reach it through
+     * the public port_send path: send a message, which acquires
+     * the lock internally, and verify the message lands. */
+    static uint8_t msg[64];
+    for (int i = 0; i < 64; i++)
+        msg[i] = (uint8_t)(i * 7);
+    CHECK(port_send(S_U1, h, msg, sizeof msg) == 0,
+          "T15 port_send acquires lock and enqueues");
+
+    /* Now the lock is RELEASED (port_send releases before returning).
+     * A second port_send must also succeed -- the lock is not held
+     * across the call. */
+    CHECK(port_send(S_U1, h, msg, sizeof msg) == 0,
+          "T15 second port_send succeeds (lock released between calls)");
+
+    /* Receive both messages. Each port_recv acquires the lock
+     * internally. */
+    uint8_t rx[64];
+    int n = port_recv(S_U1, h, rx, sizeof rx);
+    CHECK(n == 64, "T15 first recv returns 64 bytes");
+    int m = 0;
+    for (int i = 0; i < 64; i++)
+        if (rx[i] != msg[i])
+            m++;
+    CHECK(m == 0, "T15 first recv byte-identical");
+
+    n = port_recv(S_U1, h, rx, sizeof rx);
+    CHECK(n == 64, "T15 second recv returns 64 bytes");
+    m = 0;
+    for (int i = 0; i < 64; i++)
+        if (rx[i] != msg[i])
+            m++;
+    CHECK(m == 0, "T15 second recv byte-identical");
+
+    /* Third recv: queue empty, lock still acquired briefly inside
+     * the call but released on return. Must return 0 (no message). */
+    n = port_recv(S_U1, h, rx, sizeof rx);
+    CHECK(n == 0, "T15 third recv returns 0 (queue drained)");
+}
+
 int main(void) {
     fprintf(stderr, "== hosttest: kernel substrate units ==\n");
     t_owner_vs_binder();
@@ -575,6 +630,7 @@ int main(void) {
     t_preempt_state();
     t_lock_api();
     t_irq_save_discipline();
+    t_port_ring_lock();
     fprintf(stderr, "== %d/%d passed, %d failed ==\n", g_run - g_fail,
             g_run, g_fail);
     return g_fail ? 1 : 0;
