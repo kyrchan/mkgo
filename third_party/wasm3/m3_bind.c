@@ -5,7 +5,6 @@
 //  Copyright © 2019 Steven Massey. All rights reserved.
 //
 
-#include "m3_exec.h"
 #include "m3_env.h"
 #include "m3_exception.h"
 #include "m3_info.h"
@@ -20,6 +19,9 @@ u8  ConvertTypeCharToTypeId (char i_code)
     case 'f': return c_m3Type_f32;
     case 'F': return c_m3Type_f64;
     case '*': return c_m3Type_i32;
+    // same letters c_waCompactTypes uses for the reference types
+    case 'r': return c_m3Type_funcref;
+    case 'R': return c_m3Type_externref;
     }
     return c_m3Type_unknown;
 }
@@ -27,8 +29,6 @@ u8  ConvertTypeCharToTypeId (char i_code)
 
 M3Result  SignatureToFuncType  (IM3FuncType * o_functionType, ccstr_t i_signature)
 {
-    M3Result result = m3Err_none;
-
     IM3FuncType funcType = NULL;
 
 _try {
@@ -50,7 +50,7 @@ _try {
 
 _   (AllocFuncType (& funcType, (u32) maxNumTypes));
 
-    u8 * typelist = funcType->types;
+    m3type_t * typelist = funcType->types;
 
     bool parsingRets = true;
     while (* sig)
@@ -107,11 +107,11 @@ M3Result  ValidateSignature  (IM3Function i_function, ccstr_t i_linkingSignature
     IM3FuncType ftype = NULL;
 _   (SignatureToFuncType (& ftype, i_linkingSignature));
 
-    /* F58: unconditional enforcement -- the linking signature is now the
-     * canonical spec signature carried per link entry, so a mismatch here
-     * is a real ABI violation and must fail instantiation. */
     if (not AreFuncTypesEqual (ftype, i_function->funcType))
     {
+        m3log (module, "expected: %s", SPrintFuncTypeSignature (ftype));
+        m3log (module, "   found: %s", SPrintFuncTypeSignature (i_function->funcType));
+
         _throw ("function signature mismatch");
     }
 
@@ -123,34 +123,6 @@ _   (SignatureToFuncType (& ftype, i_linkingSignature));
 }
 
 
-M3Result  LinkRawFunction  (IM3Module io_module,  IM3Function io_function, ccstr_t signature,  const void * i_function, const void * i_userdata)
-{
-    M3Result result = m3Err_none;                                                 d_m3Assert (io_module->runtime);
-
-_try {
-    if (signature) {
-_       (ValidateSignature (io_function, signature));
-    }
-    IM3CodePage page = AcquireCodePageWithCapacity (io_module->runtime, 4);
-
-    if (page)
-    {
-        io_function->compiled = GetPagePC (page);
-        io_function->module = io_module;
-
-        EmitWord (page, op_CallRawFunction);
-        EmitWord (page, i_function);
-        EmitWord (page, io_function);
-        EmitWord (page, i_userdata);
-
-        ReleaseCodePage (io_module->runtime, page);
-    }
-    else _throw(m3Err_mallocFailedCodePage);
-
-} _catch:
-    return result;
-}
-
 M3Result  FindAndLinkFunction      (IM3Module       io_module,
                                     ccstr_t         i_moduleName,
                                     ccstr_t         i_functionName,
@@ -158,25 +130,30 @@ M3Result  FindAndLinkFunction      (IM3Module       io_module,
                                     voidptr_t       i_function,
                                     voidptr_t       i_userdata)
 {
-    M3Result result = m3Err_functionLookupFailed;
+_try {
+    _throwif(m3Err_moduleNotLinked, !io_module->runtime);
 
-    bool wildcardModule = (strcmp (i_moduleName, "*") == 0);
+    const bool wildcardModule = (strcmp (i_moduleName, "*") == 0);
+
+    result = m3Err_functionLookupFailed;
 
     for (u32 i = 0; i < io_module->numFunctions; ++i)
     {
-        IM3Function f = & io_module->functions [i];
+        const IM3Function f = & io_module->functions [i];
 
         if (f->import.moduleUtf8 and f->import.fieldUtf8)
         {
             if (strcmp (f->import.fieldUtf8, i_functionName) == 0 and
                (wildcardModule or strcmp (f->import.moduleUtf8, i_moduleName) == 0))
             {
-                result = LinkRawFunction (io_module, f, i_signature, i_function, i_userdata);
-                if (result) return result;
+                if (i_signature) {
+_                   (ValidateSignature (f, i_signature));
+                }
+_               (CompileRawFunction (io_module, f, i_function, i_userdata));
             }
         }
     }
-
+} _catch:
     return result;
 }
 

@@ -22,6 +22,8 @@
 #  define M3_COMPILER_CLANG 1
 # elif defined(__INTEL_COMPILER)
 #  define M3_COMPILER_ICC 1
+# elif defined(__TINYC__)
+#  define M3_COMPILER_TCC 1
 # elif defined(__GNUC__) || defined(__GNUG__)
 #  define M3_COMPILER_GCC 1
 # elif defined(_MSC_VER)
@@ -31,13 +33,21 @@
 # endif
 
 # if defined(M3_COMPILER_CLANG)
+# define M3_CLANG_VER "Clang "  \
+  M3_STR(__clang_major__) "."   \
+  M3_STR(__clang_minor__) "."   \
+  M3_STR(__clang_patchlevel__)
 #  if defined(WIN32)
-#   define M3_COMPILER_VER __VERSION__ " for Windows"
+#   define M3_COMPILER_VER M3_CLANG_VER " for Windows"
 #  else
-#   define M3_COMPILER_VER __VERSION__
+#   define M3_COMPILER_VER M3_CLANG_VER
 #  endif
 # elif defined(M3_COMPILER_GCC)
 #  define M3_COMPILER_VER "GCC " __VERSION__
+# elif defined(M3_COMPILER_ICC)
+#  define M3_COMPILER_VER __VERSION__
+# elif defined(M3_COMPILER_TCC)
+#  define M3_COMPILER_VER "TinyCC " M3_STR(__TINYC__)
 # elif defined(M3_COMPILER_MSVC)
 #  define M3_COMPILER_VER "MSVC " M3_STR(_MSC_VER)
 # else
@@ -56,12 +66,30 @@
 #  define M3_COMPILER_HAS_BUILTIN(x) 0
 # endif
 
+# ifdef __has_attribute
+#  define M3_COMPILER_HAS_ATTRIBUTE(x) __has_attribute(x)
+# else
+#  define M3_COMPILER_HAS_ATTRIBUTE(x) 0
+# endif
+
+/*
+ * Detect variable-length arrays
+ */
+
+// MSVC has no VLAs at all, and TinyCC's are unusable: it doesn't restore the
+// stack pointer when a goto leaves the scope a VLA was declared in
+# if defined(M3_COMPILER_MSVC) || defined(M3_COMPILER_TCC) || defined(__STDC_NO_VLA__)
+#  define M3_HAS_VLA 0
+# else
+#  define M3_HAS_VLA 1
+# endif
+
 /*
  * Detect endianness
  */
 
 # if defined(M3_COMPILER_MSVC)
-#  define M3_LITTLE_ENDIAN      //_byteswap_ushort, _byteswap_ulong, _byteswap_uint64
+#  define M3_LITTLE_ENDIAN
 # elif defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 #  define M3_LITTLE_ENDIAN
 # elif defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
@@ -74,7 +102,7 @@
  * Detect platform
  */
 
-# if defined(M3_COMPILER_CLANG) || defined(M3_COMPILER_GCC)
+# if defined(M3_COMPILER_CLANG) || defined(M3_COMPILER_GCC) || defined(M3_COMPILER_ICC) || defined(M3_COMPILER_TCC)
 #  if defined(__wasm__)
 #   define M3_ARCH "wasm"
 
@@ -224,8 +252,15 @@
 #  define m3_bswap16(x)     __builtin_bswap16((x))
 #  define m3_bswap32(x)     __builtin_bswap32((x))
 #  define m3_bswap64(x)     __builtin_bswap64((x))
+# elif defined(M3_COMPILER_ICC)
+#  define m3_bswap16(x)     __builtin_bswap16((x))
+#  define m3_bswap32(x)     __builtin_bswap32((x))
+#  define m3_bswap64(x)     __builtin_bswap64((x))
 # else
-#  include <endian.h>
+#  include <stdint.h>
+#  ifdef __linux__
+#   include <endian.h>
+#  endif
 #  if defined(__bswap_16)
 #   define m3_bswap16(x)     __bswap_16((x))
 #   define m3_bswap32(x)     __bswap_32((x))
@@ -258,6 +293,11 @@
 # endif
 
 /*
+ * Bit ops
+ */
+#define m3_isBitSet(val, pos)           ((val & (1 << pos)) != 0)
+
+/*
  * Other
  */
 
@@ -269,14 +309,18 @@
 #  define M3_LIKELY(x)   (x)
 # endif
 
-// TODO: remove
-# if defined(M3_COMPILER_GCC) || defined(M3_COMPILER_CLANG) || defined(M3_COMPILER_ICC)
-#  define UNLIKELY(x) __builtin_expect(!!(x), 0)
-#  define LIKELY(x)   __builtin_expect(!!(x), 1)
+// Compile-time assertion. NAME is an identifier naming the invariant; it shows
+// up in the diagnostic, so make it read like a sentence.
+# if defined(__cplusplus) && (__cplusplus >= 201103L)
+#  define M3_STATIC_ASSERT(COND, NAME)  static_assert((COND), #NAME)
+# elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
+#  define M3_STATIC_ASSERT(COND, NAME)  _Static_assert((COND), #NAME)
+# elif defined(M3_COMPILER_MSVC) && defined(__cplusplus)
+#  define M3_STATIC_ASSERT(COND, NAME)  static_assert((COND), #NAME)
 # else
-#  define UNLIKELY(x) (x)
-#  define LIKELY(x)   (x)
+   // Pre-C11: a negative array size is the portable stand-in. Suffixed with the
+   // line number so several assertions can share a translation unit.
+#  define M3_STATIC_ASSERT(COND, NAME)  typedef char M3_CONCAT(NAME, __LINE__) [(COND) ? 1 : -1]
 # endif
-
 
 #endif // wasm3_defs_h

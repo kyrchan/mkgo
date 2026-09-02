@@ -1049,8 +1049,14 @@ static const char *sig_of(IM3FuncType ft) {
 }
 
 extern "C" {
-M3Result LinkRawFunction(IM3Module, IM3Function, ccstr_t, const void *,
-                         const void *);
+#include "m3_compile.h"
+/* wasm3 v0.9.0: per-function-record binding moved from
+ * m3_bind.c:LinkRawFunction (v0.5, static-internal) into
+ * m3_compile.c:CompileRawFunction (v0.9, externally visible).
+ * Same signature, same behavior. We still do our own name+shape
+ * dispatch (F58) before calling it so a single module can bind
+ * the same fieldUtf8 under two raw signatures. */
+M3Result CompileRawFunction(IM3Module, IM3Function, const void *, const void *);
 }
 
 const char *wasi_link_module(IM3Module mod) {
@@ -1114,7 +1120,7 @@ const char *wasi_link_module(IM3Module mod) {
                 return "function signature mismatch";
             }
             M3Result r =
-                LinkRawFunction(mod, f, use, (const void *)ufn, 0);
+                CompileRawFunction(mod, f, (const void *)ufn, 0);
             if (r)
                 return r;
             continue;
@@ -1185,7 +1191,7 @@ const char *wasi_link_module(IM3Module mod) {
                 console_puts("\n");
                 return "function signature mismatch";
             }
-            M3Result r = LinkRawFunction(mod, f, use, (const void *)fn, 0);
+            M3Result r = CompileRawFunction(mod, f, (const void *)fn, 0);
             if (r) {
                 console_puts("[link] ERR wasi:");
                 console_puts(f->import.fieldUtf8);

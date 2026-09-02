@@ -29,6 +29,20 @@ func input_recv(buf *byte, cap uint32) int32
 //go:wasmimport kernel kern_focus_set
 func focus_set(h Handle)
 
+//go:wasmimport wasi_snapshot_preview1 clock_time_get
+//go:noescape
+func clockTimeGetRaw(id uint32, precision uint64, ret *uint64) int32
+
+// clockTimeGetMs calls WASI clock_time_get(CLOCK_MONOTONIC=1, ns) and
+// converts to ms. The kernel sources the value from calibrated TSC.
+func clockTimeGetMs() uint64 {
+	var ns uint64
+	if clockTimeGetRaw(1, 0, &ns) != 0 {
+		return 0
+	}
+	return ns / 1_000_000
+}
+
 // === VFIO (ABI §12/§13/§14, v2.0) ===
 
 //go:wasmimport kernel kern_pci_read32
@@ -167,6 +181,16 @@ func (realKernel) DoorbellWait(handle, timeoutMs uint32) int32 {
 	return doorbell_wait(handle, timeoutMs)
 }
 
+
+// HasClock reports whether clock_time_get is wired by the kernel
+// (always true on real guests; the host-side stub returns false so
+// host tests don't accidentally depend on wall time).
+func (realKernel) HasClock() bool { return true }
+
+// ClockMs returns monotonic milliseconds since boot. Implemented via
+// the WASI clock_time_get(CLOCK_MONOTONIC, ns) call; the kernel
+// converts TSC -> ns on our behalf.
+func (realKernel) ClockMs() uint64 { return clockTimeGetMs() }
 
 func (realKernel) DevmanEnum() []PciDeviceInfo {
 	// Use devman ENUM to count devices; class 10 = PCI (VFIO)

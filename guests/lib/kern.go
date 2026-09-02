@@ -10,6 +10,8 @@
 // core/ports.cc semantics.
 package kern
 
+import "fmt"
+
 // ABIVersion is the abi/ABI.md contract version these wrappers encode.
 const ABIVersion = 1
 
@@ -111,6 +113,27 @@ const (
 // Alive reports whether a LIST state byte denotes a live session.
 func Alive(state uint8) bool { return state != StateFree && state != StateZombie }
 
+// usernameTable is a tiny static uid → login-name map for shell display.
+// Real identity lookup lives in the kernel; this is just a display
+// helper so `id` and `whoami` can print a recognizable name without
+// round-tripping to the fs.wasm /etc/users table.
+var usernameTable = map[uint32]string{
+	0: "root",
+	1: "admin",
+	2: "u1",
+	3: "u2",
+	4: "guest",
+}
+
+// Username returns a human-readable name for uid (best-effort).
+// Returns "uid-<n>" for unmapped uids.
+func Username(uid uint32) string {
+	if n, ok := usernameTable[uid]; ok {
+		return n
+	}
+	return fmt.Sprintf("uid-%d", uid)
+}
+
 // Kernel abstracts the guest↔kernel contact surface (ABI §1/§4). The
 // error-code conventions are exactly the ABI's; helpers in this package
 // turn them into Go errors where convenient.
@@ -161,6 +184,13 @@ type Kernel interface {
 	DoorbellWait(handle, timeoutMs uint32) int32
 	// DevmanEnum returns PCI device info for class 10 (VFIO) devices.
 	DevmanEnum() []PciDeviceInfo
+
+	// HasClock reports whether the kernel exposes a millisecond-resolution
+	// clock (clock_time_get over TSC). True on production guests; tests
+	// can override to false to skip time-based busy waits.
+	HasClock() bool
+	// ClockMs returns monotonic milliseconds since boot.
+	ClockMs() uint64
 }
 
 // PciDeviceInfo is a PCI device record from devman ENUM.

@@ -356,6 +356,13 @@ type FakeKernel struct {
 	forceUIDSet bool
 }
 
+// HasClock is false in host tests; the kernel clock is not modelled
+// here, so sleep() in shell falls back to time.Sleep.
+func (FakeKernel) HasClock() bool { return false }
+
+// ClockMs returns 0 in host tests; the real kernel has TSC->ns.
+func (FakeKernel) ClockMs() uint64 { return 0 }
+
 // NewFakeKernel boots the three kernel-owned endpoints and seeds the
 // boot sessions (sid 0 = kernel itself).
 func NewFakeKernel() *FakeKernel {

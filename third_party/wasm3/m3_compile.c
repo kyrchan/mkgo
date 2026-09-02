@@ -5,12 +5,115 @@
 //  Copyright © 2019 Steven Massey. All rights reserved.
 //
 
+// Allow using opcodes for compilation process
+#define M3_COMPILE_OPCODES
+
 #include "m3_env.h"
 #include "m3_compile.h"
-#include "m3_emit.h"
 #include "m3_exec.h"
 #include "m3_exception.h"
 #include "m3_info.h"
+#include "m3_validate.h"
+
+//----- EMIT --------------------------------------------------------------------------------------------------------------
+
+static inline
+pc_t GetPC (IM3Compilation o)
+{
+    return GetPagePC (o->page);
+}
+
+static M3_NOINLINE
+M3Result  EnsureCodePageNumLines  (IM3Compilation o, u32 i_numLines)
+{
+    M3Result result = m3Err_none;
+
+    i_numLines += 2; // room for Bridge
+
+    if (NumFreeLines (o->page) < i_numLines)
+    {
+        IM3CodePage page = AcquireCodePageWithCapacity (o->runtime, i_numLines);
+
+        if (page)
+        {
+            m3log (emit, "bridging new code page from: %d %p (free slots: %d) to: %d", o->page->info.sequence, GetPC (o), NumFreeLines (o->page), page->info.sequence);
+            d_m3Assert (NumFreeLines (o->page) >= 2);
+
+            EmitWord (o->page, op_Branch);
+            EmitWord (o->page, GetPagePC (page));
+
+            ReleaseCodePage (o->runtime, o->page);
+
+            o->page = page;
+        }
+        else result = m3Err_mallocFailedCodePage;
+    }
+
+    return result;
+}
+
+static M3_NOINLINE
+M3Result  EmitOp  (IM3Compilation o, IM3Operation i_operation)
+{
+    M3Result result = m3Err_none;                                 d_m3Assert (i_operation or IsStackPolymorphic (o));
+
+    // it's OK for page to be null; when compile-walking the bytecode without emitting
+    if (o->page)
+    {
+# if d_m3EnableOpTracing
+        if (i_operation != op_DumpStack)
+            o->numEmits++;
+# endif
+
+        // have execution jump to a new page if slots are critically low
+        result = EnsureCodePageNumLines (o, d_m3CodePageFreeLinesThreshold);
+
+        if (not result)
+        {                                                           if (d_m3LogEmit) log_emit (o, i_operation);
+# if d_m3RecordBacktraces
+            EmitMappingEntry (o->page, o->lastOpcodeStart - o->module->wasmStart);
+# endif // d_m3RecordBacktraces
+            EmitWord (o->page, i_operation);
+        }
+    }
+
+    return result;
+}
+
+// Push an immediate constant into the M3 codestream
+static M3_NOINLINE
+void  EmitConstant32  (IM3Compilation o, const u32 i_immediate)
+{
+    if (o->page)
+        EmitWord32 (o->page, i_immediate);
+}
+
+static M3_NOINLINE
+void  EmitSlotOffset  (IM3Compilation o, const i32 i_offset)
+{
+    if (o->page)
+        EmitWord32 (o->page, i_offset);
+}
+
+static M3_NOINLINE
+pc_t  EmitPointer  (IM3Compilation o, const void * const i_pointer)
+{
+    pc_t ptr = GetPagePC (o->page);
+
+    if (o->page)
+        EmitWord (o->page, i_pointer);
+
+    return ptr;
+}
+
+static M3_NOINLINE
+void * ReservePointer (IM3Compilation o)
+{
+    pc_t ptr = GetPagePC (o->page);
+    EmitPointer (o, NULL);
+    return (void *) ptr;
+}
+
 
 //-------------------------------------------------------------------------------------------------------------------------
 
@@ -30,14 +133,37 @@
 #   define FPOP(x) NULL
 #endif
 
+// These are indexed by M3ValueType, so every type up to c_m3Type_externref needs
+// an entry. A reference is one pointer-sized word, so it moves with the integer
+// operation of that width; v128 has no operations at all.
+#if M3_SIZEOF_PTR == 8
+#   define REFOP(NAME)  op_##NAME##_i64
+#else
+#   define REFOP(NAME)  op_##NAME##_i32
+#endif
+
 static const IM3Operation c_preserveSetSlot [] = { NULL, op_PreserveSetSlot_i32,       op_PreserveSetSlot_i64,
-                                                    FPOP(op_PreserveSetSlot_f32), FPOP(op_PreserveSetSlot_f64) };
+                                                    FPOP(op_PreserveSetSlot_f32), FPOP(op_PreserveSetSlot_f64),
+                                                    NULL, REFOP(PreserveSetSlot), REFOP(PreserveSetSlot) };
 static const IM3Operation c_setSetOps [] =       { NULL, op_SetSlot_i32,               op_SetSlot_i64,
-                                                    FPOP(op_SetSlot_f32),         FPOP(op_SetSlot_f64) };
+                                                    FPOP(op_SetSlot_f32),         FPOP(op_SetSlot_f64),
+                                                    NULL, REFOP(SetSlot),         REFOP(SetSlot) };
 static const IM3Operation c_setGlobalOps [] =    { NULL, op_SetGlobal_i32,             op_SetGlobal_i64,
-                                                    FPOP(op_SetGlobal_f32),       FPOP(op_SetGlobal_f64) };
+                                                    FPOP(op_SetGlobal_f32),       FPOP(op_SetGlobal_f64),
+                                                    NULL, REFOP(SetGlobal),       REFOP(SetGlobal) };
 static const IM3Operation c_setRegisterOps [] =  { NULL, op_SetRegister_i32,           op_SetRegister_i64,
-                                                    FPOP(op_SetRegister_f32),     FPOP(op_SetRegister_f64) };
+                                                    FPOP(op_SetRegister_f32),     FPOP(op_SetRegister_f64),
+                                                    NULL, REFOP(SetRegister),     REFOP(SetRegister) };
+
+// A table shorter than the enum reads out of bounds, so tie the two together at
+// build time: adding a value type must not silently outgrow these.
+#define d_m3CheckTypeTable(TABLE) \
+    M3_STATIC_ASSERT (sizeof (TABLE) / sizeof (*(TABLE)) == c_m3Type_count, TABLE##_needs_one_entry_per_type)
+
+d_m3CheckTypeTable (c_preserveSetSlot);
+d_m3CheckTypeTable (c_setSetOps);
+d_m3CheckTypeTable (c_setGlobalOps);
+d_m3CheckTypeTable (c_setRegisterOps);
 
 static const IM3Operation c_intSelectOps [2] [4] =      { { op_Select_i32_rss, op_Select_i32_srs, op_Select_i32_ssr, op_Select_i32_sss },
                                                           { op_Select_i64_rss, op_Select_i64_srs, op_Select_i64_ssr, op_Select_i64_sss } };
@@ -48,12 +174,10 @@ static const IM3Operation c_fpSelectOps [2] [2] [3] = { { { op_Select_f32_sss, o
                                                           { op_Select_f64_rss, op_Select_f64_rrs, op_Select_f64_rsr } } };    // selector in reg
 #endif
 
-static const u16 c_m3RegisterUnallocated = 0;
-static const u16 c_slotUnused = 0xffff;
-
 // all args & returns are 64-bit aligned, so use 2 slots for a d_m3Use32BitSlots=1 build
 static const u16 c_ioSlotCount = sizeof (u64) / sizeof (m3slot_t);
 
+static
 M3Result  AcquireCompilationCodePage  (IM3Compilation o, IM3CodePage * o_codePage)
 {
     M3Result result = m3Err_none;
@@ -85,17 +209,25 @@ _               (m3ReallocArray (& func->codePageRefs, IM3CodePage, func->numCod
     return result;
 }
 
+static inline
 void  ReleaseCompilationCodePage  (IM3Compilation o)
 {
     ReleaseCodePage (o->runtime, o->page);
 }
 
-bool  IsRegisterSlotAlias        (u16 i_slot)    { return (i_slot >= d_m3Reg0SlotAlias and i_slot != c_slotUnused); }
-bool  IsFpRegisterSlotAlias      (u16 i_slot)    { return (i_slot == d_m3Fp0SlotAlias);  }
-bool  IsIntRegisterSlotAlias     (u16 i_slot)    { return (i_slot == d_m3Reg0SlotAlias); }
-
-u16 GetTypeNumSlots (u8 i_type)
+static inline
+u16 GetTypeNumSlots (m3type_t i_type)
 {
+    i_type = BaseTypeOf(i_type);
+
+    // v128 is 16 bytes - 4 slots in 32-bit-slot mode, 2 in 64-bit.
+    // (Slot-allocator only; no v128 ops execute.)
+    if (i_type == c_m3Type_v128)
+#       if d_m3Use32BitSlots
+            return 4;
+#       else
+            return 2;
+#       endif
 #   if d_m3Use32BitSlots
         return Is64BitType (i_type) ? 2 : 1;
 #   else
@@ -103,8 +235,8 @@ u16 GetTypeNumSlots (u8 i_type)
 #   endif
 }
 
-
-void  AlignSlotToType  (u16 * io_slot, u8 i_type)
+static inline
+void  AlignSlotToType  (u16 * io_slot, m3type_t i_type)
 {
     // align 64-bit words to even slots (if d_m3Use32BitSlots)
     u16 numSlots = GetTypeNumSlots (i_type);
@@ -113,7 +245,7 @@ void  AlignSlotToType  (u16 * io_slot, u8 i_type)
     * io_slot = (* io_slot + mask) & ~mask;
 }
 
-
+static inline
 i16  GetStackTopIndex  (IM3Compilation o)
 {                                                           d_m3Assert (o->stackIndex > o->stackFirstDynamicIndex or IsStackPolymorphic (o));
     return o->stackIndex - 1;
@@ -123,9 +255,10 @@ i16  GetStackTopIndex  (IM3Compilation o)
 // Items in the static portion of the stack (args/locals) are hidden from GetStackTypeFromTop ()
 // In other words, only "real" Wasm stack items can be inspected.  This is important when
 // returning values, etc. and you need an accurate wasm-view of the stack.
-u8  GetStackTypeFromTop  (IM3Compilation o, u16 i_offset)
+static
+m3type_t  GetStackTypeFromTop  (IM3Compilation o, u16 i_offset)
 {
-    u8 type = c_m3Type_none;
+    m3type_t type = c_m3Type_none;
 
     ++i_offset;
     if (o->stackIndex >= i_offset)
@@ -139,16 +272,16 @@ u8  GetStackTypeFromTop  (IM3Compilation o, u16 i_offset)
     return type;
 }
 
-
-u8  GetStackTopType  (IM3Compilation o)
+static inline
+m3type_t  GetStackTopType  (IM3Compilation o)
 {
     return GetStackTypeFromTop (o, 0);
 }
 
-
-u8  GetStackTypeFromBottom  (IM3Compilation o, u16 i_offset)
+static inline
+m3type_t  GetStackTypeFromBottom  (IM3Compilation o, u16 i_offset)
 {
-    u8 type = c_m3Type_none;
+    m3type_t type = c_m3Type_none;
 
     if (i_offset < o->stackIndex)
         type = o->typeStack [i_offset];
@@ -157,10 +290,10 @@ u8  GetStackTypeFromBottom  (IM3Compilation o, u16 i_offset)
 }
 
 
-bool  IsConstantSlot    (IM3Compilation o, u16 i_slot)  { return (i_slot >= o->slotFirstConstIndex and i_slot < o->slotMaxConstIndex); }
-bool  IsSlotAllocated   (IM3Compilation o, u16 i_slot)  { return o->m3Slots [i_slot]; }
+static inline bool  IsConstantSlot    (IM3Compilation o, u16 i_slot)  { return (i_slot >= o->slotFirstConstIndex and i_slot < o->slotMaxConstIndex); }
+static inline bool  IsSlotAllocated   (IM3Compilation o, u16 i_slot)  { return o->m3Slots [i_slot]; }
 
-
+static inline
 bool  IsStackIndexInRegister  (IM3Compilation o, i32 i_stackIndex)
 {                                                                           d_m3Assert (i_stackIndex < o->stackIndex or IsStackPolymorphic (o));
     if (i_stackIndex >= 0 and i_stackIndex < o->stackIndex)
@@ -169,17 +302,17 @@ bool  IsStackIndexInRegister  (IM3Compilation o, i32 i_stackIndex)
         return false;
 }
 
-u16   GetNumBlockValuesOnStack      (IM3Compilation o)  { return o->stackIndex - o->block.blockStackIndex; }
+static inline u16   GetNumBlockValuesOnStack      (IM3Compilation o)  { return o->stackIndex - o->block.blockStackIndex; }
 
-bool  IsStackTopInRegister          (IM3Compilation o)  { return IsStackIndexInRegister (o, (i32) GetStackTopIndex (o));       }
-bool  IsStackTopMinus1InRegister    (IM3Compilation o)  { return IsStackIndexInRegister (o, (i32) GetStackTopIndex (o) - 1);   }
-bool  IsStackTopMinus2InRegister    (IM3Compilation o)  { return IsStackIndexInRegister (o, (i32) GetStackTopIndex (o) - 2);   }
+static inline bool  IsStackTopInRegister          (IM3Compilation o)  { return IsStackIndexInRegister (o, (i32) GetStackTopIndex (o));       }
+static inline bool  IsStackTopMinus1InRegister    (IM3Compilation o)  { return IsStackIndexInRegister (o, (i32) GetStackTopIndex (o) - 1);   }
+static inline bool  IsStackTopMinus2InRegister    (IM3Compilation o)  { return IsStackIndexInRegister (o, (i32) GetStackTopIndex (o) - 2);   }
 
-bool  IsStackTopInSlot              (IM3Compilation o)  { return not IsStackTopInRegister (o); }
+static inline bool  IsStackTopInSlot              (IM3Compilation o)  { return not IsStackTopInRegister (o); }
 
-bool  IsValidSlot                   (u16 i_slot)        { return (i_slot < d_m3MaxFunctionSlots); }
+static inline bool  IsValidSlot                   (u16 i_slot)        { return (i_slot < d_m3MaxFunctionSlots); }
 
-
+static inline
 u16  GetStackTopSlotNumber  (IM3Compilation o)
 {
     i16 i = GetStackTopIndex (o);
@@ -194,6 +327,7 @@ u16  GetStackTopSlotNumber  (IM3Compilation o)
 
 
 // from bottom
+static inline
 u16  GetSlotForStackIndex  (IM3Compilation o, u16 i_stackIndex)
 {                                                                   d_m3Assert (i_stackIndex < o->stackIndex or IsStackPolymorphic (o));
     u16 slot = c_slotUnused;
@@ -204,7 +338,7 @@ u16  GetSlotForStackIndex  (IM3Compilation o, u16 i_stackIndex)
     return slot;
 }
 
-
+static inline
 u16  GetExtraSlotForStackIndex  (IM3Compilation o, u16 i_stackIndex)
 {
     u16 baseSlot = GetSlotForStackIndex (o, i_stackIndex);
@@ -219,17 +353,14 @@ u16  GetExtraSlotForStackIndex  (IM3Compilation o, u16 i_stackIndex)
 }
 
 
-
+static inline
 void  TouchSlot  (IM3Compilation o, u16 i_slot)
 {
-    if (o->function)
-    {
-        // op_Entry uses this value to track and detect stack overflow
-        o->maxStackSlots = M3_MAX (o->maxStackSlots, i_slot + 1);
-    }
+    // op_Entry uses this value to track and detect stack overflow
+    o->maxStackSlots = M3_MAX (o->maxStackSlots, i_slot + 1);
 }
 
-
+static inline
 void  MarkSlotAllocated  (IM3Compilation o, u16 i_slot)
 {                                                                   d_m3Assert (o->m3Slots [i_slot] == 0); // shouldn't be already allocated
     o->m3Slots [i_slot] = 1;
@@ -239,22 +370,28 @@ void  MarkSlotAllocated  (IM3Compilation o, u16 i_slot)
     TouchSlot (o, i_slot);
 }
 
-
-void  MarkSlotsAllocated  (IM3Compilation o, u16 i_slot, u16 i_numSlots)
+static inline
+M3Result MarkSlotsAllocated  (IM3Compilation o, u16 i_slot, u16 i_numSlots)
 {
+    if (i_slot + i_numSlots > d_m3MaxFunctionSlots)
+        return m3Err_functionStackOverflow;
+
     while (i_numSlots--)
         MarkSlotAllocated (o, i_slot++);
+    
+    return m3Err_none;
 }
 
-void  MarkSlotsAllocatedByType  (IM3Compilation o, u16 i_slot, u8 i_type)
+static inline
+M3Result MarkSlotsAllocatedByType  (IM3Compilation o, u16 i_slot, m3type_t i_type)
 {
     u16 numSlots = GetTypeNumSlots (i_type);
-    MarkSlotsAllocated (o, i_slot, numSlots);
+    return MarkSlotsAllocated (o, i_slot, numSlots);
 }
 
 
-
-M3Result  AllocateSlotsWithinRange  (IM3Compilation o, u16 * o_slot, u8 i_type, u16 i_startSlot, u16 i_endSlot)
+static
+M3Result  AllocateSlotsWithinRange  (IM3Compilation o, u16 * o_slot, m3type_t i_type, u16 i_startSlot, u16 i_endSlot)
 {
     M3Result result = m3Err_functionStackOverflow;
 
@@ -267,7 +404,7 @@ M3Result  AllocateSlotsWithinRange  (IM3Compilation o, u16 * o_slot, u8 i_type, 
     u16 i = i_startSlot;
     while (i + searchOffset < i_endSlot)
     {
-        if (o->m3Slots [i] == 0 and o->m3Slots [i + searchOffset] == 0)
+        if (i + searchOffset < d_m3MaxFunctionSlots and o->m3Slots [i] == 0 and o->m3Slots [i + searchOffset] == 0)
         {
             MarkSlotsAllocated (o, i, numSlots);
 
@@ -283,14 +420,14 @@ M3Result  AllocateSlotsWithinRange  (IM3Compilation o, u16 * o_slot, u8 i_type, 
     return result;
 }
 
-
-M3Result  AllocateSlots  (IM3Compilation o, u16 * o_slot, u8 i_type)
+static inline
+M3Result  AllocateSlots  (IM3Compilation o, u16 * o_slot, m3type_t i_type)
 {
     return AllocateSlotsWithinRange (o, o_slot, i_type, o->slotFirstDynamicIndex, d_m3MaxFunctionSlots);
 }
 
-
-M3Result  AllocateConstantSlots  (IM3Compilation o, u16 * o_slot, u8 i_type)
+static inline
+M3Result  AllocateConstantSlots  (IM3Compilation o, u16 * o_slot, m3type_t i_type)
 {
     u16 maxTableIndex = o->slotFirstConstIndex + d_m3MaxConstantTableSize;
     return AllocateSlotsWithinRange (o, o_slot, i_type, o->slotFirstConstIndex, M3_MIN(o->slotFirstDynamicIndex, maxTableIndex));
@@ -299,6 +436,7 @@ M3Result  AllocateConstantSlots  (IM3Compilation o, u16 * o_slot, u8 i_type)
 
 // TOQUE: this usage count system could be eliminated. real world code doesn't frequently trigger it.  just copy to multiple
 // unique slots.
+static inline
 M3Result  IncrementSlotUsageCount  (IM3Compilation o, u16 i_slot)
 {                                                                                       d_m3Assert (i_slot < d_m3MaxFunctionSlots);
     M3Result result = m3Err_none;                                                       d_m3Assert (o->m3Slots [i_slot] > 0);
@@ -314,8 +452,8 @@ M3Result  IncrementSlotUsageCount  (IM3Compilation o, u16 i_slot)
     return result;
 }
 
-
-void DeallocateSlot (IM3Compilation o, i16 i_slot, u8 i_type)
+static inline
+void DeallocateSlot (IM3Compilation o, i16 i_slot, m3type_t i_type)
 {                                                                                       d_m3Assert (i_slot >= o->slotFirstDynamicIndex);
                                                                                         d_m3Assert (i_slot < o->slotMaxAllocatedIndexPlusOne);
     for (u16 i = 0; i < GetTypeNumSlots (i_type); ++i, ++i_slot)
@@ -325,34 +463,29 @@ void DeallocateSlot (IM3Compilation o, i16 i_slot, u8 i_type)
 }
 
 
-bool  IsRegisterAllocated  (IM3Compilation o, u32 i_register)
-{
-    return (o->regStackIndexPlusOne [i_register] != c_m3RegisterUnallocated);
-}
-
-
+static inline
 bool  IsRegisterTypeAllocated  (IM3Compilation o, u8 i_type)
 {
     return IsRegisterAllocated (o, IsFpType (i_type));
 }
 
+static inline
 void  AllocateRegister  (IM3Compilation o, u32 i_register, u16 i_stackIndex)
 {                                                                                       d_m3Assert (not IsRegisterAllocated (o, i_register));
     o->regStackIndexPlusOne [i_register] = i_stackIndex + 1;
 }
 
-
+static inline
 void  DeallocateRegister  (IM3Compilation o, u32 i_register)
 {                                                                                       d_m3Assert (IsRegisterAllocated (o, i_register));
     o->regStackIndexPlusOne [i_register] = c_m3RegisterUnallocated;
 }
 
-
+static inline
 u16  GetRegisterStackIndex  (IM3Compilation o, u32 i_register)
 {                                                                                       d_m3Assert (IsRegisterAllocated (o, i_register));
     return o->regStackIndexPlusOne [i_register] - 1;
 }
-
 
 u16  GetMaxUsedSlotPlusOne  (IM3Compilation o)
 {
@@ -376,8 +509,8 @@ u16  GetMaxUsedSlotPlusOne  (IM3Compilation o)
     return o->slotMaxAllocatedIndexPlusOne;
 }
 
-
-M3Result  PreserveRegisterIfOccupied  (IM3Compilation o, u8 i_registerType)
+static
+M3Result  PreserveRegisterIfOccupied  (IM3Compilation o, m3type_t i_registerType)
 {
     M3Result result = m3Err_none;
 
@@ -388,14 +521,20 @@ M3Result  PreserveRegisterIfOccupied  (IM3Compilation o, u8 i_registerType)
         u16 stackIndex = GetRegisterStackIndex (o, regSelect);
         DeallocateRegister (o, regSelect);
 
-        u8 type = GetStackTypeFromBottom (o, stackIndex);
+        m3type_t type = GetStackTypeFromBottom (o, stackIndex);
 
         // and point to a exec slot
         u16 slot = c_slotUnused;
 _       (AllocateSlots (o, & slot, type));
         o->wasmStack [stackIndex] = slot;
 
-_       (EmitOp (o, c_setSetOps [type]));
+        // Ensure type is within the valid range
+        if (BaseTypeOf(type) < c_m3Type_count) {
+_           (EmitOp (o, c_setSetOps [BaseTypeOf(type)]));
+        } else {
+            _throw(m3Err_unknownType);
+        }
+
         EmitSlotOffset (o, slot);
     }
 
@@ -405,6 +544,7 @@ _       (EmitOp (o, c_setSetOps [type]));
 
 // all values must be in slots before entering loop, if, and else blocks
 // otherwise they'd end up preserve-copied in the block to probably different locations (if/else)
+static inline
 M3Result  PreserveRegisters  (IM3Compilation o)
 {
     M3Result result;
@@ -415,7 +555,7 @@ _   (PreserveRegisterIfOccupied (o, c_m3Type_i64));
     _catch: return result;
 }
 
-
+static
 M3Result  PreserveNonTopRegisters  (IM3Compilation o)
 {
     M3Result result = m3Err_none;
@@ -443,8 +583,8 @@ _               (PreserveRegisterIfOccupied (o, c_m3Type_f64));
 
 //----------------------------------------------------------------------------------------------------------------------
 
-
-M3Result  Push  (IM3Compilation o, u8 i_type, u16 i_slot)
+static
+M3Result  Push  (IM3Compilation o, m3type_t i_type, u16 i_slot)
 {
     M3Result result = m3Err_none;
 
@@ -454,28 +594,27 @@ M3Result  Push  (IM3Compilation o, u8 i_type, u16 i_slot)
     }
 #endif
 
+    if (M3_UNLIKELY(o->stackIndex >= d_m3MaxFunctionStackHeight))
+        return m3Err_functionStackOverflow;
+
     u16 stackIndex = o->stackIndex++;                                       // printf ("push: %d\n", (i32) i);
 
-    if (stackIndex < d_m3MaxFunctionStackHeight)
+    o->wasmStack        [stackIndex] = i_slot;
+    o->typeStack        [stackIndex] = i_type;
+
+    if (IsRegisterSlotAlias (i_slot))
     {
-        o->wasmStack        [stackIndex] = i_slot;
-        o->typeStack        [stackIndex] = i_type;
-
-        if (IsRegisterSlotAlias (i_slot))
-        {
-            u32 regSelect = IsFpRegisterSlotAlias (i_slot);
-            AllocateRegister (o, regSelect, stackIndex);
-        }
-
-        if (d_m3LogWasmStack) dump_type_stack (o);
+        u32 regSelect = IsFpRegisterSlotAlias (i_slot);
+        AllocateRegister (o, regSelect, stackIndex);
     }
-    else result = m3Err_functionStackOverflow;
+
+    if (d_m3LogWasmStack) dump_type_stack (o);
 
     return result;
 }
 
-
-M3Result  PushRegister  (IM3Compilation o, u8 i_type)
+static inline
+M3Result  PushRegister  (IM3Compilation o, m3type_t i_type)
 {
     M3Result result = m3Err_none;                                                       d_m3Assert ((u16) d_m3Reg0SlotAlias > (u16) d_m3MaxFunctionSlots);
     u16 slot = IsFpType (i_type) ? d_m3Fp0SlotAlias : d_m3Reg0SlotAlias;                d_m3Assert (i_type or IsStackPolymorphic (o));
@@ -485,7 +624,7 @@ _   (Push (o, i_type, slot));
     _catch: return result;
 }
 
-
+static
 M3Result  Pop  (IM3Compilation o)
 {
     M3Result result = m3Err_none;
@@ -495,12 +634,15 @@ M3Result  Pop  (IM3Compilation o)
         o->stackIndex--;                                                //  printf ("pop: %d\n", (i32) o->stackIndex);
 
         u16 slot = o->wasmStack [o->stackIndex];
-        u8 type = o->typeStack [o->stackIndex];
+        m3type_t type = o->typeStack [o->stackIndex];
 
         if (IsRegisterSlotAlias (slot))
         {
             u32 regSelect = IsFpRegisterSlotAlias (slot);
             DeallocateRegister (o, regSelect);
+        }
+        else if (slot >= o->slotMaxAllocatedIndexPlusOne) {
+            return m3Err_functionStackUnderrun; // Return error for invalid slot indices
         }
         else if (slot >= o->slotFirstDynamicIndex)
         {
@@ -513,14 +655,14 @@ M3Result  Pop  (IM3Compilation o)
     return result;
 }
 
-
-M3Result  PopType  (IM3Compilation o, u8 i_type)
+static
+M3Result  PopType  (IM3Compilation o, m3type_t i_type)
 {
     M3Result result = m3Err_none;
 
-    u8 topType = GetStackTopType (o);
+    m3type_t topType = GetStackTopType (o);
 
-    if (i_type == topType or o->block.isPolymorphic)
+    if (IsSubTypeOf (topType, i_type) or o->block.isPolymorphic)
     {
 _       (Pop (o));
     }
@@ -530,8 +672,8 @@ _       (Pop (o));
     return result;
 }
 
-
-M3Result  _PushAllocatedSlotAndEmit  (IM3Compilation o, u8 i_type, bool i_doEmit)
+static
+M3Result  _PushAllocatedSlotAndEmit  (IM3Compilation o, m3type_t i_type, bool i_doEmit)
 {
     M3Result result = m3Err_none;
 
@@ -548,25 +690,27 @@ _   (Push (o, i_type, slot));
     _catch: return result;
 }
 
-
-M3Result  PushAllocatedSlotAndEmit  (IM3Compilation o, u8 i_type)
+static inline
+M3Result  PushAllocatedSlotAndEmit  (IM3Compilation o, m3type_t i_type)
 {
     return _PushAllocatedSlotAndEmit (o, i_type, true);
 }
 
-
-M3Result  PushAllocatedSlot  (IM3Compilation o, u8 i_type)
+static inline
+M3Result  PushAllocatedSlot  (IM3Compilation o, m3type_t i_type)
 {
     return _PushAllocatedSlotAndEmit (o, i_type, false);
 }
 
-
-M3Result  PushConst  (IM3Compilation o, u64 i_word, u8 i_type)
+static
+M3Result  PushConst  (IM3Compilation o, u64 i_word, m3type_t i_type)
 {
     M3Result result = m3Err_none;
 
-    // Early-exit if we're not emitting
-    if (!o->page) return result;
+    // When compile-walking a constant expression without emitting there is no
+    // constant table to place the value in, but the type still has to land on
+    // the stack: extended-const arithmetic downstream consumes it.
+    if (!o->page) return PushAllocatedSlot (o, i_type);
 
     bool matchFound = false;
     bool is64BitType = Is64BitType (i_type);
@@ -584,7 +728,8 @@ M3Result  PushConst  (IM3Compilation o, u64 i_word, u8 i_type)
         {
             if (IsSlotAllocated (o, slot) and IsSlotAllocated (o, slot + 1))
             {
-                u64 constant = * (u64 *) & o->constants [slot - o->slotFirstConstIndex];
+                u64 constant;
+                memcpy (&constant, &o->constants [slot - o->slotFirstConstIndex], sizeof(constant));
 
                 if (constant == i_word)
                 {
@@ -603,13 +748,17 @@ _                   (Push (o, i_type, slot));
 
             if (IsSlotAllocated (o, slot))
             {
-                u64 constant;
+                bool matches;
                 if (is64BitType) {
-                    constant = * (u64 *) & o->constants [i];
+                    u64 constant;
+                    memcpy (&constant, &o->constants [i], sizeof(constant));
+                    matches = (constant == i_word);
                 } else {
-                    constant = * (u32 *) & o->constants [i];
+                    u32 constant;
+                    memcpy (&constant, &o->constants [i], sizeof(constant));
+                    matches = (constant == i_word);
                 }
-                if (constant == i_word)
+                if (matches)
                 {
                     matchFound = true;
 _                   (Push (o, i_type, slot));
@@ -624,7 +773,7 @@ _                   (Push (o, i_type, slot));
         u16 slot = c_slotUnused;
         result = AllocateConstantSlots (o, & slot, i_type);
 
-        if (result) // no more constant table space; use inline constants
+        if (result || slot == c_slotUnused) // no more constant table space; use inline constants
         {
             result = m3Err_none;
 
@@ -644,15 +793,11 @@ _           (PushAllocatedSlotAndEmit (o, i_type));
 
             d_m3Assert(constTableIndex < d_m3MaxConstantTableSize);
 
-            if (is64BitType)
-            {
-                u64 * constant = (u64 *) & o->constants [constTableIndex];
-                * constant = i_word;
-            }
-            else
-            {
-                u32 * constant = (u32 *) & o->constants [constTableIndex];
-                * constant = (u32) i_word;
+            if (is64BitType) {
+                memcpy (& o->constants [constTableIndex], &i_word, sizeof(i_word));
+            } else {
+                u32 word32 = i_word;
+                memcpy (& o->constants [constTableIndex], &word32, sizeof(word32));
             }
 
 _           (Push (o, i_type, slot));
@@ -664,7 +809,7 @@ _           (Push (o, i_type, slot));
     _catch: return result;
 }
 
-
+static inline
 M3Result  EmitSlotNumOfStackTopAndPop  (IM3Compilation o)
 {
     // no emit if value is in register
@@ -687,6 +832,7 @@ M3Result  AddTrapRecord  (IM3Compilation o)
     return result;
 }
 
+static
 M3Result  UnwindBlockStack  (IM3Compilation o)
 {
     M3Result result = m3Err_none;
@@ -706,20 +852,14 @@ _       (Pop (o));
     _catch: return result;
 }
 
-
-bool  IsStackPolymorphic  (IM3Compilation o)
-{
-    return o->block.isPolymorphic;
-}
-
-
+static inline
 M3Result  SetStackPolymorphic  (IM3Compilation o)
 {
     o->block.isPolymorphic = true;                              m3log (compile, "stack set polymorphic");
     return UnwindBlockStack (o);
 }
 
-
+static
 void  PatchBranches  (IM3Compilation o)
 {
     pc_t pc = GetPC (o);
@@ -737,19 +877,19 @@ void  PatchBranches  (IM3Compilation o)
 
 //-------------------------------------------------------------------------------------------------------------------------
 
-
+static
 M3Result  CopyStackIndexToSlot  (IM3Compilation o, u16 i_destSlot, u16 i_stackIndex)  // NoPushPop
 {
     M3Result result = m3Err_none;
 
     IM3Operation op;
 
-    u8 type = GetStackTypeFromBottom (o, i_stackIndex);
+    m3type_t type = GetStackTypeFromBottom (o, i_stackIndex);
     bool inRegister = IsStackIndexInRegister (o, i_stackIndex);
 
     if (inRegister)
     {
-        op = c_setSetOps [type];
+        op = c_setSetOps [BaseTypeOf(type)];
     }
     else op = Is64BitType (type) ? op_CopySlot_64 : op_CopySlot_32;
 
@@ -765,7 +905,7 @@ _   (EmitOp (o, op));
     _catch: return result;
 }
 
-
+static
 M3Result  CopyStackTopToSlot  (IM3Compilation o, u16 i_destSlot)  // NoPushPop
 {
     M3Result result;
@@ -783,17 +923,18 @@ _   (CopyStackIndexToSlot (o, i_destSlot, (u16) stackTop));
 
 // TODO: consider getting rid of these specialized operations: PreserveSetSlot & PreserveCopySlot.
 // They likely just take up space (which seems to reduce performance) without improving performance.
+static
 M3Result  PreservedCopyTopSlot  (IM3Compilation o, u16 i_destSlot, u16 i_preserveSlot)
 {
     M3Result result = m3Err_none;             d_m3Assert (i_destSlot != i_preserveSlot);
 
     IM3Operation op;
 
-    u8 type = GetStackTopType (o);
+    m3type_t type = GetStackTopType (o);
 
     if (IsStackTopInRegister (o))
     {
-        op = c_preserveSetSlot [type];
+        op = c_preserveSetSlot [BaseTypeOf(type)];
     }
     else op = Is64BitType (type) ? op_PreserveCopySlot_64 : op_PreserveCopySlot_32;
 
@@ -808,18 +949,18 @@ _   (EmitOp (o, op));
     _catch: return result;
 }
 
-
+static
 M3Result  CopyStackTopToRegister  (IM3Compilation o, bool i_updateStack)
 {
     M3Result result = m3Err_none;
 
     if (IsStackTopInSlot (o))
     {
-        u8 type = GetStackTopType (o);
+        m3type_t type = GetStackTopType (o);
 
 _       (PreserveRegisterIfOccupied (o, type));
 
-        IM3Operation op = c_setRegisterOps [type];
+        IM3Operation op = c_setRegisterOps [BaseTypeOf(type)];
 
 _       (EmitOp (o, op));
         EmitSlotOffset (o, GetStackTopSlotNumber (o));
@@ -836,12 +977,13 @@ _           (PushRegister (o, type));
 
 
 // if local is unreferenced, o_preservedSlotNumber will be equal to localIndex on return
+static
 M3Result  FindReferencedLocalWithinCurrentBlock  (IM3Compilation o, u16 * o_preservedSlotNumber, u32 i_localSlot)
 {
     M3Result result = m3Err_none;
 
     IM3CompilationScope scope = & o->block;
-    i16 startIndex = scope->blockStackIndex;
+    u16 startIndex = scope->blockStackIndex;
 
     while (scope->opcode == c_waOp_block)
     {
@@ -860,7 +1002,7 @@ M3Result  FindReferencedLocalWithinCurrentBlock  (IM3Compilation o, u16 * o_pres
         {
             if (* o_preservedSlotNumber == i_localSlot)
             {
-                u8 type = GetStackTypeFromBottom (o, i);                    d_m3Assert (type != c_m3Type_none)
+                m3type_t type = GetStackTypeFromBottom (o, i);                    d_m3Assert (type != c_m3Type_none)
 
 _               (AllocateSlots (o, o_preservedSlotNumber, type));
             }
@@ -874,8 +1016,8 @@ _               (IncrementSlotUsageCount (o, * o_preservedSlotNumber));
     _catch: return result;
 }
 
-
-M3Result  GetBlockScope  (IM3Compilation o, IM3CompilationScope * o_scope, i32 i_depth)
+static
+M3Result  GetBlockScope  (IM3Compilation o, IM3CompilationScope * o_scope, u32 i_depth)
 {
     M3Result result = m3Err_none;
 
@@ -893,7 +1035,7 @@ M3Result  GetBlockScope  (IM3Compilation o, IM3CompilationScope * o_scope, i32 i
     return result;
 }
 
-
+static
 M3Result  CopyStackSlotsR  (IM3Compilation o, u16 i_targetSlotStackIndex, u16 i_stackIndex, u16 i_endStackIndex, u16 i_tempSlot)
 {
     M3Result result = m3Err_none;
@@ -902,7 +1044,7 @@ M3Result  CopyStackSlotsR  (IM3Compilation o, u16 i_targetSlotStackIndex, u16 i_
     {
         u16 srcSlot = GetSlotForStackIndex (o, i_stackIndex);
 
-        u8 type = GetStackTypeFromBottom (o, i_stackIndex);
+        m3type_t type = GetStackTypeFromBottom (o, i_stackIndex);
         u16 numSlots = GetTypeNumSlots (type);
         u16 extraSlot = numSlots - 1;
 
@@ -957,7 +1099,7 @@ _       (CopyStackSlotsR (o, i_targetSlotStackIndex + 1, i_stackIndex + 1, i_end
     return result;
 }
 
-
+static
 M3Result  ResolveBlockResults  (IM3Compilation o, IM3CompilationScope i_targetBlock, bool i_isBranch)
 {
     M3Result result = m3Err_none;                                   if (d_m3LogWasmStack) dump_type_stack (o);
@@ -985,18 +1127,21 @@ M3Result  ResolveBlockResults  (IM3Compilation o, IM3CompilationScope i_targetBl
     if (numValues)
     {
         u16 endIndex = GetStackTopIndex (o) + 1;
+        u16 numRemValues = numValues;
 
+        // The last result is taken from _fp0. See PushBlockResults.
         if (not isLoop and IsFpType (GetStackTopType (o)))
         {
 _           (CopyStackTopToRegister (o, false));
             --endIndex;
+            --numRemValues;
         }
 
         // TODO: tempslot affects maxStackSlots, so can grow unnecess each time.
         u16 tempSlot = o->maxStackSlots;// GetMaxUsedSlotPlusOne (o); doesn't work cause can collide with slotRecords
         AlignSlotToType (& tempSlot, c_m3Type_i64);
 
-_       (CopyStackSlotsR (o, slotRecords, endIndex - numValues, endIndex, tempSlot));
+_       (CopyStackSlotsR (o, slotRecords, endIndex - numRemValues, endIndex, tempSlot));
 
         if (d_m3LogWasmStack) dump_type_stack (o);
     }
@@ -1005,7 +1150,7 @@ _       (CopyStackSlotsR (o, slotRecords, endIndex - numValues, endIndex, tempSl
 }
 
 
-
+static
 M3Result  ReturnValues  (IM3Compilation o, IM3CompilationScope i_functionBlock, bool i_isBranch)
 {
     M3Result result = m3Err_none;                                               if (d_m3LogWasmStack) dump_type_stack (o);
@@ -1024,14 +1169,14 @@ M3Result  ReturnValues  (IM3Compilation o, IM3CompilationScope i_functionBlock, 
 
         for (u16 i = 0; i < numReturns; ++i)
         {
-            u8 returnType = GetFuncTypeResultType (i_functionBlock->type, numReturns - 1 - i);
+            m3type_t returnType = GetFuncTypeResultType (i_functionBlock->type, numReturns - 1 - i);
 
-            u8 stackType = GetStackTypeFromTop (o, i);  // using FromTop so that only dynamic items are checked
+            m3type_t stackType = GetStackTypeFromTop (o, i);  // using FromTop so that only dynamic items are checked
 
             if (IsStackPolymorphic (o) and stackType == c_m3Type_none)
                 stackType = returnType;
 
-            _throwif (m3Err_typeMismatch, returnType != stackType);
+            _throwif (m3Err_typeMismatch, not IsSubTypeOf (stackType, returnType));
 
             if (not IsStackPolymorphic (o))
             {
@@ -1053,7 +1198,7 @@ _               (Pop (o));
 
 //-------------------------------------------------------------------------------------------------------------------------
 
-
+static
 M3Result  Compile_Const_i32  (IM3Compilation o, m3opcode_t i_opcode)
 {
     M3Result result;
@@ -1064,7 +1209,7 @@ _   (PushConst (o, value, c_m3Type_i32));                       m3log (compile, 
     _catch: return result;
 }
 
-
+static
 M3Result  Compile_Const_i64  (IM3Compilation o, m3opcode_t i_opcode)
 {
     M3Result result;
@@ -1077,6 +1222,7 @@ _   (PushConst (o, value, c_m3Type_i64));                       m3log (compile, 
 
 
 #if d_m3ImplementFloat
+static
 M3Result  Compile_Const_f32  (IM3Compilation o, m3opcode_t i_opcode)
 {
     M3Result result;
@@ -1089,7 +1235,7 @@ _   (PushConst (o, value.u, c_m3Type_f32));
     _catch: return result;
 }
 
-
+static
 M3Result  Compile_Const_f64  (IM3Compilation o, m3opcode_t i_opcode)
 {
     M3Result result;
@@ -1103,12 +1249,11 @@ _   (PushConst (o, value.u, c_m3Type_f64));
 }
 #endif
 
-#ifdef d_m3EnableExtendedOpcodes
+#if d_m3CascadedOpcodes
 
+static
 M3Result  Compile_ExtendedOpcode  (IM3Compilation o, m3opcode_t i_opcode)
 {
-    M3Result result = m3Err_none;
-
 _try {
     u8 opcode;
 _   (Read_u8 (& opcode, & o->wasm, o->wasmEnd));             m3log (compile, d_indent " (FC: %" PRIi32 ")", get_indention_string (o), opcode);
@@ -1131,7 +1276,7 @@ _   ((* compiler) (o, i_opcode));
 }
 #endif
 
-
+static
 M3Result  Compile_Return  (IM3Compilation o, m3opcode_t i_opcode)
 {
     M3Result result = m3Err_none;
@@ -1151,25 +1296,32 @@ _       (SetStackPolymorphic (o));
     _catch: return result;
 }
 
-
+static
 M3Result  ValidateBlockEnd  (IM3Compilation o)
 {
     M3Result result = m3Err_none;
-/*
+
     u16 numResults = GetFuncTypeNumResults (o->block.type);
     u16 blockHeight = GetNumBlockValuesOnStack (o);
 
-    if (IsStackPolymorphic (o))
+    if (not IsStackPolymorphic (o))
     {
-    }
-    else
-    {
+        // Spec: at block end, stack height must match the number of results
+        _throwif (m3Err_typeCountMismatch, blockHeight != numResults);
+
+        // Spec: result types must match expected types
+        for (u16 i = 0; i < numResults; ++i)
+        {
+            m3type_t expectedType = GetFuncTypeResultType (o->block.type, numResults - 1 - i);
+            m3type_t actualType = GetStackTypeFromTop (o, i);
+            _throwif (m3Err_typeMismatch, not IsSubTypeOf (actualType, expectedType));
+        }
     }
 
-    _catch: */ return result;
+    _catch: return result;
 }
 
-
+static
 M3Result  Compile_End  (IM3Compilation o, m3opcode_t i_opcode)
 {
     M3Result result = m3Err_none;                   //dump_type_stack (o);
@@ -1181,7 +1333,11 @@ M3Result  Compile_End  (IM3Compilation o, m3opcode_t i_opcode)
 
 //      if (not IsStackPolymorphic (o))
         {
-            if (o->function)
+            // A constant expression has no function frame, but its value still
+            // has to be copied down to slot 0, where EvaluateExpression reads it
+            // back. The non-emitting init-expr walk is skipped: it has no block
+            // type to return against.
+            if (o->function or o->page)
             {
 _               (ReturnValues (o, & o->block, false));
             }
@@ -1194,7 +1350,7 @@ _           (EmitOp (o, op_Return));
 }
 
 
-
+static
 M3Result  Compile_SetLocal  (IM3Compilation o, m3opcode_t i_opcode)
 {
     M3Result result;
@@ -1204,6 +1360,15 @@ _   (ReadLEB_u32 (& localIndex, & o->wasm, o->wasmEnd));             //  printf 
 
     if (localIndex < GetFunctionNumArgsAndLocals (o->function))
     {
+        // Spec: value type must match local type
+        if (not IsStackPolymorphic (o))
+        {
+            m3type_t localType = GetStackTypeFromBottom (o, localIndex);
+            m3type_t stackTopType = GetStackTopType (o);
+            _throwif (m3Err_typeMismatch, stackTopType != c_m3Type_none and localType != c_m3Type_none and
+                                          not IsSubTypeOf (stackTopType, localType));
+        }
+
         u16 localSlot = GetSlotForStackIndex (o, localIndex);
 
         u16 preserveSlot;
@@ -1222,11 +1387,9 @@ _           (Pop (o));
     _catch: return result;
 }
 
-
+static
 M3Result  Compile_GetLocal  (IM3Compilation o, m3opcode_t i_opcode)
 {
-    M3Result result;
-
 _try {
 
     u32 localIndex;
@@ -1235,7 +1398,7 @@ _   (ReadLEB_u32 (& localIndex, & o->wasm, o->wasmEnd));
     if (localIndex >= GetFunctionNumArgsAndLocals (o->function))
         _throw ("local index out of bounds");
 
-    u8 type = GetStackTypeFromBottom (o, localIndex);
+    m3type_t type = GetStackTypeFromBottom (o, localIndex);
     u16 slot = GetSlotForStackIndex (o, localIndex);
 
 _   (Push (o, type, slot));
@@ -1243,37 +1406,45 @@ _   (Push (o, type, slot));
     } _catch: return result;
 }
 
-
+static
 M3Result  Compile_GetGlobal  (IM3Compilation o, M3Global * i_global)
 {
     M3Result result;
 
     IM3Operation op = Is64BitType (i_global->type) ? op_GetGlobal_s64 : op_GetGlobal_s32;
 _   (EmitOp (o, op));
-    EmitPointer (o, & i_global->intValue);
+    EmitPointer (o, & i_global->i64Value);
 _   (PushAllocatedSlotAndEmit (o, i_global->type));
 
     _catch: return result;
 }
 
-
+static
 M3Result  Compile_SetGlobal  (IM3Compilation o, M3Global * i_global)
 {
     M3Result result = m3Err_none;
 
     if (i_global->isMutable)
     {
+        // Spec: value type must match global type
+        if (not IsStackPolymorphic (o))
+        {
+            m3type_t stackTopType = GetStackTopType (o);
+            _throwif (m3Err_typeMismatch, stackTopType != c_m3Type_none and
+                                          not IsSubTypeOf (stackTopType, i_global->type));
+        }
+
         IM3Operation op;
-        u8 type = GetStackTopType (o);
+        m3type_t type = GetStackTopType (o);
 
         if (IsStackTopInRegister (o))
         {
-            op = c_setGlobalOps [type];
+            op = c_setGlobalOps [BaseTypeOf(type)];
         }
         else op = Is64BitType (type) ? op_SetGlobal_s64 : op_SetGlobal_s32;
 
 _      (EmitOp (o, op));
-        EmitPointer (o, & i_global->intValue);
+        EmitPointer (o, & i_global->i64Value);
 
         if (IsStackTopInSlot (o))
             EmitSlotOffset (o, GetStackTopSlotNumber (o));
@@ -1285,7 +1456,7 @@ _      (Pop (o));
     _catch: return result;
 }
 
-
+static
 M3Result  Compile_GetSetGlobal  (IM3Compilation o, m3opcode_t i_opcode)
 {
     M3Result result = m3Err_none;
@@ -1299,7 +1470,14 @@ _   (ReadLEB_u32 (& globalIndex, & o->wasm, o->wasmEnd));
         {
             M3Global * global = & o->module->globals [globalIndex];
 
-_           ((i_opcode == 0x23) ? Compile_GetGlobal (o, global) : Compile_SetGlobal (o, global));
+            // Spec: a constant expression may only read an imported immutable
+            // global. The module's own globals are counted before their
+            // initializer is walked, so a bare index check would let one
+            // reference itself.
+            _throwif (m3Err_globaIndexOutOfBounds, o->isInitExpr and not global->imported);
+            _throwif (m3Err_wasmMalformed, o->isInitExpr and global->isMutable);
+
+_           ((i_opcode == c_waOp_getGlobal) ? Compile_GetGlobal (o, global) : Compile_SetGlobal (o, global));
         }
         else _throw (ErrorCompile (m3Err_globalMemoryNotAllocated, o, "module '%s' is missing global memory", o->module->name));
     }
@@ -1308,14 +1486,14 @@ _           ((i_opcode == 0x23) ? Compile_GetGlobal (o, global) : Compile_SetGlo
     _catch: return result;
 }
 
-
+static
 void  EmitPatchingBranchPointer  (IM3Compilation o, IM3CompilationScope i_scope)
 {
     pc_t patch = EmitPointer (o, i_scope->patches);                     m3log (compile, "branch patch required at: %p", patch);
     i_scope->patches = patch;
 }
 
-
+static
 M3Result  EmitPatchingBranch  (IM3Compilation o, IM3CompilationScope i_scope)
 {
     M3Result result = m3Err_none;
@@ -1326,13 +1504,20 @@ _   (EmitOp (o, op_Branch));
     _catch: return result;
 }
 
-
+static
 M3Result  Compile_Branch  (IM3Compilation o, m3opcode_t i_opcode)
 {
     M3Result result;
 
     u32 depth;
 _   (ReadLEB_u32 (& depth, & o->wasm, o->wasmEnd));
+
+    // Spec: br_if condition must be i32
+    if (i_opcode == c_waOp_branchIf and not IsStackPolymorphic (o))
+    {
+        m3type_t condType = GetStackTopType (o);
+        _throwif (m3Err_typeMismatch, condType != c_m3Type_none and condType != c_m3Type_i32);
+    }
 
     IM3CompilationScope scope;
 _   (GetBlockScope (o, & scope, depth));
@@ -1434,14 +1619,22 @@ _           (SetStackPolymorphic (o));
     _catch: return result;
 }
 
-
+static
 M3Result  Compile_BranchTable  (IM3Compilation o, m3opcode_t i_opcode)
 {
-    M3Result result;
-
+    // the page a continue-op page is standing in for; non-NULL only while that
+    // page is installed in o->page, so the catch below knows to put it back
+    IM3CodePage displacedPage = NULL;
 _try {
     u32 targetCount;
 _   (ReadLEB_u32 (& targetCount, & o->wasm, o->wasmEnd));
+
+    // Spec: validate that the branch index operand is i32
+    if (not IsStackPolymorphic (o))
+    {
+        m3type_t indexType = GetStackTopType (o);
+        _throwif (m3Err_typeMismatch, indexType != c_m3Type_none and indexType != c_m3Type_i32);
+    }
 
 _   (PreserveRegisterIfOccupied (o, c_m3Type_i64));         // move branch operand to a slot
     u16 slot = GetStackTopSlotNumber (o);
@@ -1460,6 +1653,12 @@ _   (EmitOp (o, op_BranchTable));
 
     IM3CodePage continueOpPage = NULL;
 
+    // The label types are checked by ValidateFunction, which runs under the same
+    // d_m3EnableValidation guard just before this compilation pass. Comparing each
+    // target against the default here would be wrong anyway: the spec matches every
+    // target against the operand stack, so in unreachable code the operands are the
+    // bottom type and the targets may legitimately differ (unreached-valid.wast).
+
     ++targetCount; // include default
     for (u32 i = 0; i < targetCount; ++i)
     {
@@ -1475,7 +1674,7 @@ _       (GetBlockScope (o, & scope, target));
 _       (AcquireCompilationCodePage (o, & continueOpPage));
 
         pc_t startPC = GetPagePC (continueOpPage);
-        IM3CodePage savedPage = o->page;
+        displacedPage = o->page;
         o->page = continueOpPage;
 
         if (scope->opcode == c_waOp_loop)
@@ -1504,8 +1703,9 @@ _                   (EmitPatchingBranch (o, scope));
             }
         }
 
-        ReleaseCompilationCodePage (o);     // FIX: continueOpPage can get lost if thrown
-        o->page = savedPage;
+        ReleaseCompilationCodePage (o);
+        o->page = displacedPage;
+        displacedPage = NULL;
 
         EmitPointer (o, startPC);
     }
@@ -1514,14 +1714,23 @@ _   (SetStackPolymorphic (o));
 
     }
 
-    _catch: return result;
+    _catch:
+
+    // thrown out of the loop above with a continue-op page installed: release it
+    // and restore the one it displaced, which the caller's catch then releases.
+    // Otherwise the displaced page is on no list and simply leaks.
+    if (displacedPage)
+    {
+        ReleaseCompilationCodePage (o);
+        o->page = displacedPage;
+    }
+
+    return result;
 }
 
-
+static
 M3Result  CompileCallArgsAndReturn  (IM3Compilation o, u16 * o_stackOffset, IM3FuncType i_type, bool i_isIndirect)
 {
-    M3Result result = m3Err_none;
-
 _try {
 
     u16 topSlot = GetMaxUsedSlotPlusOne (o);
@@ -1545,6 +1754,8 @@ _       (Pop (o));
 
     u16 argTop = topSlot + (numArgs + numRets) * c_ioSlotCount;
 
+    TouchSlot (o, argTop - 1);
+
     while (numArgs--)
     {
 _       (CopyStackTopToSlot (o, argTop -= c_ioSlotCount));
@@ -1554,10 +1765,10 @@ _       (Pop (o));
     u16 i = 0;
     while (numRets--)
     {
-        u8 type = GetFuncTypeResultType (i_type, i++);
+        m3type_t type = GetFuncTypeResultType (i_type, i++);
 
 _       (Push (o, type, topSlot));
-        MarkSlotsAllocatedByType (o, topSlot, type);
+_       (MarkSlotsAllocatedByType (o, topSlot, type));
 
         topSlot += c_ioSlotCount;
     }
@@ -1565,42 +1776,242 @@ _       (Push (o, type, topSlot));
     } _catch: return result;
 }
 
+// A tail call hands the current frame over to the callee instead of stacking a new one.
+// The callee's results have to be the enclosing function's results, so both use the same
+// return slots and only the arguments move: they're staged above the caller's stack here
+// (the argument expressions can still be reading the args/locals they're about to land on)
+// and slid down onto the frame base at runtime, by op_ReturnCall[Indirect].
+static
+M3Result  CompileTailCallArgs  (IM3Compilation o, u16 * o_stackOffset, u16 * o_numArgSlots, IM3FuncType i_type, bool i_isIndirect)
+{
+_try {
+    IM3FuncType funcType = o->function->funcType;
 
+    u16 numRets = GetFuncTypeNumResults (i_type);
+    _throwif (m3Err_typeMismatch, numRets != GetFuncTypeNumResults (funcType));
+
+    for (u16 i = 0; i < numRets; ++i)
+        _throwif (m3Err_typeMismatch, GetFuncTypeResultType (i_type, i) != GetFuncTypeResultType (funcType, i));
+
+    u16 topSlot = GetMaxUsedSlotPlusOne (o);
+
+    topSlot = M3_MAX (1, topSlot);
+
+    // stack frame is 64-bit aligned
+    AlignSlotToType (& topSlot, c_m3Type_i64);
+
+    * o_stackOffset = topSlot;
+
+    // wait to pop this here so that topSlot search is correct
+    if (i_isIndirect)
+_       (Pop (o));
+
+    u16 numArgs = GetFuncTypeNumParams (i_type);
+    u16 numArgSlots = numArgs * c_ioSlotCount;
+
+    * o_numArgSlots = numArgSlots;
+
+    u16 argTop = topSlot + numArgSlots;
+    _throwif (m3Err_functionStackOverflow, argTop > d_m3MaxFunctionSlots);
+
+    // the staging area is written by the caller, so op_Entry has to account for it
+    TouchSlot (o, argTop - 1);
+
+    while (numArgs--)
+    {
+_       (CopyStackTopToSlot (o, argTop -= c_ioSlotCount));
+_       (Pop (o));
+    }
+
+    } _catch: return result;
+}
+
+// An import that no host function was bound to may still be satisfied by another
+// module loaded into the same runtime, matched on the module's registered name.
+// Only functions can be linked this way: the runtime owns a single linear memory,
+// so a callee reaching for its own memory would find the caller's.
+static
+M3Result  ResolveImportedFunction  (IM3Function io_function)
+{
+    M3Result result = m3Err_none;
+
+    ccstr_t moduleName = io_function->import.moduleUtf8;
+    ccstr_t fieldName  = io_function->import.fieldUtf8;
+
+    if (not (moduleName and fieldName and io_function->module))
+        return result;
+
+    for (IM3Module m = io_function->module->runtime->modules; m; m = m->next)
+    {
+        if (m == io_function->module or not m->name or strcmp (m->name, moduleName) != 0)
+            continue;
+
+        for (u32 i = 0; i < m->numFunctions; ++i)
+        {
+            IM3Function f = & m->functions [i];
+
+            if (f->export_name and strcmp (f->export_name, fieldName) == 0)
+            {
+                _throwif (m3Err_functionImportMissing, f->funcType != io_function->funcType);
+
+                if (not f->compiled)
+_                   (CompileFunction (f));
+
+                io_function->compiled = f->compiled;
+                return result;
+            }
+        }
+    }
+
+    _catch: return result;
+}
+
+
+#if d_m3HasTypedRefs
+
+// call_ref $t: the callee is the reference on top of the stack, so the operand
+// order is the same as call_indirect's, minus the table.
+static
+M3Result  Compile_CallRef  (IM3Compilation o, m3opcode_t i_opcode)
+{
+_try {
+    u32 typeIndex;
+_   (ReadLEB_u32 (& typeIndex, & o->wasm, o->wasmEnd));
+
+    _throwif ("function call type index out of range", typeIndex >= o->module->numFuncTypes);
+
+    IM3FuncType type = o->module->funcTypes [typeIndex];
+
+    if (not IsStackPolymorphic (o))
+    {
+        // whatever shape the reference has, it must be a function of this type
+        m3type_t refType = GetStackTopType (o);
+        _throwif (m3Err_typeMismatch, not IsSubTypeOf (refType, RefTypeOfFuncType (type, false)));
+    }
+
+    if (IsStackTopInRegister (o))
+_       (PreserveRegisterIfOccupied (o, c_m3Type_funcref));
+
+    u16 functionSlot = GetStackTopSlotNumber (o);
+
+    bool isReturnCall = (i_opcode == c_waOp_returnCallRef);
+    bool useTailCall  = isReturnCall and d_m3CanTailCall;
+
+    u16 execTop, numArgSlots = 0;
+
+    if (useTailCall) {
+_       (CompileTailCallArgs (o, & execTop, & numArgSlots, type, true));
+    } else {
+_       (CompileCallArgsAndReturn (o, & execTop, type, true));
+    }
+
+_   (EmitOp         (o, useTailCall ? op_ReturnCallRef : op_CallRef));
+    EmitSlotOffset  (o, functionSlot);
+    EmitPointer     (o, type);
+    EmitSlotOffset  (o, execTop);
+
+    if (useTailCall)
+    {
+        EmitSlotOffset (o, o->function->numRetSlots);
+        EmitConstant32 (o, numArgSlots);
+
+_       (SetStackPolymorphic (o));
+    }
+    else if (isReturnCall)
+_       (Compile_Return (o, i_opcode));
+
+} _catch:
+    return result;
+}
+
+
+// ref.as_non_null only sharpens the type; the value is unchanged, so the stack
+// entry is re-pushed with the null stripped out of its type.
+static
+M3Result  Compile_Ref_AsNonNull  (IM3Compilation o, m3opcode_t i_opcode)
+{
+    M3Result result = m3Err_none;
+
+    if (not IsStackPolymorphic (o))
+    {
+        m3type_t type = GetStackTopType (o);
+        _throwif (m3Err_typeMismatch, not IsRefType (type));
+
+        u16 slot = GetStackTopSlotNumber (o);
+
+_       (EmitOp (o, op_RefAsNonNull));
+        EmitSlotOffset (o, slot);
+
+        m3type_t nonNull = IsSpelledRefType (type)
+                         ? (m3type_t) (type | d_m3Type_refNonNull)
+                         : (m3type_t) (d_m3Type_ref | d_m3Type_refNonNull | d_m3Type_heapAbstract |
+                                       ((BaseTypeOf(type) == c_m3Type_externref) ? d_m3Type_refExtern : 0));
+
+_       (Pop (o));
+_       (Push (o, nonNull, slot));
+    }
+
+    _catch: return result;
+}
+
+#endif // d_m3HasTypedRefs
+
+
+static
 M3Result  Compile_Call  (IM3Compilation o, m3opcode_t i_opcode)
 {
-    M3Result result;
-
 _try {
     u32 functionIndex;
 _   (ReadLEB_u32 (& functionIndex, & o->wasm, o->wasmEnd));
 
     IM3Function function = Module_GetFunction (o->module, functionIndex);
 
+    if (function and not function->compiled)
+_       (ResolveImportedFunction (function));
+
     if (function)
     {                                                                   m3log (compile, d_indent " (func= [%d] '%s'; args= %d)",
                                                                                 get_indention_string (o), functionIndex, m3_GetFunctionName (function), function->funcType->numArgs);
         if (function->module)
         {
-            u16 slotTop;
-_           (CompileCallArgsAndReturn (o, & slotTop, function->funcType, false));
+            bool isReturnCall = (i_opcode == c_waOp_returnCall);
+            bool useTailCall  = isReturnCall and d_m3CanTailCall;
+
+            u16 slotTop, numArgSlots = 0;
+
+            if (useTailCall) {
+_               (CompileTailCallArgs (o, & slotTop, & numArgSlots, function->funcType, false));
+            } else {
+_               (CompileCallArgsAndReturn (o, & slotTop, function->funcType, false));
+            }
 
             IM3Operation op;
             const void * operand;
 
             if (function->compiled)
             {
-                op = op_Call;
+                op = useTailCall ? op_ReturnCall : op_Call;
                 operand = function->compiled;
             }
             else
             {
-                op = op_Compile;
+                op = useTailCall ? op_CompileReturnCall : op_Compile;
                 operand = function;
             }
 
 _           (EmitOp     (o, op));
             EmitPointer (o, operand);
             EmitSlotOffset  (o, slotTop);
+
+            if (useTailCall)
+            {
+                EmitSlotOffset (o, o->function->numRetSlots);
+                EmitConstant32 (o, numArgSlots);
+
+_               (SetStackPolymorphic (o));
+            }
+            else if (isReturnCall)
+_               (Compile_Return (o, i_opcode));
         }
         else
         {
@@ -1612,40 +2023,58 @@ _           (EmitOp     (o, op));
     } _catch: return result;
 }
 
-
+static
 M3Result  Compile_CallIndirect  (IM3Compilation o, m3opcode_t i_opcode)
 {
-    M3Result result;
-
 _try {
     u32 typeIndex;
 _   (ReadLEB_u32 (& typeIndex, & o->wasm, o->wasmEnd));
 
-    i8 reserved;
-_   (ReadLEB_i7 (& reserved, & o->wasm, o->wasmEnd));
+    u32 tableIndex;
+_   (ReadLEB_u32 (& tableIndex, & o->wasm, o->wasmEnd));
 
     _throwif ("function call type index out of range", typeIndex >= o->module->numFuncTypes);
+    _throwif ("table index out of range", tableIndex >= o->module->numTables);
+    _throwif (m3Err_typeMismatch, BaseTypeOf(o->module->tables [tableIndex].type) != c_m3Type_funcref);
 
     if (IsStackTopInRegister (o))
 _       (PreserveRegisterIfOccupied (o, c_m3Type_i32));
 
     u16 tableIndexSlot = GetStackTopSlotNumber (o);
 
-    u16 execTop;
-    IM3FuncType type = o->module->funcTypes [typeIndex];
-_   (CompileCallArgsAndReturn (o, & execTop, type, true));
+    bool isReturnCall = (i_opcode == c_waOp_returnCallIndirect);
+    bool useTailCall  = isReturnCall and d_m3CanTailCall;
 
-_   (EmitOp         (o, op_CallIndirect));
+    u16 execTop, numArgSlots = 0;
+    IM3FuncType type = o->module->funcTypes [typeIndex];
+
+    if (useTailCall) {
+_       (CompileTailCallArgs (o, & execTop, & numArgSlots, type, true));
+    } else {
+_       (CompileCallArgsAndReturn (o, & execTop, type, true));
+    }
+
+_   (EmitOp         (o, useTailCall ? op_ReturnCallIndirect : op_CallIndirect));
     EmitSlotOffset  (o, tableIndexSlot);
-    EmitPointer     (o, o->module);
+    EmitPointer     (o, & o->module->tables [tableIndex]);
     EmitPointer     (o, type);              // TODO: unify all types in M3Environment
     EmitSlotOffset  (o, execTop);
+
+    if (useTailCall)
+    {
+        EmitSlotOffset (o, o->function->numRetSlots);
+        EmitConstant32 (o, numArgSlots);
+
+_       (SetStackPolymorphic (o));
+    }
+    else if (isReturnCall)
+_       (Compile_Return (o, i_opcode));
 
 } _catch:
     return result;
 }
 
-
+static
 M3Result  Compile_Memory_Size  (IM3Compilation o, m3opcode_t i_opcode)
 {
     M3Result result;
@@ -1662,7 +2091,7 @@ _   (PushRegister (o, c_m3Type_i32));
     _catch: return result;
 }
 
-
+static
 M3Result  Compile_Memory_Grow  (IM3Compilation o, m3opcode_t i_opcode)
 {
     M3Result result;
@@ -1680,21 +2109,26 @@ _   (PushRegister (o, c_m3Type_i32));
     _catch: return result;
 }
 
-
+static
 M3Result  Compile_Memory_CopyFill  (IM3Compilation o, m3opcode_t i_opcode)
 {
     M3Result result = m3Err_none;
 
-    i8 reserved;
-_   (ReadLEB_i7 (& reserved, & o->wasm, o->wasmEnd));
-
+    u32 sourceMemoryIdx, targetMemoryIdx;
     IM3Operation op;
+
+    _throwif (m3Err_wasmMalformed, not (o->module->memoryImported or o->module->memoryDeclared));
+
     if (i_opcode == c_waOp_memoryCopy)
     {
-_       (ReadLEB_i7 (& reserved, & o->wasm, o->wasmEnd));
+_       (ReadLEB_u32 (& sourceMemoryIdx, & o->wasm, o->wasmEnd));
+        _throwif (m3Err_wasmMalformed, sourceMemoryIdx != 0);
         op = op_MemCopy;
     }
     else op = op_MemFill;
+
+_   (ReadLEB_u32 (& targetMemoryIdx, & o->wasm, o->wasmEnd));
+    _throwif (m3Err_wasmMalformed, targetMemoryIdx != 0);
 
 _   (CopyStackTopToRegister (o, false));
 
@@ -1707,10 +2141,354 @@ _   (EmitSlotNumOfStackTopAndPop (o));
 }
 
 
+// memory.init and data.drop address a data segment by index. Both are only valid
+// when a data count section declared the segments up front.
+static
+M3Result  ReadDataSegment  (IM3Compilation o, M3DataSegment ** o_segment)
+{
+    M3Result result = m3Err_none;
+
+    u32 index;
+_   (ReadLEB_u32 (& index, & o->wasm, o->wasmEnd));
+
+    _throwif ("data count section required", not o->module->hasDataCount);
+    _throwif (m3Err_wasmMalformed, index >= o->module->numDataSegments);
+
+    * o_segment = & o->module->dataSegments [index];
+
+    _catch: return result;
+}
+
+
+M3Result  Compile_Memory_Init  (IM3Compilation o, m3opcode_t i_opcode)
+{
+    M3Result result = m3Err_none;
+
+    M3DataSegment * segment = NULL;
+    u32 memoryIdx;
+
+    _throwif (m3Err_wasmMalformed, not (o->module->memoryImported or o->module->memoryDeclared));
+
+_   (ReadDataSegment (o, & segment));
+_   (ReadLEB_u32 (& memoryIdx, & o->wasm, o->wasmEnd));
+    _throwif (m3Err_wasmMalformed, memoryIdx != 0);
+
+_   (CopyStackTopToRegister (o, false));
+
+_   (EmitOp (o, op_MemInit));
+    EmitPointer (o, segment);
+_   (PopType (o, c_m3Type_i32));
+_   (EmitSlotNumOfStackTopAndPop (o));
+_   (EmitSlotNumOfStackTopAndPop (o));
+
+    _catch: return result;
+}
+
+
+#if d_m3HasRefTypes
+
+static M3Result  Compile_Select  (IM3Compilation o, m3opcode_t i_opcode);
+
+// select with an explicit result type vector. The types only matter to the
+// validator; the operands are laid out exactly as for the untyped select.
+M3Result  Compile_Select_Typed  (IM3Compilation o, m3opcode_t i_opcode)
+{
+    M3Result result = m3Err_none;
+
+    u32 numTypes;
+_   (ReadLEB_u32 (& numTypes, & o->wasm, o->wasmEnd));
+    _throwif (m3Err_wasmMalformed, numTypes != 1);
+
+    i8 waType;
+    u8 type;
+_   (ReadLEB_i7 (& waType, & o->wasm, o->wasmEnd));
+_   (NormalizeType (& type, waType));
+
+_   (Compile_Select (o, i_opcode));
+
+    _catch: return result;
+}
+
+
+// A reference is one pointer-sized word and null is 0, so null-testing it is
+// just an integer eqz of the matching width.
+#if M3_SIZEOF_PTR == 8
+#   define d_m3RefIsNull_r   op_i64_EqualToZero_r
+#   define d_m3RefIsNull_s   op_i64_EqualToZero_s
+#else
+#   define d_m3RefIsNull_r   op_i32_EqualToZero_r
+#   define d_m3RefIsNull_s   op_i32_EqualToZero_s
+#endif
+
+static
+M3Result  ReadRefType  (IM3Compilation o, m3type_t * o_type)
+{
+    M3Result result = m3Err_none;
+
+#if d_m3HasTypedRefs
+    // ref.null names a heap type: func, extern, or a function type index
+    m3type_t heapBits;
+_   (ParseHeapType (o->module, & heapBits, & o->wasm, o->wasmEnd));
+
+    * o_type = d_m3Type_ref | heapBits;
+#else
+    i8 waType;
+    u8 plainType;
+_   (ReadLEB_i7 (& waType, & o->wasm, o->wasmEnd));
+_   (NormalizeType (& plainType, waType));
+    * o_type = plainType;
+    _throwif (m3Err_wasmMalformed, not IsRefType (* o_type));
+#endif
+
+    _catch: return result;
+}
+
+
+M3Result  Compile_Ref_Null  (IM3Compilation o, m3opcode_t i_opcode)
+{
+    M3Result result = m3Err_none;
+
+    m3type_t type;
+_   (ReadRefType (o, & type));
+_   (PushConst (o, 0, type));
+
+    _catch: return result;
+}
+
+
+M3Result  Compile_Ref_IsNull  (IM3Compilation o, m3opcode_t i_opcode)
+{
+    M3Result result = m3Err_none;
+
+    IM3Operation op;
+
+    if (not IsStackPolymorphic (o))
+        _throwif (m3Err_typeMismatch, not IsRefType (GetStackTopType (o)));
+
+    if (IsStackTopInRegister (o))
+        op = d_m3RefIsNull_r;
+    else
+    {
+_       (PreserveRegisterIfOccupied (o, c_m3Type_i32));
+        op = d_m3RefIsNull_s;
+    }
+
+_   (EmitOp (o, op));
+_   (EmitSlotNumOfStackTopAndPop (o));
+_   (PushRegister (o, c_m3Type_i32));
+
+    _catch: return result;
+}
+
+
+M3Result  Compile_Ref_Func  (IM3Compilation o, m3opcode_t i_opcode)
+{
+    M3Result result = m3Err_none;
+
+    u32 funcIndex;
+
+    // declared before the throws below, which jump past this point to _catch
+    m3type_t refType = c_m3Type_funcref;
+
+_   (ReadLEB_u32 (& funcIndex, & o->wasm, o->wasmEnd));
+    _throwif ("function index out of range", funcIndex >= o->module->numFunctions);
+
+    // Inside a constant expression ref.func is itself a declaration; inside a
+    // function body the function must already have been declared elsewhere.
+    if (o->function) {
+        _throwif ("undeclared function reference", not Module_IsFunctionDeclared (o->module, funcIndex));
+    } else {
+_       (Module_DeclareFunction (o->module, funcIndex));
+    }
+
+#if d_m3HasTypedRefs
+    refType = RefTypeOfFuncType (o->module->functions [funcIndex].funcType, true);
+#endif
+
+_   (PushConst (o, (u64) (uintptr_t) & o->module->functions [funcIndex], refType));
+
+    _catch: return result;
+}
+
+
+// table.get/set/size/grow/fill all name a table by index; the table struct goes
+// into the codestream so the operation doesn't have to walk the module.
+static
+M3Result  ReadTable  (IM3Compilation o, M3Table ** o_table)
+{
+    M3Result result = m3Err_none;
+
+    u32 index;
+_   (ReadLEB_u32 (& index, & o->wasm, o->wasmEnd));
+    _throwif ("table index out of range", index >= o->module->numTables);
+
+    * o_table = & o->module->tables [index];
+
+    _catch: return result;
+}
+
+
+// The table operations take every operand from a slot, so spill the integer
+// register first: after this each EmitSlotNumOfStackTopAndPop () emits a real
+// slot offset, and the register is free for the result. Operands are emitted
+// from the top of the stack downwards, which is the order the ops read them.
+static
+M3Result  Compile_Table_Op  (IM3Compilation o, IM3Operation i_op, M3Table * i_table, u32 i_numOperands, m3type_t i_retType)
+{
+    M3Result result = m3Err_none;
+
+_   (PreserveRegisterIfOccupied (o, c_m3Type_i64));
+
+_   (EmitOp (o, i_op));
+    EmitPointer (o, i_table);
+
+    for (u32 i = 0; i < i_numOperands; ++i)
+_       (EmitSlotNumOfStackTopAndPop (o));
+
+    if (i_retType != c_m3Type_none)
+_       (PushRegister (o, i_retType));
+
+    _catch: return result;
+}
+
+
+M3Result  Compile_Table_GetSet  (IM3Compilation o, m3opcode_t i_opcode)
+{
+    M3Result result = m3Err_none;
+
+    M3Table * table;
+_   (ReadTable (o, & table));
+
+    if (i_opcode == c_waOp_tableGet)
+_       (Compile_Table_Op (o, op_TableGet, table, 1, table->type))
+    else
+_       (Compile_Table_Op (o, op_TableSet, table, 2, c_m3Type_none))
+
+    _catch: return result;
+}
+
+
+M3Result  Compile_Table_Init  (IM3Compilation o, m3opcode_t i_opcode)
+{
+    M3Result result = m3Err_none;
+
+    u32 elemIndex;
+    M3Table * table;
+
+_   (ReadLEB_u32 (& elemIndex, & o->wasm, o->wasmEnd));
+    _throwif ("element segment index out of range", elemIndex >= o->module->numElementSegments);
+_   (ReadTable (o, & table));
+
+_   (PreserveRegisterIfOccupied (o, c_m3Type_i64));
+_   (EmitOp (o, op_TableInit));
+    EmitPointer (o, table);
+    EmitPointer (o, & o->module->elementSegments [elemIndex]);
+
+    for (u32 i = 0; i < 3; ++i)
+_       (EmitSlotNumOfStackTopAndPop (o));
+
+    _catch: return result;
+}
+
+
+M3Result  Compile_Elem_Drop  (IM3Compilation o, m3opcode_t i_opcode)
+{
+    M3Result result = m3Err_none;
+
+    u32 elemIndex;
+_   (ReadLEB_u32 (& elemIndex, & o->wasm, o->wasmEnd));
+    _throwif ("element segment index out of range", elemIndex >= o->module->numElementSegments);
+
+_   (EmitOp (o, op_ElemDrop));
+    EmitPointer (o, & o->module->elementSegments [elemIndex]);
+
+    _catch: return result;
+}
+
+
+M3Result  Compile_Table_Copy  (IM3Compilation o, m3opcode_t i_opcode)
+{
+    M3Result result = m3Err_none;
+
+    M3Table * dst;
+    M3Table * src;
+
+_   (ReadTable (o, & dst));
+_   (ReadTable (o, & src));
+    _throwif (m3Err_typeMismatch, not IsSubTypeOf (src->type, dst->type));
+
+_   (PreserveRegisterIfOccupied (o, c_m3Type_i64));
+_   (EmitOp (o, op_TableCopy));
+    EmitPointer (o, dst);
+    EmitPointer (o, src);
+
+    for (u32 i = 0; i < 3; ++i)
+_       (EmitSlotNumOfStackTopAndPop (o));
+
+    _catch: return result;
+}
+
+
+M3Result  Compile_Table_Size  (IM3Compilation o, m3opcode_t i_opcode)
+{
+    M3Result result = m3Err_none;
+
+    M3Table * table;
+_   (ReadTable (o, & table));
+_   (Compile_Table_Op (o, op_TableSize, table, 0, c_m3Type_i32));
+
+    _catch: return result;
+}
+
+
+M3Result  Compile_Table_GrowFill  (IM3Compilation o, m3opcode_t i_opcode)
+{
+    M3Result result = m3Err_none;
+
+    M3Table * table;
+_   (ReadTable (o, & table));
+
+    if (i_opcode == c_waOp_tableGrow)
+_       (Compile_Table_Op (o, op_TableGrow, table, 2, c_m3Type_i32))
+    else
+_       (Compile_Table_Op (o, op_TableFill, table, 3, c_m3Type_none))
+
+    _catch: return result;
+}
+
+#endif // d_m3HasRefTypes
+
+
+M3Result  Compile_Data_Drop  (IM3Compilation o, m3opcode_t i_opcode)
+{
+    M3Result result = m3Err_none;
+
+    M3DataSegment * segment = NULL;
+_   (ReadDataSegment (o, & segment));
+
+_   (EmitOp (o, op_DataDrop));
+    EmitPointer (o, segment);
+
+    _catch: return result;
+}
+
+
 static
 M3Result  ReadBlockType  (IM3Compilation o, IM3FuncType * o_blockType)
 {
-    M3Result result;
+    M3Result result = m3Err_none;
+
+#if d_m3HasTypedRefs
+    // a spelled-out reference type is two bytes, so it cannot be told apart
+    // from a type index by the s33 that block types otherwise use
+    if (o->wasm < o->wasmEnd and (* o->wasm == d_waEncode_ref or * o->wasm == d_waEncode_refNull))
+    {
+        m3type_t refType;
+_       (ParseValueType (o->module, & refType, & o->wasm, o->wasmEnd));
+        * o_blockType = o->module->environment->retFuncTypes [BaseTypeOf(refType)];
+        return result;
+    }
+#endif
 
     i64 type;
 _   (ReadLebSigned (& type, 33, & o->wasm, o->wasmEnd));
@@ -1729,7 +2507,7 @@ _       (NormalizeType (&valueType, type));                                m3log
     _catch: return result;
 }
 
-
+static
 M3Result  PreserveArgsAndLocals  (IM3Compilation o)
 {
     M3Result result = m3Err_none;
@@ -1747,7 +2525,7 @@ _           (FindReferencedLocalWithinCurrentBlock (o, & preservedSlotNumber, sl
 
             if (preservedSlotNumber != slot)
             {
-                u8 type = GetStackTypeFromBottom (o, i);                    d_m3Assert (type != c_m3Type_none)
+                m3type_t type = GetStackTypeFromBottom (o, i);                    d_m3Assert (type != c_m3Type_none)
                 IM3Operation op = Is64BitType (type) ? op_CopySlot_64 : op_CopySlot_32;
 
                 EmitOp          (o, op);
@@ -1761,7 +2539,7 @@ _           (FindReferencedLocalWithinCurrentBlock (o, & preservedSlotNumber, sl
     return result;
 }
 
-
+static
 M3Result  Compile_LoopOrBlock  (IM3Compilation o, m3opcode_t i_opcode)
 {
     M3Result result;
@@ -1788,11 +2566,11 @@ _   (ReadBlockType (o, & blockType));
                 for (u16 i = stackTop - numParams; i < stackTop; ++i)
                 {
                     u16 slot = GetSlotForStackIndex (o, i);
-                    u8 type = GetStackTypeFromBottom (o, i);
+                    m3type_t type = GetStackTypeFromBottom (o, i);
 
                     if (IsConstantSlot (o, slot))
                     {
-                        u16 newSlot;
+                        u16 newSlot = c_slotUnused;
 _                       (AllocateSlots (o, & newSlot, type));
 _                       (CopyStackIndexToSlot (o, newSlot, i));
                         o->wasmStack [i] = newSlot;
@@ -1812,11 +2590,10 @@ _   (CompileBlock (o, blockType, i_opcode));
     _catch: return result;
 }
 
-
+static
 M3Result  CompileElseBlock  (IM3Compilation o, pc_t * o_startPC, IM3FuncType i_blockType)
 {
-    M3Result result;
-
+    IM3CodePage savedPage = o->page;
 _try {
 
     IM3CodePage elsePage;
@@ -1824,27 +2601,23 @@ _   (AcquireCompilationCodePage (o, & elsePage));
 
     * o_startPC = GetPagePC (elsePage);
 
-    IM3CodePage savedPage = o->page;
     o->page = elsePage;
 
 _   (CompileBlock (o, i_blockType, c_waOp_else));
 
 _   (EmitOp (o, op_Branch));
     EmitPointer (o, GetPagePC (savedPage));
-
-    ReleaseCompilationCodePage (o);
-
-    o->page = savedPage;
-
 } _catch:
+    if(o->page != savedPage) {
+        ReleaseCompilationCodePage (o);
+    }
+    o->page = savedPage;
     return result;
 }
 
-
+static
 M3Result  Compile_If  (IM3Compilation o, m3opcode_t i_opcode)
 {
-    M3Result result;
-
     /*      [   op_If   ]
             [ <else-pc> ]   ---->   [ ..else..  ]
             [  ..if..   ]           [ ..block.. ]
@@ -1852,6 +2625,13 @@ M3Result  Compile_If  (IM3Compilation o, m3opcode_t i_opcode)
             [    end    ]  <-----   [  <end-pc> ]       */
 
 _try {
+
+    // Spec: if condition must be i32
+    if (not IsStackPolymorphic (o))
+    {
+        m3type_t condType = GetStackTopType (o);
+        _throwif (m3Err_typeMismatch, condType != c_m3Type_none and condType != c_m3Type_i32);
+    }
 
 _   (PreserveNonTopRegisters (o));
 _   (PreserveArgsAndLocals (o));
@@ -1898,16 +2678,28 @@ _           (CompileElseBlock (o, pc, blockType));
     } _catch: return result;
 }
 
-
+static
 M3Result  Compile_Select  (IM3Compilation o, m3opcode_t i_opcode)
 {
     M3Result result = m3Err_none;
 
     u16 slots [3] = { c_slotUnused, c_slotUnused, c_slotUnused };
 
-    u8 type = GetStackTypeFromTop (o, 1); // get type of selection
-
     IM3Operation op = NULL;
+
+    m3type_t type = GetStackTypeFromTop (o, 1); // get type of selection
+
+    if (not IsStackPolymorphic (o))
+    {
+        // Spec: the condition operand (top) must be i32
+        m3type_t condType = GetStackTypeFromTop (o, 0);
+        _throwif (m3Err_typeMismatch, condType != c_m3Type_none and condType != c_m3Type_i32);
+
+        // Spec: the two value operands (below condition) must have matching types
+        m3type_t type2 = GetStackTypeFromTop (o, 2);
+        _throwif (m3Err_typeMismatch, type != c_m3Type_none and type2 != c_m3Type_none and
+                                      not (IsSubTypeOf (type, type2) or IsSubTypeOf (type2, type)));
+    }
 
     if (IsFpType (type))
     {
@@ -1940,7 +2732,7 @@ _          (Pop (o));
         _throw (m3Err_unknownOpcode);
 #   endif
     }
-    else if (IsIntType (type))
+    else if (IsIntType (type) or IsRefType (type))
     {
         // 'sss' operation doesn't consume a register, so might have to protected its contents
         if (not IsStackTopInRegister (o) and
@@ -1962,7 +2754,10 @@ _           (PreserveRegisterIfOccupied (o, type));
 _          (Pop (o));
         }
 
-        op = c_intSelectOps [type - c_m3Type_i32] [opIndex];
+        // a reference is a pointer-sized integer as far as select is concerned
+        u32 typeIndex = IsRefType (type) ? ((M3_SIZEOF_PTR == 8) ? 1 : 0)
+                                         : (u32) (type - c_m3Type_i32);
+        op = c_intSelectOps [typeIndex] [opIndex];
     }
     else if (not IsStackPolymorphic (o))
         _throw (m3Err_functionStackUnderrun);
@@ -1978,20 +2773,20 @@ _   (PushRegister (o, type));
     _catch: return result;
 }
 
-
+static
 M3Result  Compile_Drop  (IM3Compilation o, m3opcode_t i_opcode)
 {
     M3Result result = Pop (o);                                              if (d_m3LogWasmStack) dump_type_stack (o);
     return result;
 }
 
-
+static
 M3Result  Compile_Nop  (IM3Compilation o, m3opcode_t i_opcode)
 {
     return m3Err_none;
 }
 
-
+static
 M3Result  Compile_Unreachable  (IM3Compilation o, m3opcode_t i_opcode)
 {
     M3Result result;
@@ -2008,12 +2803,31 @@ _   (SetStackPolymorphic (o));
 
 // OPTZ: currently all stack slot indices take up a full word, but
 // dual stack source operands could be packed together
+static
 M3Result  Compile_Operator  (IM3Compilation o, m3opcode_t i_opcode)
 {
     M3Result result;
 
     IM3OpInfo opInfo = GetOpInfo (i_opcode);
     _throwif (m3Err_unknownOpcode, not opInfo);
+
+    // Spec: validate operand types for load/store operations
+    if (not IsStackPolymorphic (o))
+    {
+        // For load ops (stackOffset == 0, unary), the operand is always i32 (address)
+        if (i_opcode >= 0x28 and i_opcode <= 0x35)
+        {
+            m3type_t topType = GetStackTopType (o);
+            _throwif (m3Err_typeMismatch, topType != c_m3Type_none and topType != c_m3Type_i32);
+        }
+
+        // For store ops (stackOffset == -2), the address operand must be i32
+        if (i_opcode >= 0x36 and i_opcode <= 0x3e)
+        {
+            m3type_t addrType = GetStackTypeFromTop (o, 1);
+            _throwif (m3Err_typeMismatch, addrType != c_m3Type_none and addrType != c_m3Type_i32);
+        }
+    }
 
     IM3Operation op;
 
@@ -2047,7 +2861,7 @@ _           (PreserveRegisterIfOccupied (o, opInfo->type));
             op = opInfo->operations [0];  // _rs
 
             if (IsStackTopMinus1InRegister (o))
-            {                                       d_m3Assert (i_opcode == 0x38 or i_opcode == 0x39);
+            {                                       d_m3Assert (i_opcode == c_waOp_store_f32 or i_opcode == c_waOp_store_f64);
                 op = opInfo->operations [3]; // _rr for fp.store
             }
         }
@@ -2090,14 +2904,49 @@ _           (PushRegister (o, opInfo->type));
     _catch: return result;
 }
 
-
+static
 M3Result  Compile_Convert  (IM3Compilation o, m3opcode_t i_opcode)
 {
-    M3Result result = m3Err_none;
-
 _try {
     IM3OpInfo opInfo = GetOpInfo (i_opcode);
     _throwif (m3Err_unknownOpcode, not opInfo);
+
+    // Spec: validate source operand type for conversion instructions
+    if (not IsStackPolymorphic (o))
+    {
+        u8 sourceType = c_m3Type_none;
+        switch (i_opcode)
+        {
+            case 0xa7:              // i32.wrap/i64
+                sourceType = c_m3Type_i64; break;
+            case 0xa8: case 0xa9:   // i32.trunc_s/f32, i32.trunc_u/f32
+            case 0xae: case 0xaf:   // i64.trunc_s/f32, i64.trunc_u/f32
+            case 0xbb:              // f64.promote/f32
+            case 0xbc:              // i32.reinterpret/f32
+                sourceType = c_m3Type_f32; break;
+            case 0xaa: case 0xab:   // i32.trunc_s/f64, i32.trunc_u/f64
+            case 0xb0: case 0xb1:   // i64.trunc_s/f64, i64.trunc_u/f64
+            case 0xb6:              // f32.demote/f64
+            case 0xbd:              // i64.reinterpret/f64
+                sourceType = c_m3Type_f64; break;
+            case 0xac: case 0xad:   // i64.extend_s/i32, i64.extend_u/i32
+            case 0xb2: case 0xb3:   // f32.convert_s/i32, f32.convert_u/i32
+            case 0xb7: case 0xb8:   // f64.convert_s/i32, f64.convert_u/i32
+            case 0xbe:              // f32.reinterpret/i32
+                sourceType = c_m3Type_i32; break;
+            case 0xb4: case 0xb5:   // f32.convert_s/i64, f32.convert_u/i64
+            case 0xb9: case 0xba:   // f64.convert_s/i64, f64.convert_u/i64
+            case 0xbf:              // f64.reinterpret/i64
+                sourceType = c_m3Type_i64; break;
+            default: break;
+        }
+
+        if (sourceType != c_m3Type_none)
+        {
+            m3type_t topType = GetStackTopType (o);
+            _throwif (m3Err_typeMismatch, topType != c_m3Type_none and not IsSubTypeOf (topType, sourceType));
+        }
+    }
 
     bool destInSlot = IsRegisterTypeAllocated (o, opInfo->type);
     bool sourceInSlot = IsStackTopInSlot (o);
@@ -2116,15 +2965,13 @@ _       (PushRegister (o, opInfo->type))
     _catch: return result;
 }
 
-
+static
 M3Result  Compile_Load_Store  (IM3Compilation o, m3opcode_t i_opcode)
 {
-    M3Result result;
-
 _try {
     u32 alignHint, memoryOffset;
 
-_   (ReadLEB_u32 (& alignHint, & o->wasm, o->wasmEnd));
+_   (ReadLEB_u32 (& alignHint, & o->wasm, o->wasmEnd));  // checked by the validator
 _   (ReadLEB_u32 (& memoryOffset, & o->wasm, o->wasmEnd));
                                                                         m3log (compile, d_indent " (offset = %d)", get_indention_string (o), memoryOffset);
     IM3OpInfo opInfo = GetOpInfo (i_opcode);
@@ -2139,6 +2986,32 @@ _   (Compile_Operator (o, i_opcode));
 }
     _catch: return result;
 }
+
+
+M3Result  CompileRawFunction  (IM3Module io_module,  IM3Function io_function, const void * i_function, const void * i_userdata)
+{
+    d_m3Assert (io_module->runtime);
+
+    IM3CodePage page = AcquireCodePageWithCapacity (io_module->runtime, 4);
+
+    if (page)
+    {
+        io_function->compiled = GetPagePC (page);
+        io_function->module = io_module;
+
+        EmitWord (page, op_CallRawFunction);
+        EmitWord (page, i_function);
+        EmitWord (page, io_function);
+        EmitWord (page, i_userdata);
+
+        ReleaseCodePage (io_module->runtime, page);
+        return m3Err_none;
+    }
+    else {
+        return m3Err_mallocFailedCodePage;
+    }
+}
+
 
 
 // d_logOp, d_logOp2 macros aren't actually used by the compiler, just codepage decoding (d_m3LogCodePages = 1)
@@ -2162,7 +3035,7 @@ const M3OpInfo c_operations [] =
     M3OP( "if",                 -1, none,   d_emptyOpList,                      Compile_If ),           // 0x04
     M3OP( "else",                0, none,   d_emptyOpList,                      Compile_Nop ),          // 0x05
 
-    M3OP_RESERVED, M3OP_RESERVED, M3OP_RESERVED, M3OP_RESERVED, M3OP_RESERVED,                          // 0x06 - 0x0a
+    M3OP_RESERVED, M3OP_RESERVED, M3OP_RESERVED, M3OP_RESERVED, M3OP_RESERVED,                          // 0x06...0x0a
 
     M3OP( "end",                 0, none,   d_emptyOpList,                      Compile_End ),          // 0x0b
     M3OP( "br",                  0, none,   d_logOp (Branch),                   Compile_Branch ),       // 0x0c
@@ -2171,16 +3044,26 @@ const M3OpInfo c_operations [] =
     M3OP( "return",              0, any,    d_logOp (Return),                   Compile_Return ),       // 0x0f
     M3OP( "call",                0, any,    d_logOp (Call),                     Compile_Call ),         // 0x10
     M3OP( "call_indirect",       0, any,    d_logOp (CallIndirect),             Compile_CallIndirect ), // 0x11
-    M3OP( "return_call",         0, any,    d_emptyOpList,                      Compile_Call ),         // 0x12 TODO: Optimize
-    M3OP( "return_call_indirect",0, any,    d_emptyOpList,                      Compile_CallIndirect ), // 0x13
+    M3OP( "return_call",         0, any,    d_logOp (ReturnCall),               Compile_Call ),         // 0x12
+    M3OP( "return_call_indirect",0, any,    d_logOp (ReturnCallIndirect),       Compile_CallIndirect ), // 0x13
 
-    M3OP_RESERVED,  M3OP_RESERVED,                                                                      // 0x14 - 0x15
-    M3OP_RESERVED,  M3OP_RESERVED, M3OP_RESERVED, M3OP_RESERVED,                                        // 0x16 - 0x19
+#if d_m3HasTypedRefs
+    M3OP( "call_ref",            0, any,    d_logOp (CallRef),                  Compile_CallRef ),      // 0x14
+    M3OP( "return_call_ref",     0, any,    d_logOp (ReturnCallRef),            Compile_CallRef ),      // 0x15
+#else
+    M3OP_RESERVED,  M3OP_RESERVED,                                                                      // 0x14...
+#endif
+    M3OP_RESERVED,  M3OP_RESERVED, M3OP_RESERVED, M3OP_RESERVED,                                        // ...0x19
 
     M3OP( "drop",               -1, none,   d_emptyOpList,                      Compile_Drop ),         // 0x1a
     M3OP( "select",             -2, any,    d_emptyOpList,                      Compile_Select  ),      // 0x1b
 
-    M3OP_RESERVED,  M3OP_RESERVED, M3OP_RESERVED, M3OP_RESERVED,                                        // 0x1c - 0x1f
+#if d_m3HasRefTypes
+    M3OP( "select.t",           -2, any,    d_emptyOpList,                      Compile_Select_Typed ), // 0x1c
+#else
+    M3OP_RESERVED,                                                                                      // 0x1c
+#endif
+    M3OP_RESERVED,  M3OP_RESERVED, M3OP_RESERVED,                                                       // 0x1d...0x1f
 
     M3OP( "local.get",          1,  any,    d_emptyOpList,                      Compile_GetLocal ),     // 0x20
     M3OP( "local.set",          1,  none,   d_emptyOpList,                      Compile_SetLocal ),     // 0x21
@@ -2188,7 +3071,13 @@ const M3OpInfo c_operations [] =
     M3OP( "global.get",         1,  none,   d_emptyOpList,                      Compile_GetSetGlobal ), // 0x23
     M3OP( "global.set",         1,  none,   d_emptyOpList,                      Compile_GetSetGlobal ), // 0x24
 
-    M3OP_RESERVED,  M3OP_RESERVED, M3OP_RESERVED,                                                       // 0x25 - 0x27
+#if d_m3HasRefTypes
+    M3OP( "table.get",           0,  any,    d_emptyOpList,                     Compile_Table_GetSet ), // 0x25
+    M3OP( "table.set",          -2, none,    d_emptyOpList,                     Compile_Table_GetSet ), // 0x26
+#else
+    M3OP_RESERVED,  M3OP_RESERVED,                                                                      // 0x25...0x26
+#endif
+    M3OP_RESERVED,                                                                                      // 0x27
 
     M3OP( "i32.load",           0,  i_32,   d_unaryOpList (i32, Load_i32),      Compile_Load_Store ),   // 0x28
     M3OP( "i64.load",           0,  i_64,   d_unaryOpList (i64, Load_i64),      Compile_Load_Store ),   // 0x29
@@ -2376,6 +3265,22 @@ const M3OpInfo c_operations [] =
     M3OP( "i64.extend16_s",      0,  i_64,   d_unaryOpList (i64, Extend16_s),       NULL    ),          // 0xc3
     M3OP( "i64.extend32_s",      0,  i_64,   d_unaryOpList (i64, Extend32_s),       NULL    ),          // 0xc4
 
+
+#if d_m3HasRefTypes
+    [c_waOp_refNull]   = M3OP( "ref.null",    1, any,  d_emptyOpList,   Compile_Ref_Null ),
+    [c_waOp_refIsNull] = M3OP( "ref.is_null", 0, i_32, d_emptyOpList,   Compile_Ref_IsNull ),
+    [c_waOp_refFunc]   = M3OP( "ref.func",    1, any,  d_emptyOpList,   Compile_Ref_Func ),
+#if d_m3HasTypedRefs
+    [c_waOp_refAsNonNull] = M3OP( "ref.as_non_null", 0, any, d_emptyOpList, Compile_Ref_AsNonNull ),
+#endif
+#endif
+
+# if d_m3CascadedOpcodes
+    [c_waOp_extended] = M3OP( "0xFC", 0, c_m3Type_unknown,   d_emptyOpList,  Compile_ExtendedOpcode ),
+# endif
+
+// Internal operations, for codepage logging only. They sit past every opcode the
+// designated entries above claim, so GetOpInfo () can never reach them by opcode.
 # ifdef DEBUG // for codepage logging. the order doesn't matter:
 #   define d_m3DebugOp(OP) M3OP (#OP, 0, none, { op_##OP })
 
@@ -2404,18 +3309,17 @@ const M3OpInfo c_operations [] =
     d_m3DebugOp (Select_f64_rss),   d_m3DebugOp (Select_f64_rrs),   d_m3DebugOp (Select_f64_rsr),
 # endif
 
+    d_m3DebugOp (MemFill),          d_m3DebugOp (MemCopy),          d_m3DebugOp (MemInit),          d_m3DebugOp (DataDrop),
+
+# if d_m3HasRefTypes
+    d_m3DebugOp (TableGet),         d_m3DebugOp (TableSet),         d_m3DebugOp (TableSize),
+    d_m3DebugOp (TableGrow),        d_m3DebugOp (TableFill),        d_m3DebugOp (TableInit),
+    d_m3DebugOp (ElemDrop),         d_m3DebugOp (TableCopy),
+# endif
+
     d_m3DebugTypedOp (SetGlobal),   d_m3DebugOp (SetGlobal_s32),    d_m3DebugOp (SetGlobal_s64),
 
     d_m3DebugTypedOp (SetRegister), d_m3DebugTypedOp (SetSlot),     d_m3DebugTypedOp (PreserveSetSlot),
-# endif
-
-# ifdef d_m3EnableExtendedOpcodes
-# ifdef DEBUG
-    d_m3DebugOp (MemFill),
-    d_m3DebugOp (MemCopy),
-#endif
-
-    [0xFC] = M3OP( "0xFC", 0, c_m3Type_unknown,   d_emptyOpList,  Compile_ExtendedOpcode ),
 # endif
 
 # ifdef DEBUG
@@ -2434,10 +3338,27 @@ const M3OpInfo c_operationsFC [] =
     M3OP_F( "i64.trunc_s:sat/f64",0,  i_64,   d_convertOpList (i64_TruncSat_f64),        Compile_Convert ),  // 0x06
     M3OP_F( "i64.trunc_u:sat/f64",0,  i_64,   d_convertOpList (u64_TruncSat_f64),        Compile_Convert ),  // 0x07
 
-    M3OP_RESERVED, M3OP_RESERVED,
+    M3OP( "memory.init",            0,  none,   d_emptyOpList,                           Compile_Memory_Init ),     // 0x08
+    M3OP( "data.drop",              0,  none,   d_emptyOpList,                           Compile_Data_Drop ),       // 0x09
 
     M3OP( "memory.copy",            0,  none,   d_emptyOpList,                           Compile_Memory_CopyFill ), // 0x0a
     M3OP( "memory.fill",            0,  none,   d_emptyOpList,                           Compile_Memory_CopyFill ), // 0x0b
+
+#if d_m3HasRefTypes
+    M3OP( "table.init",             0,  none,   d_emptyOpList,                           Compile_Table_Init ),      // 0x0c
+    M3OP( "elem.drop",              0,  none,   d_emptyOpList,                           Compile_Elem_Drop ),       // 0x0d
+    M3OP( "table.copy",             0,  none,   d_emptyOpList,                           Compile_Table_Copy ),      // 0x0e
+#else
+    M3OP_RESERVED, M3OP_RESERVED, M3OP_RESERVED,                                                                    // 0x0c...0x0e
+#endif
+
+#if d_m3HasRefTypes
+    M3OP( "table.grow",             0,  i_32,   d_emptyOpList,                           Compile_Table_GrowFill ),  // 0x0f
+    M3OP( "table.size",             1,  i_32,   d_emptyOpList,                           Compile_Table_Size ),      // 0x10
+    M3OP( "table.fill",             0,  none,   d_emptyOpList,                           Compile_Table_GrowFill ),  // 0x11
+#else
+    M3OP_RESERVED, M3OP_RESERVED, M3OP_RESERVED,                                                                    // 0x0f...0x11
+#endif
 
 
 # ifdef DEBUG
@@ -2446,22 +3367,51 @@ const M3OpInfo c_operationsFC [] =
 };
 
 
+// Opcodes the spec reserves leave zeroed holes in the tables above: no compiler
+// and no operations. Every implemented op has at least one of the two.
+static inline
+bool  IsImplementedOp  (IM3OpInfo i_info)
+{
+    return (i_info->compiler != NULL or i_info->operations [0] != NULL);
+}
+
+const u32 c_numOperations   = M3_COUNT_OF (c_operations);
+const u32 c_numOperationsFC = M3_COUNT_OF (c_operationsFC);
+
+// c_operations is indexed by opcode only up to c_waOp_lastCore; past that it
+// holds internal operations (DEBUG builds) plus a few designated entries.
+static inline
+bool  IsCoreOpcode  (m3opcode_t opcode)
+{
+    return (opcode <= c_waOp_lastCore
+#if d_m3HasRefTypes
+         or (opcode >= c_waOp_refNull and opcode <= c_waOp_refFunc)
+#if d_m3HasTypedRefs
+         or opcode == c_waOp_refAsNonNull
+#endif
+#endif
+         or opcode == c_waOp_extended);
+}
+
 IM3OpInfo  GetOpInfo  (m3opcode_t opcode)
 {
+    IM3OpInfo info = NULL;
+
     switch (opcode >> 8) {
     case 0x00:
-        if (opcode < M3_COUNT_OF(c_operations)) {
-            return &c_operations[opcode];
+        if (M3_LIKELY(IsCoreOpcode (opcode))) {
+            info = &c_operations[opcode];
         }
         break;
-    case 0xFC:
+    case c_waOp_extended:
         opcode &= 0xFF;
-        if (opcode < M3_COUNT_OF(c_operationsFC)) {
-            return &c_operationsFC[opcode];
+        if (M3_LIKELY(opcode <= c_waOp_lastExtended)) {
+            info = &c_operationsFC[opcode];
         }
         break;
     }
-    return NULL;
+
+    return (info and IsImplementedOp (info)) ? info : NULL;
 }
 
 M3Result  CompileBlockStatements  (IM3Compilation o)
@@ -2470,7 +3420,18 @@ M3Result  CompileBlockStatements  (IM3Compilation o)
     bool validEnd = false;
 
     while (o->wasm < o->wasmEnd)
-    {                                                                   emit_stack_dump (o);
+    {
+# if d_m3EnableOpTracing
+        if (o->numEmits)
+        {
+            EmitOp          (o, op_DumpStack);
+            EmitConstant32  (o, o->numOpcodes);
+            EmitConstant32  (o, GetMaxUsedSlotPlusOne(o));
+            EmitPointer     (o, o->function);
+
+            o->numEmits = 0;
+        }
+# endif
         m3opcode_t opcode;
         o->lastOpcodeStart = o->wasm;
 _       (Read_opcode (& opcode, & o->wasm, o->wasmEnd));                log_opcode (o, opcode);
@@ -2481,9 +3442,16 @@ _       (Read_opcode (& opcode, & o->wasm, o->wasmEnd));                log_opco
             case c_waOp_i32_const: case c_waOp_i64_const:
             case c_waOp_f32_const: case c_waOp_f64_const:
             case c_waOp_getGlobal: case c_waOp_end:
+#if d_m3HasRefTypes
+            case c_waOp_refNull:   case c_waOp_refFunc:
+#endif
+#if d_m3HasExtendedConst
+            case c_waOp_i32_add:   case c_waOp_i32_sub:   case c_waOp_i32_mul:
+            case c_waOp_i64_add:   case c_waOp_i64_sub:   case c_waOp_i64_mul:
+#endif
                 break;
             default:
-                _throw(m3Err_restictedOpcode);
+                _throw(m3Err_restrictedOpcode);
             }
         }
 
@@ -2518,7 +3486,7 @@ _catch:
     return result;
 }
 
-
+static
 M3Result  PushBlockResults  (IM3Compilation o)
 {
     M3Result result = m3Err_none;
@@ -2527,7 +3495,7 @@ M3Result  PushBlockResults  (IM3Compilation o)
 
     for (u16 i = 0; i < numResults; ++i)
     {
-        u8 type = GetFuncTypeResultType (o->block.type, i);
+        m3type_t type = GetFuncTypeResultType (o->block.type, i);
 
         if (i == numResults - 1 and IsFpType (type))
         {
@@ -2541,10 +3509,9 @@ _           (PushAllocatedSlot (o, type));
 }
 
 
-
 M3Result  CompileBlock  (IM3Compilation o, IM3FuncType i_blockType, m3opcode_t i_blockOpcode)
 {
-    M3Result result = m3Err_none;                                                       d_m3Assert (not IsRegisterAllocated (o, 0));
+                                                                                        d_m3Assert (not IsRegisterAllocated (o, 0));
                                                                                         d_m3Assert (not IsRegisterAllocated (o, 1));
     M3CompilationScope outerScope = o->block;
     M3CompilationScope * block = & o->block;
@@ -2587,11 +3554,17 @@ _try {
     {
         for (u16 i = 0; i < numParams; ++i)
         {
-            u8 type = GetFuncTypeParamType (i_blockType, numParams - 1 - i);
+            m3type_t type = GetFuncTypeParamType (i_blockType, numParams - 1 - i);
 _           (PopType (o, type));
         }
     }
-    else o->stackIndex -= numParams;
+    else {
+        if (IsStackPolymorphic (o) && o->block.blockStackIndex + numParams > o->stackIndex) {
+            o->stackIndex = o->block.blockStackIndex;
+        } else {
+            o->stackIndex -= numParams;
+        }
+    }
 
     u16 paramIndex = o->stackIndex;
     block->exitStackIndex = paramIndex; // consume the params at block exit
@@ -2600,7 +3573,7 @@ _           (PopType (o, type));
     o->stackIndex = stackIndex;
 
     // find slots for the results ----------------------------
-    PushBlockResults (o);
+_   (PushBlockResults (o));
 
     stackIndex = o->stackIndex;
 
@@ -2614,13 +3587,13 @@ _           (PopType (o, type));
     // push the params back onto the stack -------------------
     for (u16 i = 0; i < numParams; ++i)
     {
-        u8 type = GetFuncTypeParamType (i_blockType, i);
+        m3type_t type = GetFuncTypeParamType (i_blockType, i);
 
         u16 slot = GetSlotForStackIndex (o, paramIndex + i);
         Push (o, type, slot);
 
-        if (slot >= o->slotFirstDynamicIndex)
-            MarkSlotsAllocatedByType (o, slot, type);
+        if (slot >= o->slotFirstDynamicIndex && slot != c_slotUnused)
+_           (MarkSlotsAllocatedByType (o, slot, type));
     }
 
     //--------------------------------------------------------
@@ -2650,7 +3623,7 @@ _           (PushBlockResults (o));
 }   _catch: return result;
 }
 
-
+static
 M3Result  CompileLocals  (IM3Compilation o)
 {
     M3Result result;
@@ -2662,13 +3635,11 @@ _   (ReadLEB_u32 (& numLocalBlocks, & o->wasm, o->wasmEnd));
     for (u32 l = 0; l < numLocalBlocks; ++l)
     {
         u32 varCount;
-        i8 waType;
-        u8 localType;
+        m3type_t localType;
 
 _       (ReadLEB_u32 (& varCount, & o->wasm, o->wasmEnd));
-_       (ReadLEB_i7 (& waType, & o->wasm, o->wasmEnd));
-_       (NormalizeType (& localType, waType));
-        numLocals += varCount;                                                          m3log (compile, "pushing locals. count: %d; type: %s", varCount, c_waTypes [localType]);
+_       (ParseValueType (o->module, & localType, & o->wasm, o->wasmEnd));
+        numLocals += varCount;                                                          m3log (compile, "pushing locals. count: %d; type: %s", varCount, c_waTypes [BaseTypeOf(localType)]);
         while (varCount--)
 _           (PushAllocatedSlot (o, localType));
     }
@@ -2679,7 +3650,7 @@ _           (PushAllocatedSlot (o, localType));
     _catch: return result;
 }
 
-
+static
 M3Result  ReserveConstants  (IM3Compilation o)
 {
     M3Result result = m3Err_none;
@@ -2692,14 +3663,17 @@ M3Result  ReserveConstants  (IM3Compilation o)
     while (wa < o->wasmEnd)
     {
         u8 code = * wa++;
+        u16 addSlots = 0;
 
         if (code == c_waOp_i32_const or code == c_waOp_f32_const)
-            numConstantSlots += 1;
+            addSlots = 1;
         else if (code == c_waOp_i64_const or code == c_waOp_f64_const)
-            numConstantSlots += GetTypeNumSlots (c_m3Type_i64);
+            addSlots = GetTypeNumSlots (c_m3Type_i64);
 
-        if (numConstantSlots >= d_m3MaxConstantTableSize)
+        if (numConstantSlots + addSlots >= d_m3MaxConstantTableSize)
             break;
+
+        numConstantSlots += addSlots;
     }
 
     // if constants overflow their reserved stack space, the compiler simply emits op_Const
@@ -2718,11 +3692,43 @@ M3Result  ReserveConstants  (IM3Compilation o)
 }
 
 
-M3Result  CompileFunction  (IM3Function io_function)
+// A constant expression compiles like a miniature function root block: no args,
+// no locals and a single result, which Compile_End copies down into slot 0 for
+// EvaluateExpression to read back.
+M3Result  CompileExpression  (IM3Compilation o, IM3FuncType i_resultType)
 {
     M3Result result = m3Err_none;
 
-    if (!io_function->wasm) return "function body is missing";
+    o->block.type = i_resultType;
+
+    u16 numRetSlots = GetFuncTypeNumResults (i_resultType) * c_ioSlotCount;
+
+    for (u16 i = 0; i < numRetSlots; ++i)
+        MarkSlotAllocated (o, i);
+
+    o->maxStackSlots = o->slotMaxAllocatedIndexPlusOne = o->slotFirstDynamicIndex = numRetSlots;
+
+_   (CompileBlockStatements (o));
+
+    _catch: return result;
+}
+
+
+M3Result  CompileFunction  (IM3Function io_function)
+{
+    if (!io_function->wasm)
+    {
+        // an import: it may still be satisfied by another module in the runtime
+        M3Result r = ResolveImportedFunction (io_function);
+        if (r) return r;
+
+        return io_function->compiled ? m3Err_none : "function body is missing";
+    }
+
+#if d_m3EnableValidation
+    M3Result vr = ValidateFunction(io_function);
+    if (vr) return vr;
+#endif
 
     IM3FuncType funcType = io_function->funcType;                   m3log (compile, "compiling: [%d] %s %s; wasm-size: %d",
                                                                         io_function->index, m3_GetFunctionName (io_function), SPrintFuncTypeSignature (funcType), (u32) (io_function->wasmEnd - io_function->wasm));
@@ -2759,7 +3765,7 @@ _   (AcquireCompilationCodePage (o, & o->page));
     // push the arg types to the type stack
     for (u16 i = 0; i < numArgs; ++i)
     {
-        u8 type = GetFunctionArgType (o->function, i);
+        m3type_t type = GetFunctionArgType (o->function, i);
 _       (PushAllocatedSlot (o, type));
 
         // prevent allocator fill-in
@@ -2782,8 +3788,8 @@ _   (ReserveConstants (o));
     // start tracking the max stack used (Push() also updates this value) so that op_Entry can precisely detect stack overflow
     o->maxStackSlots = o->slotMaxAllocatedIndexPlusOne = o->slotFirstDynamicIndex;
 
-    o->block.blockStackIndex = o->stackFirstDynamicIndex = o->stackIndex;                           m3log (compile, "start stack index: %d",
-                                                                                                          (u32) o->stackFirstDynamicIndex);
+    o->block.blockStackIndex = o->stackFirstDynamicIndex = o->stackIndex;                           m3log (compile, "start stack index: %u; max stack slots: %u",
+                                                                                                           (u32) o->stackFirstDynamicIndex, (u32) o->maxStackSlots);
 _   (EmitOp (o, op_Entry));
     EmitPointer (o, io_function);
 
@@ -2795,7 +3801,7 @@ _   (CompileBlockStatements (o));
     io_function->compiled = pc;
     io_function->maxStackSlots = o->maxStackSlots;
 
-    u16 numConstantSlots = o->slotMaxConstIndex - o->slotFirstConstIndex;                           m3log (compile, "unique constant slots: %d; unused slots: %d",
+    u16 numConstantSlots = o->slotMaxConstIndex - o->slotFirstConstIndex;                           m3log (compile, "unique constant slots: %u; unused slots: %u",
                                                                                                            numConstantSlots, o->slotFirstDynamicIndex - o->slotMaxConstIndex);
     io_function->numConstantBytes = numConstantSlots * sizeof (m3slot_t);
 
