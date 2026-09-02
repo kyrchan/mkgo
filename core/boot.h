@@ -45,8 +45,17 @@ struct boot_info {
     uint32_t fb_height;
     uint32_t fb_bpp;
     uint32_t fb_stride;
+    /* ACPI MADT physical address (survives ExitBootServices; the MADT
+     * lives in EfiACPIMemoryNVS). Set by main.cc via the EFI
+     * Configuration Tables; consumed by arch/x86_64/mp.cc:madt_parse().
+     * 0 = no MADT present (single CPU). */
+    uint64_t madt_phys;
 };
 
 void kmain(const struct boot_info *bi);
+
+/* Accessor for the boot_info struct. kmain() stores the pointer so
+ * arch/x86_64/mp.cc can read the MADT physical address. */
+const struct boot_info *boot_info(void);
 
 #endif

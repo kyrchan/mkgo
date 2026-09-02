@@ -1,4 +1,5 @@
 #include "efi.h"
+#include "lib.h"
 #include "plat.h"
 #include "loader.h"
 #include "boot.h"
@@ -140,17 +141,81 @@ extern "C" EFI_STATUS __attribute__((ms_abi)) efi_main(EFI_HANDLE image_handle,
         }
     }
 
+    /* Locate the ACPI MADT for AP bring-up (Phase 8.2). We walk the
+     * EFI Configuration Tables looking for the RSDP, then the RSDT/XSDT
+     * for the MADT. The MADT lives in EfiACPIMemoryNVS so it survives
+     * ExitBootServices. */
+    g_bi.madt_phys = 0;
+    {
+        EFI_GUID rsdp_guid = EFI_ACPI_RSDP_GUID;
+        EFI_RSDP *rsdp = 0;
+        /* The EFI System Table has a ConfigurationTable field. We walk
+         * it looking for the RSDP GUID. */
+        void *ct = systab->ConfigurationTable;
+        if (ct) {
+            for (int i = 0; i < 64; i++) {
+                EFI_CONFIG_TABLE_ENTRY *e = (EFI_CONFIG_TABLE_ENTRY *)
+                    ((uint8_t *)ct + i * sizeof(EFI_CONFIG_TABLE_ENTRY));
+                if (e->guid.a == rsdp_guid.a && e->guid.b == rsdp_guid.b &&
+                    e->guid.c == rsdp_guid.c &&
+                    e->guid.d[0] == rsdp_guid.d[0] &&
+                    e->guid.d[1] == rsdp_guid.d[1]) {
+                    rsdp = (EFI_RSDP *)e->table;
+                    break;
+                }
+                /* The last entry has a NULL GUID. */
+                if (e->guid.a == 0 && e->guid.b == 0 && e->guid.c == 0)
+                    break;
+            }
+        }
+        if (rsdp && memcmp(rsdp->signature, "RSD PTR ", 8) == 0) {
+            /* Walk the RSDT (or XSDT if revision >= 2) looking for the
+             * MADT ("APIC"). The MADT's physical address is what we
+             * pass to the kernel. */
+            uint32_t *rsdt = (uint32_t *)(uintptr_t)rsdp->rsdt;
+            uint64_t *xsdt = (uint64_t *)(uintptr_t)rsdp->xsdt;
+            int n = 0;
+            if (rsdp->revision >= 2 && xsdt) {
+                n = (int)xsdt[1]; /* XSDT: [0]=signature, [1]=length */
+                for (int i = 2; i < 2 + n; i++) {
+                    uint64_t *t = (uint64_t *)(uintptr_t)xsdt[i];
+                    if (t && memcmp(t, "APIC", 4) == 0) {
+                        g_bi.madt_phys = xsdt[i];
+                        break;
+                    }
+                }
+            } else if (rsdt) {
+                n = (int)rsdt[1]; /* RSDT: [0]=signature, [1]=length */
+                for (int i = 2; i < 2 + n; i++) {
+                    uint32_t *t = (uint32_t *)(uintptr_t)rsdt[i];
+                    if (t && memcmp(t, "APIC", 4) == 0) {
+                        g_bi.madt_phys = rsdt[i];
+                        break;
+                    }
+                }
+            }
+            if (g_bi.madt_phys) {
+                console_puts("[boot] MADT at phys=");
+                console_hex64(g_bi.madt_phys);
+                console_puts("\n");
+            } else {
+                console_puts("[boot] no MADT in RSDT/XSDT\n");
+            }
+        } else {
+            console_puts("[boot] no RSDP (single CPU)\n");
+        }
+    }
     static uint8_t mmapbuf[16384];
     UINTN msize = sizeof(mmapbuf), dsize, key;
     UINT32 dver;
     EFI_STATUS st;
     do {
-        st = FW5(systab->BootServices->GetMemoryMap, (UINTN)&msize,
+    st = FW5(systab->BootServices->GetMemoryMap, (UINTN)&msize,
                  (UINTN)mmapbuf, (UINTN)&key, (UINTN)&dsize, (UINTN)&dver);
-        if (st != EFI_SUCCESS && st != EFI_BUFFER_TOO_SMALL) {
-            console_puts("[boot] GetMemoryMap failed\n");
-            return st;
-        }
+    if (st != EFI_SUCCESS && st != EFI_BUFFER_TOO_SMALL) {
+    console_puts("[boot] GetMemoryMap failed\n");
+    return st;
+    }
     } while (st != EFI_SUCCESS);
 
     st = FW2(systab->BootServices->ExitBootServices, (UINTN)image_handle, key);

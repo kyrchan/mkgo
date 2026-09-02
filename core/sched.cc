@@ -10,31 +10,9 @@
 #include "rt.h"
 #include "vfio.h"
 
-static constexpr int MAX_IMAGES = 8;
 static constexpr uint64_t STACK_BYTES = 1024 * 1024;
 
 enum st { S_FREE = 0, S_RUNNABLE = 1, S_RUNNING = 2, S_ZOMBIE = 3 };
-
-struct session {
-    uint32_t sid;
-    uint32_t uid;
-    uint64_t capmask;
-    char name[16];
-    int state;
-    struct engine eng;
-    bool eng_live;
-    int exit_code;
-    uint8_t *stack;
-    uint64_t *sp;
-    sched_wasi_state wctx;
-};
-
-struct image {
-    bool used;
-    char name[16];
-    const uint8_t *blob;
-    uint64_t len;
-};
 
 extern "C" {
 bool ports_name_owned_by(uint32_t sid, const char *name);
@@ -47,6 +25,37 @@ static image images[MAX_IMAGES];
 static uint32_t next_rr;
 static session *cur;          /* running on ITS stack right now */
 static uint64_t *kern_sp;     /* scheduler/boot stack */
+
+/* ---- Phase 8.2: per-CPU scheduler state (planned, not implemented) ----
+ *
+ * Each AP core runs its own cooperative-under-interrupt scheduler over
+ * its own session pool. No session migrates between cores. The
+ * spinlock API (core/arch_lock.h, commits f20ed90 + d873672) makes
+ * cross-core shared state (port ring, mm pool) safe.
+ *
+ * Why this does NOT require a true preemptive context switch: the
+ * wasm3 interpreter is a virtual machine whose internal state (_sp,
+ * _mem, metacode PC) is opaque C locals in m3_exec.c. The kernel
+ * cannot save/resume it mid-op without patching wasm3 (violates the
+ * "vendor wasm3, don't clean-room it" principle) or corrupting its
+ * state. The Go runtime IS the preemption mechanism: Go 1.14+ yields
+ * cooperatively in wasm at every goroutine switch point, and our
+ * kernel switches sessions at those yield points. Multiple cores
+ * provide the parallelism, the Go runtime provides the per-core
+ * preemption -- neither requires touching the opaque interpreter
+ * state. */
+
+#define MAX_CPUS 4
+static struct sched_state g_cpu[MAX_CPUS];
+static uint32_t g_cpu_id;          /* 0 = BSP, 1..N-1 = APs */
+static int g_n_cpus;               /* number of cores that booted */
+
+/* Returns the per-CPU scheduler state for the current core. On x86-64
+ * the GS base is the per-CPU pointer (set by the trampoline); on the
+ * host it's just g_cpu[0]. */
+struct sched_state *sched_current_cpu(void) {
+    return &g_cpu[g_cpu_id];
+}
 
 sched_wasi_state *sched_wasi_current(void) {
     return cur ? &cur->wctx : 0;
@@ -347,4 +356,58 @@ void sched_run(void) {
         cur = s;
         ctx_switch(&kern_sp, s->sp);
     }
+}
+
+/* ---- Phase 8.2: per-core scheduler entry (planned, not implemented) ---- */
+
+/* Enter the round-robin loop on this core. Returns when every session
+ * in this core's pool is dead. Each core runs its own cooperative-
+ * under-interrupt scheduler over its own session pool; no session
+ * migrates between cores. */
+void sched_run_ap(void) {
+    struct sched_state *st = sched_current_cpu();
+    extern void devblk_poll(void);
+    extern void input_poll(void);
+    extern void virtio_net_poll(void);
+    while (!all_dead()) {
+        input_poll();
+        devblk_poll();
+        virtio_net_poll();
+        int picked = -1;
+        for (uint32_t k = 0; k < MAX_SESSIONS; k++) {
+            uint32_t i = (st->next_rr + k) % MAX_SESSIONS;
+            if (i == 0)
+                continue;
+            if (st->sessions[i].state == S_RUNNABLE) {
+                picked = (int)i;
+                st->next_rr = (uint32_t)((i + 1) % MAX_SESSIONS);
+                break;
+            }
+        }
+        if (picked < 0)
+            continue; /* all parked?? spin defensively */
+        st->sessions[picked].state = S_RUNNING;
+        st->cur = &st->sessions[picked];
+        ctx_switch(&st->kern_sp, st->sessions[picked].sp);
+    }
+}
+
+/* Called by the AP trampoline (mp.S) after the AP has entered long mode
+ * and set up its own CR3. Sets up per-CPU state and enters the
+ * scheduler. */
+extern "C" void sched_ap_boot(struct ap_boot_info *info) {
+    uint32_t id = info->ap_index;
+    if (id >= MAX_CPUS) {
+        cpu_halt();
+        return;
+    }
+    g_cpu_id = id;
+    g_cpu[id].cpu_id = id;
+    g_cpu[id].ap_ready = 1;
+    g_cpu[id].kern_sp = (uint64_t *)info->ap_stack;
+    g_n_cpus++;
+    console_puts("[ap] cpu");
+    console_hex64(id);
+    console_puts(" booted\n");
+    sched_run_ap();
 }

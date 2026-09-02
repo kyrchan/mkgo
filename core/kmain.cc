@@ -14,6 +14,11 @@ static bool is_wasm(const uint8_t *p, uint64_t len) {
     return len >= 4 && p[0] == 0 && p[1] == 'a' && p[2] == 's' && p[3] == 'm';
 }
 
+/* Boot_info pointer. kmain() stores it so arch/x86_64/mp.cc can read
+ * the MADT physical address. */
+const struct boot_info *g_bi_ptr;
+const struct boot_info *boot_info(void) { return g_bi_ptr; }
+
 /* boot module paths (ESP, backslash form) */
 static CHAR16 p_console[] = {'b','o','o','t','\\','m','o','d','u','l','e','s','\\',
                              'c','o','n','s','o','l','e','.','w','a','s','m',0};
@@ -23,6 +28,11 @@ static CHAR16 p_login[] = {'b','o','o','t','\\','m','o','d','u','l','e','s','\\'
 void kmain(const struct boot_info *bi) {
     console_puts("[kmain] hello from the microkernel\n");
     cpu_dump_features();
+
+    /* Store the boot_info pointer so arch/x86_64/mp.cc can read the
+     * MADT physical address. */
+    extern const struct boot_info *g_bi_ptr;
+    g_bi_ptr = bi;
 
     if (cpu_enable_vector() != 0)
         console_puts("[kmain] vector unit unavailable - disabled\n");
@@ -153,6 +163,26 @@ void kmain(const struct boot_info *bi) {
         int sb = sched_spawn_named("ppb", progB, progB_len, 0, 0);
         (void)sa;
         (void)sb;
+    }
+
+    /* Phase 8.2: bring up AP cores. Each AP runs its own cooperative-
+     * under-interrupt scheduler over its own session pool; no session
+     * migrates between cores. The Go runtime IS the preemption
+     * mechanism (Go 1.14+ yields cooperatively in wasm at every
+     * goroutine switch point), and multiple cores provide the
+     * parallelism -- neither requires touching the opaque
+     * interpreter state in m3_exec.c. */
+    const struct madt *m = madt_parse();
+    if (m) {
+        console_puts("[ap] MADT found, ");
+        console_hex64(m->n_cpus);
+        console_puts(" cpus\n");
+        int acked = ap_boot(m);
+        console_puts("[ap] ");
+        console_hex64(acked);
+        console_puts(" APs acked\n");
+    } else {
+        console_puts("[ap] no MADT (single CPU)\n");
     }
 
     /* Scheduler enters the round-robin loop. Preemption (Phase 8) is

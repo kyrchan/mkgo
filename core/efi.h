@@ -96,6 +96,11 @@ typedef struct { uint32_t a; uint16_t b; uint16_t c; uint8_t d[8]; } EFI_GUID;
 #define EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID \
     ((EFI_GUID){0x9042a9deu,0x23dc,0x4a38,{0x96,0xfb,0x7a,0xde,0xd0,0x80,0x51,0x6a}})
 
+/* ACPI RSDP (Root System Description Pointer) GUID. Used to locate the
+ * ACPI tables so we can find the MADT for AP bring-up. */
+#define EFI_ACPI_RSDP_GUID \
+    ((EFI_GUID){0x8868e871u,0xf431,0xd266,{0x8e,0x87,0x9c,0xa0,0x70,0x6b,0x9b,0x05}})
+
 typedef struct {
     uint32_t MaxMode;
     uint32_t Mode;
@@ -104,6 +109,26 @@ typedef struct {
     uint64_t FrameBufferBase;
     uint64_t FrameBufferSize;
 } EFI_GOP_MODE;
+
+/* EFI Configuration Table entry: a GUID + a pointer to the table. */
+typedef struct {
+    EFI_GUID guid;
+    void *table;
+} EFI_CONFIG_TABLE_ENTRY;
+
+/* ACPI RSDP (Root System Description Pointer). Physical address 0xE0000
+ * or in the EBDA; the EFI Configuration Table gives us the canonical
+ * one. The RSDP points at the RSDT/XSDT which contains the MADT. */
+typedef struct {
+    char   signature[8];   /* "RSD PTR " */
+    uint8_t cksum;
+    char   oemid[6];
+    uint8_t revision;
+    uint32_t rsdt;         /* physical address of RSDT (32-bit) */
+    uint32_t xsdt;         /* physical address of XSDT (64-bit) */
+    uint8_t ext_cksum;
+    uint8_t reserved[3];
+} EFI_RSDP;
 
 typedef struct {
     void *QueryMode;

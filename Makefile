@@ -42,7 +42,8 @@ ARCH_OBJS := $(BUILD)/arch/x86_64/uart.o $(BUILD)/arch/x86_64/cpu.o \
              $(BUILD)/arch/x86_64/paging.o $(BUILD)/arch/x86_64/vector.o \
              $(BUILD)/arch/x86_64/timer.o $(BUILD)/arch/x86_64/math.o \
              $(BUILD)/arch/x86_64/vmware_backdoor.o \
-             $(BUILD)/arch/x86_64/lock.o
+             $(BUILD)/arch/x86_64/lock.o \
+             $(BUILD)/arch/x86_64/mp.o $(BUILD)/arch/x86_64/mp_s.o
 
 WASM3_SRC := $(wildcard third_party/wasm3/*.c)
 WASM3_OBJS := $(patsubst %.c,$(BUILD)/wasm3/%.o,$(notdir $(WASM3_SRC)))
