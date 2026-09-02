@@ -4,10 +4,51 @@ Read this first. Source of truth when context is compacted.
 The full phase-by-phase plan lives in `AGENTS.md` — this file is state,
 decisions, and gotchas. Update at milestones or near context limits.
 
-## Status — substrate-hardening batch GREEN (2026-09-02)
+## Status — AP bring-up scaffolding GREEN (2026-09-02)
 
-**Gates re-evidenced on d873672: g1 g2 g3 p4 p5a g5b p7 p8a p9 p10
+**Gates re-evidenced on 9151cbe: g1 g2 g3 p4 p5a g5b p7 p8a p9 p10
 p11 p11b p12 p13 ALL PASS + hosttest 76/76.**
+
+### AP bring-up (Phase 8.2, scaffolding committed, not exercised)
+Commit 9151cbe. Brings up N AP cores via MADT/MP table + SIPI.
+Each AP runs its own cooperative-under-interrupt scheduler over its
+own session pool; no session migrates between cores.
+
+Files: arch/x86_64/mp.h (MADT parser + AP bring-up API + per-CPU
+ap_boot_info struct), arch/x86_64/mp.cc (madt_parse walks the ACPI
+MADT collecting Local APIC IDs; ap_boot sends SIPI to each AP in
+apic_ids[1..n_cpus-1]; ap_entry_c -> sched_ap_boot entry point),
+arch/x86_64/mp.S (long-mode trampoline: sets up the AP's own stack,
+zeros the canary, cli, calls ap_entry_c), core/sched.h (per-CPU
+sched_state struct: per-core session pool, next_rr, cur, kern_sp,
+preempt_pending; sched_current_cpu, sched_run_ap, sched_ap_boot
+declared), core/sched.cc (g_cpu[MAX_CPUS] array + g_cpu_id;
+sched_current_cpu returns the per-core state; sched_run_ap is the
+per-core cooperative-under-interrupt loop; sched_ap_boot is called
+from the trampoline), core/main.cc (walks the EFI Configuration
+Tables looking for the RSDP, then the RSDT/XSDT for the MADT; stores
+madt_phys in boot_info which survives ExitBootServices), core/kmain.cc
+(calls madt_parse + ap_boot before sched_run), core/boot.h (boot_info
+gains madt_phys field; boot_info accessor for mp.cc).
+
+SMP-portability contract (rule #2): all cores share the SAME identity
+PML4 set up by paging_init for CPU0. No per-arch page tables.
+
+Why this does NOT require a true preemptive context switch (binding):
+the wasm3 interpreter is a virtual machine whose internal state
+(_sp, _mem, metacode PC) is opaque C locals in m3_exec.c. The kernel
+cannot save/resume it mid-op without patching wasm3 (violates the
+"vendor wasm3, don't clean-room it" principle) or corrupting its state.
+The Go runtime IS the preemption mechanism: Go 1.14+ yields
+cooperatively in wasm at every goroutine switch point, and our kernel
+switches sessions at those yield points. Multiple cores provide the
+parallelism, the Go runtime provides the per-core preemption --
+neither requires touching the opaque interpreter state.
+
+Not yet exercised: the trampoline is wired but no test runs it.
+Next step is a new gate test-p14 that boots with QEMU -smp 4 and
+asserts [ap] cpu0..cpu3 booted on serial, plus two sessions running
+on different cores concurrently.
 
 ### Substrate-hardening batch (three commits, each with regression test)
 
