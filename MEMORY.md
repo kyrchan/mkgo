@@ -4,6 +4,62 @@ Read this first. Source of truth when context is compacted.
 The full phase-by-phase plan lives in `AGENTS.md` — this file is state,
 decisions, and gotchas. Update at milestones or near context limits.
 
+## Status — substrate-hardening batch GREEN (2026-09-02)
+
+**Gates re-evidenced on d873672: g1 g2 g3 p4 p5a p5b p7 p8a p9 p10
+p11 p11b p12 p13 ALL PASS + hosttest 76/76.**
+
+### Substrate-hardening batch (three commits, each with regression test)
+
+The kernel became preemptive in 92313c5 (IRQ0 stub runs on the guest's
+stack and iretqs back). It got away without any locking because the
+only IRQ on the wire never touched shared kernel state. That's
+fragile. Three commits made the discipline explicit so future work
+that touches shared state from IRQ context, or AP cores, can build on
+it without a rewrite.
+
+- **f20ed90 lock**: add arch_spinlock + arch_irq_save substrate API
+  (no callers yet). Ticket-lock (Mellor-Crummey), 32-bit, fair FIFO,
+  LOCK XADD + sfence. IRQ save = pushf/cli/popf. Host impl in
+  arch/x86_64/lock_host.cc uses C11 __atomic builtins + no-op IRQ
+  primitives (the kernel's lock.cc would segfault on 'cli' in userspace).
+  Test T13: init/try_acquire/release/FIFO ordering/irq_save round-trip.
+  hosttest 53 -> 63.
+
+- **f8a0b33 harden**: apply IRQ-save discipline to port ring enqueue
+  + UART write. port_send / ports_enqueue_by_name / ports_kernel_enqueue /
+  port_recv wrap their ring read-then-write in arch_irq_save. console_putc
+  wraps the UART write in arch_irq_save so a fault during the poll loop
+  can't re-enter the console recursively (every ISR goes through
+  isr_dump -> console_puts -> console_putc). sched_yield_current does NOT
+  need irq_save (state store + ctx_switch is a single basic block; the
+  deferred-switch architecture handles the race window). Test T14: outer
+  save/restore round-trip, nested save/restore without state loss,
+  arch_irqs_enabled invariant, simulated critical-section value preserved.
+  hosttest 63 -> 68.
+
+- **d873672 harden**: take arch_spinlock in the port message-ring
+  enqueue path. Per-port spinlock (arch_spinlock_t lock in struct port),
+  so different ports can be enqueued concurrently. Ordering convention:
+  arch_irq_save FIRST, then arch_spinlock_acquire (acquire-then-IRQ would
+  deadlock if the IRQ tried to take the same lock). Test T15: port_send
+  acquires+releases, second port_send succeeds, two port_recv calls
+  return byte-identical 64-byte messages, third returns 0 (drained).
+  hosttest 68 -> 76.
+
+### What the substrate-hardening batch does NOT do
+- Still single CPU. AP cores are not brought up.
+- Still cooperative-under-interrupt (92313c5). A session that does NOT
+  call any kernel import is still starved until it yields.
+- No new per-device policy. All changes are pure substrate mechanism.
+
+### SMP-portability contract (not yet realised)
+When AP cores are brought up, every shared mutable structure in core/
+must be acquired with arch_spinlock_acquire OR protected by arch_irq_save.
+The interface (core/arch_lock.h) is what those later commits will use.
+The implementation MUST stay correct under flat identity mapping
+(rule #2); no page-table-based cache-line tricks.
+
 ## Status — engine v0.9.0 + perf fixes + Phase 8 preemption GREEN (2026-09-02)
 
 **Gates re-evidenced on 92313c5: g1 g2 g3 p4 p5a p5b p7 p8a p9 p10 p11
