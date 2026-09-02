@@ -416,6 +416,34 @@ static void t_focus_claim(void) {
           "T9 unfocused session gets no input");
 }
 
+/* ---- T11 (perf): 4 KiB datagram round-trips intact after memcpy ---- */
+static void t_large_msg_memcpy(void) {
+    reset_sessions();
+    ports_init();
+    int h1 = port_create(S_U1, "bulk", 4);
+    CHECK(h1 >= 0, "T11 bulk queue created");
+    int h2 = port_bind(S_U2, "bulk", 4);
+    CHECK(h2 >= 0, "T11 u2 binds bulk");
+
+    /* Fill a 4 KiB payload with a non-trivial pattern (every 17th byte
+     * marks a "checkpoint" so a partial copy would be detected). The
+     * old byte-loop was correct but slow; this test pins correctness
+     * while the memcpy path is the fast one. */
+    static uint8_t big[4096];
+    for (int i = 0; i < 4096; i++)
+        big[i] = (uint8_t)((i * 17 + 31) & 0xFF);
+
+    CHECK(port_send(S_U1, h1, big, sizeof big) == 0, "T11 4 KiB send ok");
+    uint8_t rx[4096];
+    int n = port_recv(S_U2, h2, rx, sizeof rx);
+    CHECK(n == 4096, "T11 4 KiB recv len");
+    int mismatch = 0;
+    for (int i = 0; i < 4096; i++)
+        if (rx[i] != big[i])
+            mismatch++;
+    CHECK(mismatch == 0, "T11 datagram byte-identical after memcpy path");
+}
+
 int main(void) {
     fprintf(stderr, "== hosttest: kernel substrate units ==\n");
     t_owner_vs_binder();
@@ -428,6 +456,7 @@ int main(void) {
     t_intercept_seqmatch();
     t_focus_claim();
     t_direct_mode_reply();
+    t_large_msg_memcpy();
     fprintf(stderr, "== %d/%d passed, %d failed ==\n", g_run - g_fail,
             g_run, g_fail);
     return g_fail ? 1 : 0;

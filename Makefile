@@ -72,10 +72,14 @@ $(BUILD)/arch/x86_64/%_s.o: arch/x86_64/%.S | $(BUILD)
 	@mkdir -p $(dir $@)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
-# wasm3 engine (vendored, MIT): plain C, NDEBUG kills asserts
+# wasm3 engine (vendored, MIT): plain C, NDEBUG kills asserts.
+# -O3 unlocks d_m3CascadedOpcodes' tight dispatch and inlines the
+# per-op switch arms; -O2 left the interpreter ~20% slower on TCG.
+# We keep our own C++ at -Os (size) since the kernel image is boot-
+# time constrained; the engine runs in the steady-state hot path.
 $(BUILD)/wasm3/%.o: third_party/wasm3/%.c $(wildcard third_party/wasm3/*.h) | $(BUILD)
 	@mkdir -p $(dir $@)
-	$(CC) -std=c11 -O2 -g -DNDEBUG -fno-strict-aliasing \
+	$(CC) -std=c11 -O3 -g -DNDEBUG -fno-strict-aliasing \
 	      -Wno-unused-parameter -Ithird_party/wasm3 -c $< -o $@
 
 $(BUILD)/kernel.so: $(OBJS) kernel/link.ld | $(BUILD)

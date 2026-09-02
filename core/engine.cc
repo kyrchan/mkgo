@@ -92,6 +92,19 @@ int engine_init(struct engine *e, const uint8_t *blob, uint64_t len) {
         e->mod = 0; /* runtime owns/failed; do not double-free */
         return 1;
     }
+    /* Eagerly compile the module's exports up-front so the first guest
+     * syscall doesn't pay metacode-generation latency. Trade-off: longer
+     * load time (now shown as [eng] compile), steady-state perf benefit.
+     * Keep WASI link after compile so the import stubs are present. */
+    console_puts("[eng] compile...\n");
+    r = m3_CompileModule((IM3Module)e->mod);
+    if (r) {
+        console_puts("[engine] compile: ");
+        console_puts(r);
+        console_puts("\n");
+        return 1;
+    }
+    console_puts("[eng] compiled\n");
     r = wasi_link_module((IM3Module)e->mod);
     if (r) {
         console_puts("[engine] link: ");
