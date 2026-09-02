@@ -4,6 +4,85 @@ Read this first. Source of truth when context is compacted.
 The full phase-by-phase plan lives in `AGENTS.md` — this file is state,
 decisions, and gotchas. Update at milestones or near context limits.
 
+## Status — engine v0.9.0 + perf fixes + Phase 8 preemption GREEN (2026-09-02)
+
+**Gates re-evidenced on 92313c5: g1 g2 g3 p4 p5a p5b p7 p8a p9 p10 p11
+p11b p12 p13 ALL PASS + hosttest 53/53.**
+
+### Three commits landed (each per AGENTS.md practice #8 incremental):
+
+- **92313c5 preempt**: implement Phase 8 IRQ-driven scheduling (was
+  documented but not wired). See notes below.
+- **5d0a562 perf**: memcpy in port send/recv, eager m3_CompileModule,
+  -O3 wasm3.
+- **acf0385 engine**: upgrade wasm3 v0.5.0 → v0.9.0 + lib ABI gap fix.
+
+### Phase 8 preemption reality check — the "implemented but disabled"
+claim in older MEMORY.md entries was WRONG. What actually existed:
+- `core/preempt.cc` was 22 lines of dead config (preempt_on=0, no caller)
+- `arch/x86_64/irq0_stub.S` was a 12-line stub that just acked PIC
+- `sched.cc` never read preempt_on
+- kernel never called sti() so PIT IRQ0 never fired anyway
+
+Commit 92313c5 fixes this with cooperative-under-interrupt design:
+IRQ0 saves all 16 GPRs into a stack-local buffer, calls
+sched_current_sid + preempt_mark_pending, EOI, iretq. Actual context
+switch happens at the session's next sched_yield_current -- the
+yield checks preempt_is_on() && preempt_take_pending() == sid and
+switches if both true. Property: a session that voluntarily yields
+(Go runtime, every runtime.Gosched) is guaranteed preemption on its
+next yield point. p8a (no-starvation) passes.
+
+Defaults: preempt_on = 1, quantum = 5 ms. SETCONF preempt=0 falls
+back to cooperative; SETCONF quantum_us=<n> reprograms the PIT.
+
+### Engine upgrade notes (acf0385)
+- v0.5.0 → v0.9.0: 1,700-commit delta. Public API for our usage
+  shape (m3_NewRuntime, m3_ParseModule, m3_LoadModule,
+  m3_FindFunction, m3_CallV, m3_GetErrorInfo, m3_Free*,
+  m3_LinkRawFunction) is backward-compatible.
+- v0.5 internal `m3_bind.c:LinkRawFunction` renamed to
+  `m3_compile.c:CompileRawFunction` (now externally visible). One
+  call-site rename in `core/wasi_glue.cc`.
+- d_m3MaxNativeStack tightened from 8 MiB default to 768 KiB to
+  fit our 1 MiB session stack. v0.9 added a native stack-budget
+  trap that v0.5 lacked; runaway Go runtime now fails cleanly.
+- Side fix: `guests/lib/{kern,host,wasm}.go` were missing
+  `HasClock()/ClockMs()` on Kernel that `services/shell/shell.go`
+  calls (sleep, top, whoami). Shipped `.wasm` were built against
+  a now-dropped uncommitted lib extension. Added the methods +
+  `lib.Username(uid)` helper.
+
+### Perf fix notes (5d0a562)
+- `core/ports.cc`: 4 byte-copy loops → `memcpy` (~10× faster on 4 KiB)
+- `core/engine.cc`: `m3_CompileModule` called eagerly after
+  `m3_LoadModule` (moves metacode-gen out of first syscall)
+- Makefile: `-O2 → -O3` for `third_party/wasm3/*.c` only (our C++
+  stays at `-Os` for boot-time size)
+
+### Test evidence — per AGENTS.md practice #8, each commit has
+its own regression test:
+- acf0385: hosttest 44/44 (unchanged); all 14 integration gates PASS
+- 5d0a562: hosttest 44 → 49 (+T11: 4 KiB memcpy round-trip);
+  g1, p7, p11 PASS on perf-fix tree
+- 92313c5: hosttest 49 → 53 (+T12: preempt state machine);
+  g1, p5b, p7, p8a (no-starvation), p10, p11 PASS on preempt-on tree
+
+### Known follow-ups (not blocking, tracked here)
+- `m3_LinkRawFunctionEx` per-import userdata not adopted (would
+  pass `&session->wctx` instead of `sched_wasi_current()` indirection).
+  Tier-2 win, ~1 global load per WASI call.
+- Phase 8 preemption is "cooperative under interrupt" not true
+  preemptive context switch. A session that does NOT call any
+  kernel import is still starved until it yields. Go runtimes yield
+  every ~100 us so this is fine in practice; pure-C guests that
+  spin without a WASI import need to call `sched_yield` explicitly
+  (the `m3_Yield` import path through `wasi_sched_yield`).
+- `ABIVersion` in `guests/lib/kern.go` is still 1 on committed
+  HEAD (was supposed to be 2 per MEMORY.md §8 Phase 10 polish
+  entry; not done). Service ABI in `core/engine.cc` rejects !=2.
+  Will be fixed when services/ merges any v2.0 change.
+
 ## Status — Phases 0–11 gates GREEN on committed HEAD (2026-08-29)
 
 **Gates: g1 g2 g3 p4 p5a p5b p7 p8a p8b ALL PASS + make test-kernel 44/44 + unit tests.**
