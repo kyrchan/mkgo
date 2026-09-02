@@ -466,6 +466,54 @@ static void t_preempt_state(void) {
           "T12 mark(0) is no-op (kernel sid never preempts)");
 }
 
+/* ---- T13 (substrate locks): spinlock + irq-save API contract ---- */
+#include "arch_lock.h"
+static void t_lock_api(void) {
+    /* Spinlock init -> fresh, no holder, next ticket = 0. */
+    arch_spinlock_t lk;
+    arch_spinlock_init(&lk);
+    CHECK(lk.next == 0 && lk.owner == 0, "T13 init leaves next/owner = 0");
+
+    /* try_acquire on free lock: my=0 (matches owner=0), next=1.
+     * Caller now holds ticket 0; try_acquire returns 1. */
+    CHECK(arch_spinlock_try_acquire(&lk) == 1, "T13 try_acquire on free lk");
+    CHECK(lk.next == 1 && lk.owner == 0,
+          "T13 try_acquire leaves next=1, owner=0");
+
+    /* Second try_acquire from the same thread: my=1 (next was 1).
+     * owner is still 0. 1 != 0 -> try_acquire returns 0 (busy). */
+    CHECK(arch_spinlock_try_acquire(&lk) == 0,
+          "T13 second try_acquire from busy state returns 0");
+
+    /* Release: owner = next (handed-out tickets = 1, advance to 1). */
+    arch_spinlock_release(&lk);
+    CHECK(lk.owner == 1, "T13 release advances owner to 1");
+
+    /* Now the second try_acquire would succeed (my=1 matches owner=1
+     * after we advanced). Demonstrates FIFO acquisition. */
+    CHECK(arch_spinlock_try_acquire(&lk) == 1,
+          "T13 try_acquire succeeds after release (FIFO)");
+    arch_spinlock_release(&lk);
+    CHECK(lk.owner == 2, "T13 second release advances owner to 2");
+
+    /* IRQ save/restore: in the host the values are stubs but the
+     * API must still be callable. */
+    arch_irq_state_t s = arch_irq_save();
+    arch_irq_restore(s);
+    /* s is 0 in the host (no-op impl); on the kernel it carries the
+     * low bit of saved RFLAGS. We don't assert a value, only that
+     * the call returns and is side-effect free. */
+    CHECK(1, "T13 irq_save + irq_restore round-trip ok");
+
+    /* Canonical acquire/release pattern. */
+    arch_spinlock_init(&lk);
+    arch_spinlock_acquire(&lk);
+    CHECK(lk.next == 1 && lk.owner == 0,
+          "T13 after acquire: next=1, owner=0 (ticket handed out)");
+    arch_spinlock_release(&lk);
+    CHECK(lk.owner == 1, "T13 after release: owner=1");
+}
+
 int main(void) {
     fprintf(stderr, "== hosttest: kernel substrate units ==\n");
     t_owner_vs_binder();
@@ -480,6 +528,7 @@ int main(void) {
     t_direct_mode_reply();
     t_large_msg_memcpy();
     t_preempt_state();
+    t_lock_api();
     fprintf(stderr, "== %d/%d passed, %d failed ==\n", g_run - g_fail,
             g_run, g_fail);
     return g_fail ? 1 : 0;

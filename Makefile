@@ -41,7 +41,8 @@ ARCH_OBJS := $(BUILD)/arch/x86_64/uart.o $(BUILD)/arch/x86_64/cpu.o \
              $(BUILD)/arch/x86_64/ctx_s.o $(BUILD)/arch/x86_64/irq0_stub_s.o \
              $(BUILD)/arch/x86_64/paging.o $(BUILD)/arch/x86_64/vector.o \
              $(BUILD)/arch/x86_64/timer.o $(BUILD)/arch/x86_64/math.o \
-             $(BUILD)/arch/x86_64/vmware_backdoor.o
+             $(BUILD)/arch/x86_64/vmware_backdoor.o \
+             $(BUILD)/arch/x86_64/lock.o
 
 WASM3_SRC := $(wildcard third_party/wasm3/*.c)
 WASM3_OBJS := $(patsubst %.c,$(BUILD)/wasm3/%.o,$(notdir $(WASM3_SRC)))
@@ -578,7 +579,7 @@ test-unit:
 HT_CXXFLAGS := -std=c++20 -O1 -g -Wall -Icore -Iarch/x86_64 -Ithird_party/wasm3
 HT_OBJS := $(BUILD)/ht/ports.o $(BUILD)/ht/kernsvc.o $(BUILD)/ht/fsroute.o \
            $(BUILD)/ht/devblk.o $(BUILD)/ht/input.o $(BUILD)/ht/vfio_hoststub.o \
-           $(BUILD)/ht/preempt.o
+           $(BUILD)/ht/preempt.o $(BUILD)/ht/lock_host.o
 
 $(BUILD)/hosttest: tools/hosttest.cc $(HT_OBJS) | $(BUILD)
 	@mkdir -p $(dir $@)
@@ -590,6 +591,14 @@ $(BUILD)/ht/%.o: core/%.cc $(wildcard core/*.h) | $(BUILD)
 	$(CXX) $(HT_CXXFLAGS) -c $< -o $@
 
 $(BUILD)/ht/vfio_hoststub.o: core/vfio_hoststub.cc core/vfio.h | $(BUILD)
+	@mkdir -p $(dir $@)
+	$(CXX) $(HT_CXXFLAGS) -c $< -o $@
+
+# Host-side lock impl (lives in arch/ but compiled with HT_CXXFLAGS,
+# not the kernel -ffreestanding build). The host test runs on Linux
+# where `cli` would segfault; arch/x86_64/lock_host.cc uses C11
+# atomics + a no-op IRQ save instead.
+$(BUILD)/ht/lock_host.o: arch/x86_64/lock_host.cc core/arch_lock.h | $(BUILD)
 	@mkdir -p $(dir $@)
 	$(CXX) $(HT_CXXFLAGS) -c $< -o $@
 
