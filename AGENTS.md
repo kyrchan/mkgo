@@ -182,12 +182,52 @@ ALL PHASES COMPLETE
 ### Phase 8 — Preemption + persistent storage
 - Timer window per `abi/ABI.md` §5; scheduler gains IRQ-driven preemptive
   round-robin (quantum in kernel config); keep cooperative fallback flag.
+  **Landed 2026-09-02 (commit 92313c5).** The design is
+  *cooperative-under-interrupt*: the IRQ0 stub runs on the GUEST's
+  stack, saves 16 GPRs, captures the running sid, sets `preempt_pending`,
+  EOI, iretqs back. The actual switch happens at the session's next
+  `sched_yield_current`. See "Scheduler policy" below for why this is
+  NOT a true preemptive context switch.
 - virtio-blk native shim RE-BACKS the existing block window (§3) with the
   QEMU disk — zero guest-visible changes. mtools-built image stays as seed
   image (documented decision).
 - **Gate**: (a) persistence: write file → reset QEMU → read back;
   (b) no-starvation: busy-loop session cannot block second session
   (serial shows interleaved progress lines).
+
+### Phase 8.1 — Substrate hardening (SMP-portability, landed 2026-09-02)
+- Locking primitives: `core/arch_lock.h` (arch-blind interface) +
+  `arch/x86_64/lock.cc` (ticket spinlock via LOCK XADD + sfence;
+  `arch_irq_state_t` via pushf/cli/popf). Host impl in
+  `arch/x86_64/lock_host.cc` uses C11 `__atomic` builtins + no-op
+  IRQ primitives (the kernel's `lock.cc` would segfault on `cli` in
+  userspace). Commits f20ed90 (API), f8a0b33 (IRQ-save discipline on
+  port ring + UART write), d873672 (arch_spinlock on the port
+  message-ring enqueue path).
+- Ordering convention: `arch_irq_save()` FIRST, then
+  `arch_spinlock_acquire()`. Acquire-then-IRQ would deadlock if the
+  IRQ tried to take the same lock.
+- **Gate**: hosttest 53 → 63 → 68 → 76 (+T13 lock API, +T14
+  irq-save discipline, +T15 port-ring lock); integration gates
+  g1 g2 g3 p4 p5a p5b p7 p8a p9 p10 p11 p11b p12 p13 all PASS.
+
+### Phase 8.2 — AP-core bring-up (planned, not implemented)
+- Bring up N AP cores via MADT/MP table + SIPI. Each AP runs its own
+  cooperative-under-interrupt scheduler over its own session pool.
+  No session migrates between cores.
+- Per-core `cur` pointer replaces the single global in `core/sched.cc`.
+  Cross-core shared state (port ring, mm pool) is safe via the spinlock
+  API from Phase 8.1.
+- All cores share the same identity PML4 set up by `paging_init` for
+  CPU0 -- rule #2 (no per-arch page tables) is satisfied.
+- **Why this is safe without a true preemptive switch**: the Go runtime
+  *is* the preemption mechanism. Go 1.14+ yields cooperatively in wasm
+  at every goroutine switch point; the kernel switches sessions at
+  those yield points. Multiple cores provide the parallelism, the Go
+  runtime provides the per-core preemption -- neither requires touching
+  the opaque interpreter state in `m3_exec.c`.
+- **Gate**: boot with `-smp 4`, assert `[ap] cpu0..cpu3 booted` on
+  serial, assert two sessions run on different cores concurrently.
 
 ### Phase 9 — Network stack in Go (flagship showcase)
 - virtio-net native shim exposing RX/TX packet windows per §6; shim owns
@@ -511,11 +551,41 @@ phase commits with its regression tests (practice #2).
 
 Round-robin, forever. Evolution path:
 1. Phase 3: cooperative RR (yield/proc_exit points), single-session fine.
-2. Phase 8: IRQ-preemptive RR; `quantum_ms` in `/etc/kernel.conf` applied
-   via registry port; cooperative fallback flag retained.
+2. Phase 8 (landed 2026-09-02, commit 92313c5): **cooperative-under-
+   interrupt** RR. The PIT fires IRQ0 at the configured quantum; the
+   IRQ0 stub runs on the GUEST's stack, saves 16 GPRs into a stack-
+   local buffer, captures the running sid, sets `preempt_pending`,
+   EOI, iretqs back. The actual context switch happens at the
+   session's next `sched_yield_current` -- the yield checks
+   `preempt_is_on() && preempt_take_pending() == sid` and switches
+   if both true. This is NOT a true preemptive context switch.
 3. Post-v1 (only if needed, ABI-neutral): head-of-line bump — sessions
    with pending port messages get next-turn priority (~20 lines). This is
    the ONLY sanctioned refinement.
+
+**Why no true preemptive context switch (binding design decision):**
+the wasm3 interpreter is effectively a virtual machine whose internal
+state (`_sp`, `_mem`, the metacode PC) is opaque C locals in
+`m3_exec.c`. The kernel cannot save or resume it mid-op without either
+patching wasm3 (violates the "vendor wasm3, don't clean-room it"
+principle) or corrupting its state. The Go runtime *is* the
+preemption mechanism: Go 1.14+ yields cooperatively in wasm at every
+goroutine switch point, and our kernel switches sessions at those
+yield points. So the kernel's job is to **switch sessions at yield
+points**, not to preempt the interpreter. A session that never calls
+a kernel import is still starved until it yields -- that's a correct
+constraint, not an oversight. The busy/polite gate p8a exercises this.
+
+**Multi-core (Phase 8.1+, planned, not implemented):**
+each AP core runs its own cooperative-under-interrupt scheduler over
+its own session pool. No session migrates between cores. The Go
+runtime's natural yielding provides the "preemption" per core, and the
+multiple cores provide the parallelism -- neither requires touching
+the opaque interpreter state. Per-core `cur` pointer replaces the
+single global; the spinlock API (`core/arch_lock.h`, commits
+f20ed90 + d873672) makes cross-core shared state (port ring, mm pool)
+safe. All cores share the same identity PML4 set up by `paging_init`
+for CPU0 -- rule #2 (no per-arch page tables) is satisfied.
 
 Explicitly rejected regardless of future justification: priority levels,
 MLFQ/CFS-style fairness, real-time classes, affinity controls. Reasons:

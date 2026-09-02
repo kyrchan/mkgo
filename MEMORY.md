@@ -6,7 +6,7 @@ decisions, and gotchas. Update at milestones or near context limits.
 
 ## Status — substrate-hardening batch GREEN (2026-09-02)
 
-**Gates re-evidenced on d873672: g1 g2 g3 p4 p5a p5b p7 p8a p9 p10
+**Gates re-evidenced on d873672: g1 g2 g3 p4 p5a g5b p7 p8a p9 p10
 p11 p11b p12 p13 ALL PASS + hosttest 76/76.**
 
 ### Substrate-hardening batch (three commits, each with regression test)
@@ -59,6 +59,24 @@ must be acquired with arch_spinlock_acquire OR protected by arch_irq_save.
 The interface (core/arch_lock.h) is what those later commits will use.
 The implementation MUST stay correct under flat identity mapping
 (rule #2); no page-table-based cache-line tricks.
+
+### AP bring-up (Phase 8.2, planned, not implemented)
+Scope: ~900 LOC across arch/x86_64/ (mp.S trampoline, mp.h, mp.cc
+MADT/SIPI, per-core APIC timer) and core/sched.cc + core/sched.h
+(per-core cur, sched_run_ap, sched_current_cpu). QEMU test with
+-smp 4. New gate test-p14.
+
+Why it does NOT require a true preemptive context switch (binding):
+the wasm3 interpreter is a virtual machine whose internal state
+(_sp, _mem, metacode PC) is opaque C locals in m3_exec.c. The kernel
+cannot save/resume it mid-op without patching wasm3 (violates the
+"vendor wasm3, don't clean-room it" principle) or corrupting its state.
+The Go runtime IS the preemption mechanism: Go 1.14+ yields
+cooperatively in wasm at every goroutine switch point, and our kernel
+switches sessions at those yield points. Multiple cores provide the
+parallelism, the Go runtime provides the per-core preemption --
+neither requires touching the opaque interpreter state. This is the
+design that makes AP bring-up safe.
 
 ## Status — engine v0.9.0 + perf fixes + Phase 8 preemption GREEN (2026-09-02)
 
