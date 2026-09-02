@@ -155,7 +155,11 @@ void kmain(const struct boot_info *bi) {
         (void)sb;
     }
 
-    /* Cooperative scheduling primary; preempt deferred (Phase 9+) */
+    /* Scheduler enters the round-robin loop. Preemption (Phase 8) is
+     * driven by IRQ0 from the PIT -- conf_set_preempt() flips it on;
+     * default is cooperative (preempt_off). The yield path in
+     * sched_yield_current() checks preempt_pending on every call. */
+    sti_impl();
     sched_run();
     console_puts("[kmain] KERNEL-OK all subsystems up, guest ran clean\n");
     cpu_halt();

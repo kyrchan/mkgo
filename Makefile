@@ -34,6 +34,7 @@ CORE_OBJS := $(BUILD)/core/main.o $(BUILD)/core/kmain.o $(BUILD)/core/lib.o \
               $(BUILD)/core/virtio_modern.o \
               $(BUILD)/core/input.o \
               $(BUILD)/core/fsroute.o \
+              $(BUILD)/core/preempt.o \
               $(BUILD)/core/pci.o $(BUILD)/core/vfio.o
 ARCH_OBJS := $(BUILD)/arch/x86_64/uart.o $(BUILD)/arch/x86_64/cpu.o \
              $(BUILD)/arch/x86_64/traps.o $(BUILD)/arch/x86_64/traps_s.o \
@@ -574,9 +575,10 @@ test-unit:
 
 # kernel-substrate unit tests (practice #2 regression infra): real ports/
 # kernsvc/fsroute/devblk/input objects against a fake scheduler on host.
-HT_CXXFLAGS := -std=c++20 -O1 -g -Wall -Icore -Ithird_party/wasm3
+HT_CXXFLAGS := -std=c++20 -O1 -g -Wall -Icore -Iarch/x86_64 -Ithird_party/wasm3
 HT_OBJS := $(BUILD)/ht/ports.o $(BUILD)/ht/kernsvc.o $(BUILD)/ht/fsroute.o \
-           $(BUILD)/ht/devblk.o $(BUILD)/ht/input.o $(BUILD)/ht/vfio_hoststub.o
+           $(BUILD)/ht/devblk.o $(BUILD)/ht/input.o $(BUILD)/ht/vfio_hoststub.o \
+           $(BUILD)/ht/preempt.o
 
 $(BUILD)/hosttest: tools/hosttest.cc $(HT_OBJS) | $(BUILD)
 	@mkdir -p $(dir $@)

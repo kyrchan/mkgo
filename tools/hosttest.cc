@@ -444,6 +444,28 @@ static void t_large_msg_memcpy(void) {
     CHECK(mismatch == 0, "T11 datagram byte-identical after memcpy path");
 }
 
+/* ---- T12 (Phase 8 preemption): preempt_is_on + mark/take pending ---- */
+extern "C" {
+uint8_t preempt_is_on(void);
+uint32_t preempt_take_pending(void);
+void preempt_mark_pending(uint32_t sid);
+}
+static void t_preempt_state(void) {
+    /* Default is preempt_on = 1 (Phase 8.1 commit). If this changes,
+     * the test must change too -- it's documenting the contract, not
+     * asserting an arbitrary value. */
+    CHECK(preempt_is_on() == 1, "T12 preempt_on default = 1 (Phase 8.1)");
+
+    /* mark then take round-trips the sid exactly once (take clears). */
+    preempt_mark_pending(7);
+    CHECK(preempt_take_pending() == 7, "T12 mark(7) -> take returns 7");
+    CHECK(preempt_take_pending() == 0, "T12 second take returns 0 (cleared)");
+    /* mark(0) is a no-op (kernel sid is never a preempt target). */
+    preempt_mark_pending(0);
+    CHECK(preempt_take_pending() == 0,
+          "T12 mark(0) is no-op (kernel sid never preempts)");
+}
+
 int main(void) {
     fprintf(stderr, "== hosttest: kernel substrate units ==\n");
     t_owner_vs_binder();
@@ -457,6 +479,7 @@ int main(void) {
     t_focus_claim();
     t_direct_mode_reply();
     t_large_msg_memcpy();
+    t_preempt_state();
     fprintf(stderr, "== %d/%d passed, %d failed ==\n", g_run - g_fail,
             g_run, g_fail);
     return g_fail ? 1 : 0;

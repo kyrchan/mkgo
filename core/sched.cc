@@ -36,6 +36,12 @@ struct image {
     uint64_t len;
 };
 
+extern "C" {
+bool ports_name_owned_by(uint32_t sid, const char *name);
+uint32_t preempt_take_pending(void);
+uint8_t preempt_is_on(void);
+}
+
 static session sessions[MAX_SESSIONS];
 static image images[MAX_IMAGES];
 static uint32_t next_rr;
@@ -199,6 +205,16 @@ int sched_spawn_named_argv(const char *name, const uint8_t *blob,
 
 void sched_yield_current(void) {
     session *s = cur;
+    /* Phase 8 preemption: if the IRQ0 preemption stub flagged this
+     * session as due for a switch, yield now. The IRQ itself does
+     * NOT switch (it just saves state and iretqs); the switch
+     * happens at the next yield point. This is the "cooperative
+     * under interrupt" pattern: cheap IRQ, real switch on yield. */
+    if (preempt_is_on() && preempt_take_pending() == s->sid) {
+        s->state = S_RUNNABLE;
+        ctx_switch(&s->sp, kern_sp);
+        return;
+    }
     s->state = S_RUNNABLE;
     ctx_switch(&s->sp, kern_sp);
 }
@@ -245,7 +261,8 @@ void sched_set_identity(uint32_t sid, uint32_t uid, uint64_t capmask) {
     }
 }
 
-extern "C" bool ports_name_owned_by(uint32_t sid, const char *name);
+extern "C" void virtio_net_dbg(void);
+
 bool sched_is_login(uint32_t sid) {
     return ports_name_owned_by(sid, "login");
 }

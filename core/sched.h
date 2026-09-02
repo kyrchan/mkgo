@@ -50,6 +50,9 @@ void sched_yield_current(void);
 void sched_exit_current(int rc);
 
 /* --- kernel service plumbing --- */
+#ifdef __cplusplus
+extern "C" {
+#endif
 uint32_t sched_current_sid(void);
 uint64_t sched_capmask_of(uint32_t sid);
 uint32_t sched_uid_of(uint32_t sid);
@@ -69,5 +72,8 @@ int  sched_session_by_name(const char *name); /* sid | -1 */
 void *sched_runtime_of(uint32_t sid);
 void sched_set_identity(uint32_t sid, uint32_t uid, uint64_t capmask);
 bool sched_is_login(uint32_t sid); /* does sid own the "login" port? */
+#ifdef __cplusplus
+}
+#endif
 
 #endif
