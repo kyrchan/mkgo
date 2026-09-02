@@ -1,5 +1,6 @@
 #include "io.h"
 #include "plat.h"
+#include "arch_lock.h"
 
 #define COM1 0x3F8
 
@@ -24,12 +25,26 @@ void console_init(void) {
 }
 
 void console_putc(char c) {
+    /* Substrate-hardening (commit E): disable IRQs across the UART
+     * write. The PIT IRQ0 stub (92313c5) does NOT touch the console,
+     * but every other ISR (vectors 0-31) eventually calls
+     * isr_dump -> console_puts -> console_putc. If a fault fires
+     * from inside the UART poll loop with IF=1, we'd re-enter
+     * console_putc recursively and either (a) recurse forever on a
+     * slow UART or (b) corrupt at_line_start state.
+     *
+     * arch_irq_save is the correct primitive: it nests correctly
+     * (cli is a no-op if we're already inside the IRQ path which
+     * has IF=0), and the saved flag is restored on exit so we
+     * don't keep IRQs off after the call. */
+    arch_irq_state_t irq = arch_irq_save();
     if (c == '\n') {
         at_line_start = true;
         outb(COM1, '\r');
         while (!(inb(COM1 + 5) & 0x20))
             ;
         outb(COM1, '\n');
+        arch_irq_restore(irq);
         return;
     }
     if (c == '\r') {
@@ -39,6 +54,7 @@ void console_putc(char c) {
         while (!(inb(COM1 + 5) & 0x20))
             ;
         outb(COM1, '\r');
+        arch_irq_restore(irq);
         return;
     }
     /* First printable after a newline (or boot start): clear the line
@@ -65,6 +81,7 @@ void console_putc(char c) {
     while (!(inb(COM1 + 5) & 0x20))
         ;
     outb(COM1, (uint8_t)c);
+    arch_irq_restore(irq);
 }
 
 void console_puts(const char *s) {

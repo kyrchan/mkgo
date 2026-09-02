@@ -4,6 +4,7 @@
 #include "plat.h"
 #include "rt.h"
 #include "fsroute.h"
+#include "arch_lock.h"
 
 static constexpr int MAX_PORTS = 24;
 static constexpr int MAX_Q = 32;
@@ -163,11 +164,23 @@ int port_send(uint32_t sid, int h, const void *data, const uint32_t len) {
      * flowing to its queue. */
     if (fsroute_intercept(p->name, (const uint8_t *)data, len))
         return 0;
-    if (p->qn >= MAX_Q)
+    /* Substrate-hardening (commit E): IRQ-save around the ring enqueue.
+     * The IRQ0 stub (92313c5) runs on the guest's stack and iretqs
+     * back, so it does NOT call into ports today. But the discipline
+     * must be in place for any future IRQ-context enqueue (e.g. an
+     * MSI-X handler that posts a port message directly). The ring
+     * read-then-write on qn/qh/qt is not atomic on its own; under
+     * preemption the IRQ could observe torn state. */
+    arch_irq_state_t irq = arch_irq_save();
+    if (p->qn >= MAX_Q) {
+        arch_irq_restore(irq);
         return -2; /* would-block */
+    }
     msg *m = (msg *)rt_malloc(sizeof(msg));
-    if (!m)
+    if (!m) {
+        arch_irq_restore(irq);
         return -1;
+    }
     m->from_sid = sid;
     m->len = (uint16_t)len;
     /* memcpy: ~10x faster than byte loop on 4 KiB datagrams; also
@@ -177,6 +190,7 @@ int port_send(uint32_t sid, int h, const void *data, const uint32_t len) {
     p->ring[p->qt] = m;
     p->qt = (p->qt + 1) % MAX_Q;
     p->qn++;
+    arch_irq_restore(irq);
     return 0;
 }
 
@@ -213,17 +227,23 @@ extern "C" bool ports_enqueue_by_name(const char *name, const void *data,
         return true;
     for (int p = 0; p < MAX_PORTS; p++) {
         if (ports[p].used && !strcmp(ports[p].name, name)) {
-            if (ports[p].qn >= MAX_Q)
+            arch_irq_state_t irq = arch_irq_save();
+            if (ports[p].qn >= MAX_Q) {
+                arch_irq_restore(irq);
                 return false;
+            }
             msg *m = (msg *)rt_malloc(sizeof(msg));
-            if (!m)
+            if (!m) {
+                arch_irq_restore(irq);
                 return false;
+            }
             m->from_sid = 0;
             m->len = (uint16_t)(len > MSG_MAX ? MSG_MAX : len);
             memcpy(m->data, data, m->len);
             ports[p].ring[ports[p].qt] = m;
             ports[p].qt = (ports[p].qt + 1) % MAX_Q;
             ports[p].qn++;
+            arch_irq_restore(irq);
             return true;
         }
     }
@@ -235,17 +255,23 @@ void ports_kernel_enqueue(uint32_t sid, int h, const void *data, uint32_t len) {
     port *p = port_of(sid, h);
     if (!p || !data || len == 0 || len > MSG_MAX)
         return;
-    if (p->qn >= MAX_Q)
+    arch_irq_state_t irq = arch_irq_save();
+    if (p->qn >= MAX_Q) {
+        arch_irq_restore(irq);
         return; /* drop */
+    }
     msg *m = (msg *)rt_malloc(sizeof(msg));
-    if (!m)
+    if (!m) {
+        arch_irq_restore(irq);
         return;
+    }
     m->from_sid = sid;
     m->len = (uint16_t)len;
     memcpy(m->data, data, len);
     p->ring[p->qt] = m;
     p->qt = (p->qt + 1) % MAX_Q;
     p->qn++;
+    arch_irq_restore(irq);
 }
 
 int port_recv(uint32_t sid, int h, void *out, uint32_t cap) {
@@ -254,13 +280,20 @@ int port_recv(uint32_t sid, int h, void *out, uint32_t cap) {
         return -1;
     if (p->qn == 0)
         return 0;
+    /* IRQ-save around the dequeue critical section. The producer
+     * (port_send / ports_enqueue_by_name / ports_kernel_enqueue) also
+     * holds irq-save; the symmetry is what makes the ring safe. */
+    arch_irq_state_t irq = arch_irq_save();
     msg *m = p->ring[p->qh];
-    if (!m || p->qn == 0)
+    if (!m || p->qn == 0) {
+        arch_irq_restore(irq);
         return 0;
+    }
     p->qn--;
     p->qh = (p->qh + 1) % MAX_Q;
     uint32_t n = m->len <= cap ? m->len : cap;
     memcpy(out, m->data, n);
     rt_free(m);
+    arch_irq_restore(irq);
     return (int)n;
 }
