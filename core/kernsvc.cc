@@ -4,11 +4,17 @@
  * bits enforced here; every rejection is audited to serial (§10). */
 #include "ports.h"
 #include "lib.h"
+#include "log.h"
 #include "mm.h"
 #include "sched.h"
 #include "plat.h"
 #include "vfio.h"
 #include "pci.h"
+
+extern "C" {
+uint32_t preempt_quantum_us(void);
+uint8_t preempt_is_on(void);
+}
 
 extern "C" {
 int netwin_attach(void *runtime);
@@ -26,6 +32,10 @@ static uint16_t get16(const uint8_t *p) {
 static void put32(uint8_t *p, uint32_t v) {
     for (int i = 0; i < 4; i++)
         p[i] = (uint8_t)(v >> (8 * i));
+}
+static uint32_t get32(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
 namespace {
@@ -81,7 +91,7 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
     /* Suppress verbose debug for routine LIST/ENUM polls (op=1 on registry/devman):
      * init's sweep and console's devman queries fire these every few seconds,
      * drowning the serial log. Keep verbose traces for SPAWN/LOGIN/KILL/etc. */
-    bool is_routine_poll = (op == 1);
+    bool is_routine_poll = (op == 1 || op == 8 || op == 9);
     if (!is_routine_poll) {
         console_puts("[ksvc] ep=");
         console_puts(epname);
@@ -330,6 +340,85 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
             uint32_t tgt = payload[3] | (payload[4] << 8) | (payload[5] << 16) | (payload[6] << 24);
             int rc = vfio_assign_pci(tgt, bus, dev, fn, from_sid);
             rn = kbegin(7);
+            put32(rbuf + rn, (uint32_t)rc);
+            kernsvc_reply(rbuf, rn + 4);
+            return;
+        }
+        case 8: { /* SYSSTAT (v2.1, Phase 15) -> {u32 status=0,
+                   * u64 mem_total, u64 mem_used, u32 quantum_us,
+                   * u8 preempt_on, u32 ncpus}. Read-only observability
+                   * for top/memstat; no capability required (v1). */
+            rn = kbegin(8);
+            put32(rbuf + rn, 0);
+            rn += 4;
+            uint64_t mtot = mm_total_bytes(), mused = mm_used_bytes();
+            for (int b = 0; b < 8; b++) {
+                rbuf[rn + b] = (uint8_t)(mtot >> (8 * b));
+                rbuf[rn + 8 + b] = (uint8_t)(mused >> (8 * b));
+            }
+            rn += 16;
+            put32(rbuf + rn, preempt_quantum_us());
+            rn += 4;
+            rbuf[rn++] = preempt_is_on();
+            put32(rbuf + rn, (uint32_t)sched_ncpus());
+            rn += 4;
+            kernsvc_reply(rbuf, rn);
+            return;
+        }
+        case 9: { /* LOGDUMP (v2.1, Phase 15) {u64 off} ->
+                   * {u32 status=0, u64 total, u64 begin, bytes...}.
+                   * Read-only v1 syslog for dmesg/audit; no capability
+                   * required (v1; Phase 10 may gate to self-or-admin). */
+            uint64_t off = 0;
+            if (plen >= 8)
+                for (int b = 0; b < 8; b++)
+                    off |= (uint64_t)payload[b] << (8 * b);
+            rn = kbegin(9);
+            put32(rbuf + rn, 0);
+            rn += 4;
+            uint64_t total = 0, begin = 0;
+            /* rbuf is 4096: header 24 + 20 fixed + chunk <= 4052. */
+            uint32_t got = log_read(off, rbuf + rn + 20, 4000, &total, &begin);
+            for (int b = 0; b < 8; b++) {
+                rbuf[rn + b] = (uint8_t)(total >> (8 * b));
+                rbuf[rn + 8 + b] = (uint8_t)(begin >> (8 * b));
+            }
+            rn += 20;
+            kernsvc_reply(rbuf, rn + got);
+            return;
+        }
+        case 10: { /* CHCAPS {u32 sid, u32 clear, u32 set} -- CAP_POWER only.
+                     * Adds or removes capability bits on a live session.
+                     * Clears bits first (clear mask), then sets (set mask).
+                     * Caller must hold CAP_POWER. Self-modification of
+                     * non-admin caps is denied (ABI §7 hardening). */
+            if (!(sched_capmask_of(from_sid) & SCHED_CAP_POWER)) {
+                console_puts("[audit] sid=");
+                console_hex64(from_sid);
+                console_puts(" op=CHCAPS reason=cap target=registry\n");
+                knack();
+                return;
+            }
+            if (plen < 12) {
+                knack();
+                return;
+            }
+            uint32_t tsid = get32(payload + 0);
+            uint32_t clear = get32(payload + 4);
+            uint32_t set = get32(payload + 8);
+            int rc = sched_set_capmask(tsid, clear, set);
+            console_puts("[audit] sid=");
+            console_hex64(from_sid);
+            console_puts(" op=CHCAPS target=");
+            console_hex64(tsid);
+            console_puts(" clear=0x");
+            console_hex64(clear);
+            console_puts(" set=0x");
+            console_hex64(set);
+            console_puts(" rc=");
+            console_hex64(rc);
+            console_puts("\n");
+            rn = kbegin(10);
             put32(rbuf + rn, (uint32_t)rc);
             kernsvc_reply(rbuf, rn + 4);
             return;

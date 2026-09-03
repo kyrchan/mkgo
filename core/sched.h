@@ -115,6 +115,7 @@ void sched_ap_boot(struct ap_boot_info *info);
 extern "C" {
 #endif
 uint32_t sched_current_sid(void);
+int sched_ncpus(void); /* cores booted (Phase 15 SYSSTAT) */
 uint64_t sched_capmask_of(uint32_t sid);
 uint32_t sched_uid_of(uint32_t sid);
 const char *sched_name_of(uint32_t sid);
@@ -132,6 +133,7 @@ void sched_preload_image(const char *name, const uint8_t *blob, uint64_t len);
 int  sched_session_by_name(const char *name); /* sid | -1 */
 void *sched_runtime_of(uint32_t sid);
 void sched_set_identity(uint32_t sid, uint32_t uid, uint64_t capmask);
+int  sched_set_capmask(uint32_t sid, uint64_t clear, uint64_t set);
 bool sched_is_login(uint32_t sid); /* does sid own the "login" port? */
 #ifdef __cplusplus
 }

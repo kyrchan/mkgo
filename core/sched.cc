@@ -9,6 +9,7 @@
 #include "ctx.h"
 #include "rt.h"
 #include "vfio.h"
+#include "cpu.h"
 
 static constexpr uint64_t STACK_BYTES = 1024 * 1024;
 
@@ -47,18 +48,33 @@ static uint64_t *kern_sp;     /* scheduler/boot stack */
 
 #define MAX_CPUS 4
 static struct sched_state g_cpu[MAX_CPUS];
-static uint32_t g_cpu_id;          /* 0 = BSP, 1..N-1 = APs */
+#ifdef HOST_BUILD
+static __thread uint32_t g_cpu_id;          /* 0 = BSP, 1..N-1 = APs */
+#else
+static uint32_t g_cpu_id;          /* fallback for BSP before GS set */
+#endif
 static int g_n_cpus;               /* number of cores that booted */
 
 /* Returns the per-CPU scheduler state for the current core. On x86-64
- * the GS base is the per-CPU pointer (set by the trampoline); on the
- * host it's just g_cpu[0]. */
+ * the GS base is the per-CPU pointer (set by sched_init/ap_boot); on the
+ * host it's just g_cpu[0] or thread-local g_cpu_id. */
+/* Phase 15 observability (top via registry SYSSTAT): cores booted. */
+int sched_ncpus(void) { return __atomic_load_n(&g_n_cpus, __ATOMIC_RELAXED); }
+
 struct sched_state *sched_current_cpu(void) {
+#ifdef HOST_BUILD
     return &g_cpu[g_cpu_id];
+#else
+    uint64_t base = rd_gs_base();
+    if (base) return (struct sched_state *)base;
+    return &g_cpu[g_cpu_id];
+#endif
 }
 
 sched_wasi_state *sched_wasi_current(void) {
-    return cur ? &cur->wctx : 0;
+    struct sched_state *st = sched_current_cpu();
+    session *c = st->cur ? st->cur : cur;
+    return c ? &c->wctx : 0;
 }
 
 void *sched_runtime_of(uint32_t sid) {
@@ -67,7 +83,11 @@ void *sched_runtime_of(uint32_t sid) {
     return sessions[sid].eng.rt;
 }
 
-uint32_t sched_current_sid(void) { return cur ? cur->sid : 0; }
+uint32_t sched_current_sid(void) {
+    struct sched_state *st = sched_current_cpu();
+    session *c = st->cur ? st->cur : cur;
+    return c ? c->sid : 0;
+}
 uint64_t sched_capmask_of(uint32_t sid) {
     return sid < MAX_SESSIONS && sessions[sid].state != S_FREE ? sessions[sid].capmask : 0;
 }
@@ -117,6 +137,22 @@ void sched_init(void) {
     }
     next_rr = 1;
     cur = 0;
+    for (int i = 0; i < MAX_CPUS; i++) {
+        g_cpu[i].cpu_id = i;
+        g_cpu[i].next_rr = 1;
+        g_cpu[i].cur = 0;
+        g_cpu[i].kern_sp = 0;
+        g_cpu[i].ap_ready = 0;
+        for (int j = 0; j < MAX_SESSIONS; j++) {
+            g_cpu[i].sessions[j].state = S_FREE;
+            g_cpu[i].sessions[j].sid = j;
+        }
+    }
+    g_cpu[0].ap_ready = 1;
+    g_n_cpus = 1;
+#ifndef HOST_BUILD
+    wr_gs_base((uint64_t)&g_cpu[0]);
+#endif
 }
 
 int sched_spawn_image(const char *name, uint32_t uid, uint64_t capmask,
@@ -131,7 +167,8 @@ int sched_spawn_image(const char *name, uint32_t uid, uint64_t capmask,
 
 /* runs ON THE SESSION STACK */
 extern "C" void sched_session_main(void) {
-    session *s = cur;
+    struct sched_state *st = sched_current_cpu();
+    session *s = st->cur ? st->cur : cur;
     int r = engine_start(&s->eng);
     s->exit_code = s->wctx.exited ? s->wctx.exit_code : (r ? 1 : 0);
     console_puts("[sched] '");
@@ -143,7 +180,8 @@ extern "C" void sched_session_main(void) {
     s->eng_live = false;
     vfio_session_cleanup(s->sid);
     s->state = S_ZOMBIE;
-    ctx_switch(&s->sp, kern_sp); /* never returns here */
+    uint64_t *ksp = st->kern_sp ? st->kern_sp : kern_sp;
+    ctx_switch(&s->sp, ksp); /* never returns here */
     for (;;)
         ;
 }
@@ -213,7 +251,10 @@ int sched_spawn_named_argv(const char *name, const uint8_t *blob,
 }
 
 void sched_yield_current(void) {
-    session *s = cur;
+    struct sched_state *st = sched_current_cpu();
+    session *s = st->cur ? st->cur : cur;
+    uint64_t *ksp = st->kern_sp ? st->kern_sp : kern_sp;
+    if (!s) return;
     /* Phase 8 preemption: if the IRQ0 preemption stub flagged this
      * session as due for a switch, yield now. The IRQ itself does
      * NOT switch (it just saves state and iretqs); the switch
@@ -221,16 +262,19 @@ void sched_yield_current(void) {
      * under interrupt" pattern: cheap IRQ, real switch on yield. */
     if (preempt_is_on() && preempt_take_pending() == s->sid) {
         s->state = S_RUNNABLE;
-        ctx_switch(&s->sp, kern_sp);
+        ctx_switch(&s->sp, ksp);
         return;
     }
     s->state = S_RUNNABLE;
-    ctx_switch(&s->sp, kern_sp);
+    ctx_switch(&s->sp, ksp);
 }
 
 void sched_exit_current(int rc) {
     (void)rc; /* exit path handled by session_main */
-    ctx_switch(&cur->sp, kern_sp);
+    struct sched_state *st = sched_current_cpu();
+    session *s = st->cur ? st->cur : cur;
+    uint64_t *ksp = st->kern_sp ? st->kern_sp : kern_sp;
+    ctx_switch(&s->sp, ksp);
 }
 
 static void audit(const char *op, const char *reason, const char *target) {
@@ -268,6 +312,19 @@ void sched_set_identity(uint32_t sid, uint32_t uid, uint64_t capmask) {
         console_hex64(capmask);
         console_puts("\n");
     }
+}
+
+int sched_set_capmask(uint32_t sid, uint64_t clear, uint64_t set) {
+    if (sid < MAX_SESSIONS && sessions[sid].state != S_FREE) {
+        sessions[sid].capmask = (sessions[sid].capmask & ~clear) | set;
+        console_puts("[sched] chcaps '");
+        console_puts(sessions[sid].name);
+        console_puts("' caps=0x");
+        console_hex64(sessions[sid].capmask);
+        console_puts("\n");
+        return 0;
+    }
+    return -1;
 }
 
 extern "C" void virtio_net_dbg(void);
@@ -401,13 +458,20 @@ extern "C" void sched_ap_boot(struct ap_boot_info *info) {
         cpu_halt();
         return;
     }
+#ifndef HOST_BUILD
+    wr_gs_base((uint64_t)&g_cpu[id]);
+#else
     g_cpu_id = id;
+#endif
     g_cpu[id].cpu_id = id;
     g_cpu[id].ap_ready = 1;
     g_cpu[id].kern_sp = (uint64_t *)info->ap_stack;
-    g_n_cpus++;
+    __atomic_fetch_add(&g_n_cpus, 1, __ATOMIC_RELAXED);
+    /* Signal to ap_boot that this AP is ready. */
+    __atomic_store_n(&info->ap_ready, 1, __ATOMIC_RELEASE);
     console_puts("[ap] cpu");
-    console_hex64(id);
+    char d[2] = {(char)('0' + id), 0};
+    console_puts(d);
     console_puts(" booted\n");
     sched_run_ap();
 }

@@ -347,6 +347,12 @@ type FakeKernel struct {
 	Knobs     map[string]uint64 // applied via SETCONF (v1.1)
 	SpawnHook SpawnFn
 	OnPower   func(op uint16)
+	// Phase 15 observability stand-ins (registry ops 8/9).
+	SysMemTotal  uint64 // SYSSTAT mem_total (0 = default 512MiB)
+	SysMemUsed   uint64 // SYSSTAT mem_used
+	SysQuantumUs uint32 // SYSSTAT quantum_us (0 = default 5000)
+	SysNCPUs     uint32 // SYSSTAT ncpus (0 = default 1)
+	LogText      string // LOGDUMP retained stream
 
 	nextSid uint32
 
@@ -607,6 +613,72 @@ func (fk *FakeKernel) dispatch(epname string, data []byte) []byte {
 			} else {
 				Put32(r[24:], ns.Sid)
 			}
+			return r
+		case OpRegistrySysstat:
+			mtot := fk.SysMemTotal
+			if mtot == 0 {
+				mtot = 0x20000000
+			}
+			q := fk.SysQuantumUs
+			if q == 0 {
+				q = 5000
+			}
+			ncpus := fk.SysNCPUs
+			if ncpus == 0 {
+				ncpus = 1
+			}
+			r := rep(24 + 4 + 16 + 4 + 1 + 4)
+			Put32(r[24:], 0)
+			Put64(r[28:], mtot)
+			Put64(r[36:], fk.SysMemUsed)
+			Put32(r[44:], q)
+			r[48] = 1 // kernel default preempt_on=1
+			Put32(r[49:], ncpus)
+			return r
+		case OpRegistryLogdump:
+			var off uint64
+			if len(payload) >= 8 {
+				off = Get64(payload)
+			}
+			total := uint64(len(fk.LogText))
+			var data string
+			if off < total {
+				data = fk.LogText[off:]
+				if len(data) > 4000 {
+					data = data[:4000]
+				}
+			}
+			r := rep(24 + 4 + 16 + len(data))
+			Put32(r[24:], 0)
+			Put64(r[28:], total)
+			Put64(r[36:], off)
+			copy(r[44:], data)
+			return r
+		case 10: // CHCAPS
+			if me.Capmask&CapPower == 0 {
+				fk.auditf("[audit] sid=%d op=CHCAPS reason=cap target=registry", me.Sid)
+				return nil
+			}
+			if len(payload) < 12 {
+				return nil
+			}
+			tsid := Get32(payload)
+			clear := uint64(Get32(payload[4:]))
+			set := uint64(Get32(payload[8:]))
+			var t *FakeSession
+			for _, ss := range fk.Sessions {
+				if ss.Sid == tsid {
+					t = ss
+					break
+				}
+			}
+			if t == nil {
+				return nil
+			}
+			t.Capmask = (t.Capmask &^ clear) | set
+			fk.auditf("[audit] sid=%d op=CHCAPS target=%d clear=0x%x set=0x%x", me.Sid, tsid, clear, set)
+			r := rep(24 + 4)
+			Put32(r[24:], 0)
 			return r
 		default:
 			fk.auditf("[audit] sid=%d uid=%d op=%d reason=op target=registry", me.Sid, me.UID, op)

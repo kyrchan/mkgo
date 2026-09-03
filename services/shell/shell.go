@@ -2668,10 +2668,72 @@ func (s *Shell) cmdChcaps(args []string) {
 		return
 	}
 	if len(args) < 2 {
-		s.out("usage: chcaps <sid> <+/-cap>")
+		s.out("usage: chcaps <sid> <+/-cap> [more +/-cap ...]")
 		return
 	}
-	s.out("chcaps: not yet implemented (audit trail required in Phase 10)")
+	sid, err := strconv.Atoi(args[0])
+	if err != nil {
+		s.out("chcaps: bad sid")
+		return
+	}
+	var clear, set uint64
+	for _, a := range args[1:] {
+		if len(a) < 2 {
+			s.out("chcaps: bad cap '" + a + "'")
+			return
+		}
+		name := a[1:]
+		bit, ok := capBitByName(name)
+		if !ok {
+			s.out("chcaps: unknown cap '" + name + "'")
+			return
+		}
+		switch a[0] {
+		case '+':
+			set |= bit
+		case '-':
+			clear |= bit
+		default:
+			s.out("chcaps: bad prefix (need + or -)")
+			return
+		}
+	}
+	rc, err := s.reg.Chcaps(uint32(sid), clear, set)
+	if err != nil {
+		s.out("chcaps: denied (no cap or no such session)")
+		return
+	}
+	if rc != 0 {
+		s.out("chcaps: denied (rc=" + strconv.Itoa(int(rc)) + ")")
+		return
+	}
+	s.out("chcaps: ok")
+}
+
+func capBitByName(name string) (uint64, bool) {
+	switch name {
+	case "CAP_KILL":
+		return 1 << 0, true
+	case "CAP_DEVMAN":
+		return 1 << 1, true
+	case "CAP_POWER":
+		return 1 << 2, true
+	case "CAP_FOCUS":
+		return 1 << 3, true
+	case "CAP_FS_ADMIN":
+		return 1 << 4, true
+	case "CAP_NET":
+		return 1 << 5, true
+	case "CAP_SPAWN":
+		return 1 << 6, true
+	case "CAP_AUTH":
+		return 1 << 7, true
+	case "CAP_PCI":
+		return 1 << 8, true
+	case "CAP_FB":
+		return 1 << 9, true
+	}
+	return 0, false
 }
 
 func (s *Shell) cmdPkg(args []string) {

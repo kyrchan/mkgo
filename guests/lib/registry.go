@@ -11,6 +11,8 @@ const (
 	OpRegistryLogin     uint16 = 5 // v1.1: issue uid+capmask to a named session
 	OpRegistrySetconf   uint16 = 6 // v1.1: kernel knobs {key[16], u64 value}
 	OpRegistryAssignPCI uint16 = 7 // v2.0: assign PCI device to session
+	OpRegistrySysstat   uint16 = 8 // v2.1: mem + scheduler observability
+	OpRegistryLogdump   uint16 = 9 // v2.1: v1 syslog readback
 	OpDevmanEnum        uint16 = 1
 	OpPowerReboot       uint16 = 1
 	OpPowerOff          uint16 = 2
@@ -125,6 +127,23 @@ func (r *RegistryClient) Kill(sid uint32) (int32, error) {
 	return int32(Get32(rep[24:28])), nil
 }
 
+// Chcaps grants or revokes capability bits on a live session (Phase 17,
+// op 10). Caller must hold CAP_ADMIN. Returns 0 on success.
+func (r *RegistryClient) Chcaps(targetSid uint32, clear, set uint64) (int32, error) {
+	pl := make([]byte, 12)
+	Put32(pl, targetSid)
+	Put32(pl[4:], uint32(clear))
+	Put32(pl[8:], uint32(set))
+	rep, err := r.c.Request(r.rg, 10, pl)
+	if err != nil {
+		return -1, err
+	}
+	if len(rep) < 28 {
+		return -1, ErrShort
+	}
+	return int32(Get32(rep[24:28])), nil
+}
+
 // Login issues uid+capmask to the session named name (ABI v1.1 op 5).
 // Callable only by the session that owns the "login" well-known port.
 func (r *RegistryClient) Login(name string, uid uint32, capmask uint64) error {
@@ -186,6 +205,85 @@ func (r *RegistryClient) AssignPCI(targetSid uint32, bus, dev, fn uint8) error {
 		return ErrRejected
 	}
 	return nil
+}
+
+// SysStat is one SYSSTAT reading (op 8): bump-allocator accounting and
+// scheduler config. Body: mem_total u64, mem_used u64, quantum_us u32,
+// preempt_on u8, ncpus u32.
+type SysStat struct {
+	MemTotal  uint64
+	MemUsed   uint64
+	QuantumUs uint32
+	PreemptOn bool
+	NCPUs     uint32
+}
+
+func (r *RegistryClient) SysStat() (SysStat, error) {
+	var st SysStat
+	rep, err := r.c.Request(r.rg, OpRegistrySysstat, nil)
+	if err != nil {
+		return st, err
+	}
+	if len(rep) < 24+4+16+4+1+4 {
+		return st, ErrShort
+	}
+	if s := int32(Get32(rep[24:28])); s != 0 {
+		return st, ErrRejected
+	}
+	st.MemTotal = Get64(rep[28:36])
+	st.MemUsed = Get64(rep[36:44])
+	st.QuantumUs = Get32(rep[44:48])
+	st.PreemptOn = rep[48] != 0
+	st.NCPUs = Get32(rep[49:53])
+	return st, nil
+}
+
+// LogChunk is one LOGDUMP reply (op 9): Total is the ever-growing stream
+// length, Begin the oldest retained offset, Data the bytes [Begin..].
+type LogChunk struct {
+	Total uint64
+	Begin uint64
+	Data  []byte
+}
+
+func (r *RegistryClient) LogDump(off uint64) (LogChunk, error) {
+	var pl [8]byte
+	Put64(pl[:], off)
+	rep, err := r.c.Request(r.rg, OpRegistryLogdump, pl[:])
+	if err != nil {
+		return LogChunk{}, err
+	}
+	if len(rep) < 24+4+16 {
+		return LogChunk{}, ErrShort
+	}
+	if s := int32(Get32(rep[24:28])); s != 0 {
+		return LogChunk{}, ErrRejected
+	}
+	return LogChunk{
+		Total: Get64(rep[28:36]),
+		Begin: Get64(rep[36:44]),
+		Data:  append([]byte(nil), rep[44:]...),
+	}, nil
+}
+
+// LogAll fetches the full retained log from off to Total.
+func (r *RegistryClient) LogAll() ([]byte, error) {
+	var out []byte
+	var off uint64
+	for {
+		ch, err := r.LogDump(off)
+		if err != nil {
+			return out, err
+		}
+		if len(ch.Data) == 0 {
+			return out, nil
+		}
+		out = append(out, ch.Data...)
+		off = ch.Begin + uint64(len(ch.Data))
+		if off >= ch.Total {
+			return out, nil
+		}
+	}
 }
 
 // ErrSpawnDenied marks a capmask/privilege rejection (kernel returns
