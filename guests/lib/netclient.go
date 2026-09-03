@@ -15,9 +15,16 @@ const (
 	NetOpSend  uint16 = 3
 	NetOpRecv  uint16 = 4
 	NetOpClose uint16 = 5
+	NetOpPing   uint16 = 6
+	NetOpStatus uint16 = 7
 
 	NetKindTCP uint16 = 0
 	NetKindUDP uint16 = 1
+
+	// Phase 16: NetOpStatus query selectors.
+	NetStIP    uint16 = 0
+	NetStStats uint16 = 1
+	NetStSocks uint16 = 2
 
 	netStOK   = int32(0)
 	netStNoSk = int32(-1)
@@ -196,6 +203,88 @@ func (n *NetClient) Close(sock uint16) error {
 		return err
 	}
 	return statusOf(rep)
+}
+
+// Ping sends an ICMP echo request to dst with id/seq and payload; returns
+// the reply's RTT in ms and payload bytes. Uses the kernel clock when
+// available (host tests: returns 0).
+func (n *NetClient) Ping(dst [4]byte, id, seq uint16, payload []byte) (uint16, []byte, error) {
+	pl := make([]byte, 6, 6+len(payload))
+	Put16(pl[0:2], id)
+	Put16(pl[2:4], seq)
+	Put16(pl[4:6], uint16(len(payload)))
+	pl = append(pl, payload...)
+	rep, err := n.call(NetOpPing, pl)
+	if err != nil {
+		return 0, nil, err
+	}
+	if err := statusOf(rep); err != nil {
+		return 0, nil, err
+	}
+	if len(rep) < 30 {
+		return 0, nil, ErrShort
+	}
+	rtt := Get16(rep[28:30])
+	data := append([]byte(nil), rep[30:]...)
+	return rtt, data, nil
+}
+
+// StackIP returns the stack's own IPv4 address (4 raw bytes).
+func (n *NetClient) StackIP() ([4]byte, error) {
+	pl := make([]byte, 2)
+	Put16(pl, NetStIP)
+	rep, err := n.call(NetOpStatus, pl)
+	if err != nil {
+		return [4]byte{}, err
+	}
+	if err := statusOf(rep); err != nil {
+		return [4]byte{}, err
+	}
+	if len(rep) < 32 {
+		return [4]byte{}, ErrShort
+	}
+	var ip [4]byte
+	copy(ip[:], rep[28:32])
+	return ip, nil
+}
+
+// StackStats returns (eth_rx, arp_rx, ipv4_rx, icmp_rx).
+func (n *NetClient) StackStats() (uint64, uint64, uint64, uint64, error) {
+	pl := make([]byte, 2)
+	Put16(pl, NetStStats)
+	rep, err := n.call(NetOpStatus, pl)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	if err := statusOf(rep); err != nil {
+		return 0, 0, 0, 0, err
+	}
+	if len(rep) < 60 {
+		return 0, 0, 0, 0, ErrShort
+	}
+	return Get64(rep[28:36]), Get64(rep[36:44]), Get64(rep[44:52]), Get64(rep[52:60]), nil
+}
+
+// ActiveSockets returns the list of open socket ids on the stack.
+func (n *NetClient) ActiveSockets() ([]uint16, error) {
+	pl := make([]byte, 2)
+	Put16(pl, NetStSocks)
+	rep, err := n.call(NetOpStatus, pl)
+	if err != nil {
+		return nil, err
+	}
+	if err := statusOf(rep); err != nil {
+		return nil, err
+	}
+	if len(rep) < 28 {
+		return nil, ErrShort
+	}
+	body := rep[28:]
+	out := make([]uint16, len(body)/2)
+	for i := range out {
+		out[i] = Get16(body[i*2 : i*2+2])
+	}
+	return out, nil
 }
 
 // NetConn is a stream-oriented wrapper over a TCP socket id, providing

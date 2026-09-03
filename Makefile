@@ -26,7 +26,7 @@ ASFLAGS :=
 LDFLAGS := -nostdlib -no-pie -Wl,--build-id=none -Wl,-e,efi_main -T kernel/link.ld
 
 CORE_OBJS := $(BUILD)/core/main.o $(BUILD)/core/kmain.o $(BUILD)/core/lib.o \
-              $(BUILD)/core/loader.o $(BUILD)/core/mm.o $(BUILD)/core/rt.o \
+               $(BUILD)/core/loader.o $(BUILD)/core/mm.o $(BUILD)/core/log.o $(BUILD)/core/rt.o \
               $(BUILD)/core/engine.o $(BUILD)/core/wasi_glue.o \
               $(BUILD)/core/sched.o $(BUILD)/core/ports.o $(BUILD)/core/kernsvc.o \
               $(BUILD)/core/ctx.o $(BUILD)/core/devblk.o $(BUILD)/core/fstransport.o \
@@ -43,7 +43,8 @@ ARCH_OBJS := $(BUILD)/arch/x86_64/uart.o $(BUILD)/arch/x86_64/cpu.o \
              $(BUILD)/arch/x86_64/timer.o $(BUILD)/arch/x86_64/math.o \
              $(BUILD)/arch/x86_64/vmware_backdoor.o \
              $(BUILD)/arch/x86_64/lock.o \
-             $(BUILD)/arch/x86_64/mp.o $(BUILD)/arch/x86_64/mp_s.o
+             $(BUILD)/arch/x86_64/mp.o $(BUILD)/arch/x86_64/mp_s.o \
+             $(BUILD)/arch/x86_64/trampoline_s.o
 
 WASM3_SRC := $(wildcard third_party/wasm3/*.c)
 WASM3_OBJS := $(patsubst %.c,$(BUILD)/wasm3/%.o,$(notdir $(WASM3_SRC)))
@@ -387,6 +388,18 @@ QEMU_BASE := -L $(ROOT)/usr/share/qemu -L $(ROOT)/usr/share/seabios -machine q35
 	-device bochs-display \
 	-display none -no-reboot -net none
 
+# Phase 8.2: same as QEMU_BASE but with -smp 4 so the AP bring-up
+# scaffolding is actually exercised. The MADT parser reads the SMP
+# count from the ACPI tables; ap_boot sends SIPI to each AP. We
+# assert [ap] cpu0..cpu3 booted on serial.
+QEMU_SMP := -L $(ROOT)/usr/share/qemu -L $(ROOT)/usr/share/seabios -machine q35 \
+	-cpu max -m 512 $(KVM_FLAG) -smp 4 \
+	-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
+	-drive if=pflash,format=raw,file=$(BUILD)/VARS.fd \
+	-device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+	-device bochs-display \
+	-display none -no-reboot -net none
+
 image: $(BUILD)/disk-p7.img
 
 run: $(BUILD)/disk-p7.img $(BUILD)/VARS.fd
@@ -580,7 +593,7 @@ test-unit:
 HT_CXXFLAGS := -std=c++20 -O1 -g -Wall -Icore -Iarch/x86_64 -Ithird_party/wasm3
 HT_OBJS := $(BUILD)/ht/ports.o $(BUILD)/ht/kernsvc.o $(BUILD)/ht/fsroute.o \
            $(BUILD)/ht/devblk.o $(BUILD)/ht/input.o $(BUILD)/ht/vfio_hoststub.o \
-           $(BUILD)/ht/preempt.o $(BUILD)/ht/lock_host.o
+           $(BUILD)/ht/preempt.o $(BUILD)/ht/lock_host.o $(BUILD)/ht/log.o
 
 $(BUILD)/hosttest: tools/hosttest.cc $(HT_OBJS) | $(BUILD)
 	@mkdir -p $(dir $@)
@@ -607,7 +620,89 @@ $(BUILD)/ht/lock_host.o: arch/x86_64/lock_host.cc core/arch_lock.h | $(BUILD)
 test-kernel: $(BUILD)/hosttest
 	$(BUILD)/hosttest
 
-test-all: test-kernel test-unit test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10 test-p11 test-p11b test-p12 test-p13
+# Phase 8.2: AP bring-up gate. Boots with -smp 4 and asserts each
+# AP booted on serial. The MADT parser reads the SMP count from the
+# ACPI tables; ap_boot sends SIPI to each AP. If the trampoline or
+# per-CPU scheduler state is broken, the [ap] cpuN booted lines
+# won't appear and the gate fails.
+test-p14: $(BUILD)/disk-p14.img $(BUILD)/VARS.fd
+	@rm -f $(BUILD)/serial.log
+	@timeout 300 env $(QEMU_ENV) $(QEMU) $(QEMU_SMP) \
+	    -drive format=raw,file=$(BUILD)/disk-p14.img \
+	    -serial file:$(BUILD)/serial.log || true
+	@grep -q '\[ap\] cpu0 booted' $(BUILD)/serial.log \
+		&& grep -q '\[ap\] cpu1 booted' $(BUILD)/serial.log \
+		&& grep -q '\[ap\] cpu2 booted' $(BUILD)/serial.log \
+		&& grep -q '\[ap\] cpu3 booted' $(BUILD)/serial.log \
+		&& grep -q 'KERNEL-OK' $(BUILD)/serial.log \
+		&& echo "TEST PASS (p14 AP bring-up)" \
+		|| { echo "TEST FAIL (p14)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial.log | tail -40; exit 1; }
+
+$(BUILD)/disk-p14.img: $(BUILD)/BOOTX64.EFI $(BUILD)/disk-p7.img
+	@mkdir -p $(dir $@)
+	cp $(BUILD)/disk-p7.img $@
+
+# Phase 14 (userland arc): shell pipes + built-ins over serial.
+# test-p14 is the AP bring-up gate (QEMU_SMP); test-p14sh is the shell
+# userland gate (QEMU_BASE, 1 vCPU): cp motd, pipe chain
+# cat|grep|sort|head, sleep, date — output must reach serial.
+# scripts/run_p14.sh drives the session; asserts below check the log.
+.PHONY: test-p14sh
+test-p14sh: $(BUILD)/disk-p7.img $(BUILD)/VARS.fd
+	bash scripts/run_p14.sh $(BUILD)/serial-p14sh.log "$(QEMU)" "$(QEMU_ENV)" -- \
+		-drive format=raw,file=$(BUILD)/disk-p7.img $(QEMU_BASE)
+	@grep -q 'shell ready' $(BUILD)/serial-p14sh.log \
+		&& grep -q 'microkernel' $(BUILD)/serial-p14sh.log \
+		&& grep -q 'UTC' $(BUILD)/serial-p14sh.log \
+		&& echo "TEST PASS (p14sh shell pipes)" \
+		|| { echo "TEST FAIL (p14sh)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial-p14sh.log | tail -40; exit 1; }
+
+# Phase 15: identity/auth/observability over serial (boot shell, uid 0).
+# top shows sessions; kill-session without CAP_KILL is denied AND audited;
+# dmesg/audit read the denial back via LOGDUMP; passwd rotates a hash.
+# (login old-reject/new-accept is proven in services/login host tests
+# against the real AUTH path; serial login scripting is out of scope.)
+.PHONY: test-p15
+test-p15: $(BUILD)/disk-p7.img $(BUILD)/VARS.fd
+	bash scripts/run_p15.sh $(BUILD)/serial-p15.log "$(QEMU)" "$(QEMU_ENV)" -- \
+		-drive format=raw,file=$(BUILD)/disk-p7.img $(QEMU_BASE)
+	@grep -q 'sessions live' $(BUILD)/serial-p15.log \
+		&& grep -q 'denied' $(BUILD)/serial-p15.log \
+		&& grep -q 'op=KILL' $(BUILD)/serial-p15.log \
+		&& grep -q 'passwd: ok' $(BUILD)/serial-p15.log \
+		&& grep -q 'pool total=' $(BUILD)/serial-p15.log \
+		&& echo "TEST PASS (p15 identity/observability)" \
+		|| { echo "TEST FAIL (p15)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial-p15.log | tail -40; exit 1; }
+
+# Phase 16 disk: net stack + shell built-ins (ping/nc/http/netstat/ipaddr/ssh)
+$(BUILD)/disk-p16.img: $(BUILD)/BOOTX64.EFI \
+                      services/fs/fs.wasm services/console/console.wasm \
+                      services/login/login.wasm services/init/init.wasm \
+                      services/shell/shell.wasm services/net/net.wasm \
+                      $(BUILD)/etc_users.txt | $(BUILD) $(IMG)
+	printf 'console console.wasm 0\nnet net.wasm 22\nlogin login.wasm 8\nshell shell.wasm 8\n' > $(BUILD)/init-p16.conf.tmp
+	$(IMG) $@ 64 \
+	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+	  services/fs/fs.wasm:/boot/modules/fs.wasm \
+	  services/console/console.wasm:/boot/modules/console.wasm \
+	  services/login/login.wasm:/boot/modules/login.wasm \
+	  services/init/init.wasm:/boot/modules/init.wasm \
+	  services/shell/shell.wasm:/boot/modules/shell.wasm \
+	  services/net/net.wasm:/boot/modules/net.wasm \
+	  $(BUILD)/init-p16.conf.tmp:/init.conf \
+	  $(BUILD)/etc_users.txt:/etc/users
+
+.PHONY: test-p16
+test-p16: $(BUILD)/disk-p16.img $(BUILD)/VARS.fd
+	bash scripts/run_p16.sh $(BUILD)/serial-p16.log "$(QEMU)" "$(QEMU_ENV)" -- \
+	    -drive format=raw,file=$(BUILD)/disk-p16.img $(QEMU_BASE)
+	@grep -q 'shell ready' $(BUILD)/serial-p16.log \
+		&& grep -q '\[net\] up' $(BUILD)/serial-p16.log \
+		&& grep -q '\[net\] serving' $(BUILD)/serial-p16.log \
+		&& echo "TEST PASS (p16 net client userland)" \
+		|| { echo "TEST FAIL (p16)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial-p16.log | tail -40; exit 1; }
+
+test-all: test-kernel test-unit test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10 test-p11 test-p11b test-p12 test-p13 test-p14 test-p14sh test-p15 test-p16
 
 # Phase 10: KVM+TCG matrix — every gate green under both accelerators.
 # KVM_FLAG is overridable ( ?= ) so matrix targets can force an accelerator.

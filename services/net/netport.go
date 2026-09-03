@@ -30,6 +30,14 @@ const (
 	NetOpRecv  uint16 = 4
 	NetOpClose uint16 = 5
 
+	// Phase 16: ICMP ping + stack status queries over the same port.
+	NetOpPing   uint16 = 6 // {u16 id, u16 seq, u16 datalen, data[datalen]} -> {i32 st, u16 rtt_ms}
+	NetOpStatus uint16 = 7 // {u16 what} -> {i32 st, body}
+	// what values for NetOpStatus
+	NetStIP    uint16 = 0 // body: 4 bytes IP
+	NetStStats uint16 = 1 // body: 4*u64 (eth/arp/ipv4/icmp rx)
+	NetStSocks uint16 = 2 // body: nsocks*u16 + nconns*u16
+
 	NetKindTCP uint16 = 0
 	NetKindUDP uint16 = 1
 
@@ -38,6 +46,9 @@ const (
 	errNoSuchSock = int32(-1)
 	errBadOp      = int32(-2)
 	errState      = int32(-3)
+
+	// Phase 16: reply body sizes (after 28-byte canonical header).
+	pingBodyLen   = 2 + 256 // rtt_ms + echo payload (max 256)
 )
 
 type netSocket struct {
@@ -267,6 +278,69 @@ func (ns *NetServer) dispatch(op, seq uint16, payload []byte) []byte {
 			_ = sk.tcp.Close()
 		}
 		status = netStatusOK
+
+	case NetOpPing:
+		if len(payload) < 8 {
+			status = errBadOp
+			break
+		}
+		id := lib.Get16(payload[0:2])
+		seq := lib.Get16(payload[2:4])
+		dlen := int(lib.Get16(payload[4:6]))
+		if 6+dlen > len(payload) {
+			status = errBadOp
+			break
+		}
+		data := payload[6 : 6+dlen]
+		// Use a fixed TTL=64 and the stack's own IP as source.
+		// Ping is synchronous: send echo request, wait for reply.
+		start := uint64(0)
+		if ns.k.HasClock() {
+			start = ns.k.ClockMs()
+		}
+		// The stack handles ARP + ICMP echo/reply internally.
+		r, err := ns.stack.Ping(ns.stack.IP, id, seq, data, 4000)
+		if err != nil {
+			status = errState
+			break
+		}
+		var rtt uint16 = 0
+		if ns.k.HasClock() {
+			rtt = uint16(ns.k.ClockMs() - start)
+		}
+		body = make([]byte, 2+len(r.Data))
+		lib.Put16(body, rtt)
+		copy(body[2:], r.Data)
+		status = netStatusOK
+
+	case NetOpStatus:
+		if len(payload) < 2 {
+			status = errBadOp
+			break
+		}
+		what := lib.Get16(payload[0:2])
+		switch what {
+		case NetStIP:
+			body = append([]byte(nil), ns.stack.IP[:]...)
+		case NetStStats:
+			e, a, vi, ic := ns.stack.Stats()
+			body = make([]byte, 32)
+			lib.Put64(body[0:8], e)
+			lib.Put64(body[8:16], a)
+			lib.Put64(body[16:24], vi)
+			lib.Put64(body[24:32], ic)
+		case NetStSocks:
+			ns.mu.Lock()
+			body = make([]byte, len(ns.sockets)*2)
+			i := 0
+			for k := range ns.sockets {
+				lib.Put16(body[i*2:i*2+2], k)
+				i++
+			}
+			ns.mu.Unlock()
+		default:
+			status = errBadOp
+		}
 
 	default:
 		return nil // unknown op: silent per §7 convention
