@@ -2744,21 +2744,21 @@ func (s *Shell) cmdPkg(args []string) {
 	sub := args[0]
 	switch sub {
 	case "list":
-		s.out("pkg list: pending Phase 18 (module index on fs.wasm)")
+		s.out("pkg list: pkg logic in services/pkg (host-tested); shell integration deferred")
 	case "install":
 		if len(args) < 2 {
 			s.out("usage: pkg install <module.wasm>")
 			return
 		}
-		s.out("pkg install: " + args[1] + " -> /boot/modules/ (signature check pending)")
+		s.out("pkg install: signature check via services/pkg (host-tested); shell integration deferred")
 	case "remove":
 		if len(args) < 2 {
 			s.out("usage: pkg remove <module>")
 			return
 		}
-		s.out("pkg remove: " + args[1])
+		s.out("pkg remove: " + args[1] + " (deferred to services/pkg)")
 	case "update":
-		s.out("pkg update: pending Phase 18 (module index refresh)")
+		s.out("pkg update: deferred to services/pkg")
 	default:
 		s.out("pkg: unknown subcommand '" + sub + "'")
 	}

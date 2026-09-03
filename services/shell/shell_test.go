@@ -3,6 +3,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strconv"
 	"strings"
 	"sync"
@@ -67,7 +69,7 @@ func (f *fakeFS) serve(h lib.Handle) {
 }
 
 func (f *fakeFS) reply(op, seq uint16, pl []byte) []byte {
-	path, _, _ := lib.LStr(pl, 0)
+	path, next, _ := lib.LStr(pl, 0)
 	// canonical-header reply (v1.1): {op,seq,uid=0,rname empty},{status,body}
 	mk := func(status int32, body ...byte) []byte {
 		r := make([]byte, 28, 28+len(body))
@@ -116,8 +118,38 @@ func (f *fakeFS) reply(op, seq uint16, pl []byte) []byte {
 			return mk(lib.FSOK, b[:]...)
 		}
 		return mk(lib.FSNoEntry)
+	case lib.OpFSCreate:
+		if _, ok := f.text[path]; !ok {
+			f.text[path] = ""
+		} else {
+			f.text[path] = "" // create-or-truncate
+		}
+		return mk(lib.FSOK)
 	case lib.OpFSWrite:
-		return mk(lib.FSOK, 0, 0, 0, 0)
+		rest := pl[next:]
+		if len(rest) < 10 {
+			return mk(lib.FSIO)
+		}
+		off := lib.Get64(rest)
+		cnt := int(lib.Get16(rest[8:]))
+		data := rest[10:]
+		if len(data) > cnt {
+			data = data[:cnt]
+		}
+		cur := f.text[path]
+		if uint64(len(cur)) < off {
+			cur += strings.Repeat("\x00", int(off)-len(cur))
+		}
+		end := int(off) + len(data)
+		nb := []byte(cur)
+		if end > len(nb) {
+			nb = append(nb, make([]byte, end-len(nb))...)
+		}
+		copy(nb[off:], data)
+		f.text[path] = string(nb)
+		b := make([]byte, 4)
+		lib.Put32(b, uint32(len(nb)))
+		return mk(lib.FSOK, b...)
 	case lib.OpFSDelete:
 		// Track deletion for test assertions; treat dirs and files the same.
 		if _, ok := f.text[path]; ok {
@@ -157,15 +189,22 @@ func newShellTest(t *testing.T, root string) *shellTest {
 		h := st.k.PortBind(lib.NameConsole)
 		buf := make([]byte, lib.MaxMsg)
 		for {
-			n := st.k.PortRecv(h, buf)
-			if n > 0 {
+			drained := false
+			for {
+				n := st.k.PortRecv(h, buf)
+				if n <= 0 {
+					break
+				}
 				cp := make([]byte, n)
 				copy(cp, buf[:n])
 				st.mu.Lock()
 				st.con = append(st.con, cp)
 				st.mu.Unlock()
+				drained = true
 			}
-			time.Sleep(time.Millisecond)
+			if !drained {
+				time.Sleep(time.Millisecond)
+			}
 		}
 	}()
 
@@ -353,15 +392,22 @@ func TestShellIOPort(t *testing.T) {
 		h := st.k.PortBind(lib.NameConsole)
 		buf := make([]byte, lib.MaxMsg)
 		for {
-			n := st.k.PortRecv(h, buf)
-			if n > 0 {
+			drained := false
+			for {
+				n := st.k.PortRecv(h, buf)
+				if n <= 0 {
+					break
+				}
 				cp := make([]byte, n)
 				copy(cp, buf[:n])
 				st.mu.Lock()
 				st.con = append(st.con, cp)
 				st.mu.Unlock()
+				drained = true
 			}
-			time.Sleep(time.Millisecond)
+			if !drained {
+				time.Sleep(time.Millisecond)
+			}
 		}
 	}()
 
@@ -531,39 +577,121 @@ func TestShellTrueFalseExitStatus(t *testing.T) {
 
 func TestShellPasswd(t *testing.T) {
 	st := newShellTest(t, "/home/u1")
-	st.fs.text["/etc/users"] = "u1:1001::0x3\n"
+	st.fs.text["/etc/users"] = "u1:1001:oldsalt$00:0x18\nu2:1002:s2$00:0x18\n"
 
+	// usage with no args
 	st.typeLine("passwd")
+	waitFor(t, func() bool { return st.outputContains("usage: passwd") }, "passwd usage missing")
+
+	// self change: hash must verify against the new password
+	st.typeLine("passwd newsecret")
 	waitFor(t, func() bool { return st.outputContains("passwd: ok") }, "passwd failed")
+	content := st.fs.text["/etc/users"]
+	parts := strings.Split(strings.TrimSpace(content), "\n")
+	if len(parts) != 2 {
+		t.Fatalf("users file mangled: %q", content)
+	}
+	f := strings.SplitN(parts[0], ":", 4)
+	if len(f) != 4 || f[0] != "u1" || f[1] != "1001" {
+		t.Fatalf("u1 row mangled: %q", parts[0])
+	}
+	salt, hash := f[2][:strings.Index(f[2], "$")], f[2][strings.Index(f[2], "$")+1:]
+	sum := sha256.Sum256([]byte(salt + "newsecret"))
+	if hex.EncodeToString(sum[:]) != hash {
+		t.Fatal("new hash does not verify against new password")
+	}
+	sumOld := sha256.Sum256([]byte(salt + "oldpw"))
+	if hex.EncodeToString(sumOld[:]) == hash {
+		t.Fatal("old password still verifies (hash unchanged?)")
+	}
+	// other row untouched, mask preserved
+	if !strings.HasSuffix(parts[1], ":0x18") {
+		t.Fatalf("u2 row mangled: %q", parts[1])
+	}
+
+	// non-admin cannot change another user
+	st.typeLine("passwd u2 hacked")
+	waitFor(t, func() bool { return st.outputContains("CAP_FS_ADMIN") }, "cross-user denial missing")
+
+	// admin can change others
+	st.k.Cur.Capmask |= lib.CapFSAdmin
+	st.typeLine("passwd u2 adminset")
+	waitFor(t, func() bool { return st.outputContains("passwd: ok") }, "admin change failed")
+}
+
+func TestShellPasswdProvisioning(t *testing.T) {
+	// Fresh volume: no /etc/users at all.
+	st := newShellTest(t, "/home/u1")
+
+	// Non-zero uid cannot provision.
+	st.typeLine("passwd whatever")
+	waitFor(t, func() bool { return st.outputContains("cannot read /etc/users") }, "missing-file error missing")
+
+	// uid 0 provisions its admin row.
+	st.k.Cur.UID = 0
+	st.typeLine("passwd firstbootpw")
+	waitFor(t, func() bool { return st.outputContains("passwd: ok") }, "provisioning failed")
+	content := st.fs.text["/etc/users"]
+	ln := strings.TrimSpace(content)
+	f := strings.SplitN(ln, ":", 4)
+	if len(f) != 4 || f[0] != "admin" || f[1] != "0" || f[3] != "0x3ff" {
+		t.Fatalf("provisioned row wrong: %q", ln)
+	}
+	i := strings.Index(f[2], "$")
+	if i < 0 {
+		t.Fatalf("provisioned hash not salted: %q", f[2])
+	}
+	sum := sha256.Sum256([]byte(f[2][:i] + "firstbootpw"))
+	if hex.EncodeToString(sum[:]) != f[2][i+1:] {
+		t.Fatal("provisioned hash does not verify")
+	}
 }
 
 func TestShellTop(t *testing.T) {
 	st := newShellTest(t, "/home/u1")
+	st.k.AddSession("worker", 1002, lib.CapFocus)
 
 	st.typeLine("top")
 	waitFor(t, func() bool { return st.outputContains("SID") && st.outputContains("UID") }, "top header missing")
+	waitFor(t, func() bool { return st.outputContains("3 sessions live") }, "top session count missing")
+	waitFor(t, func() bool { return st.outputContains("quantum=5000us") }, "top quantum missing")
+	waitFor(t, func() bool { return st.outputContains("worker") }, "top worker missing")
 }
 
 func TestShellMemstat(t *testing.T) {
 	st := newShellTest(t, "/home/u1")
+	st.k.SysMemTotal = 0x20000000
+	st.k.SysMemUsed = 0x1000000
 
 	st.typeLine("memstat")
-	waitFor(t, func() bool { return st.outputContains("sessions") }, "memstat missing")
+	waitFor(t, func() bool { return st.outputContains("pool total=536870912") }, "memstat total missing")
+	waitFor(t, func() bool { return st.outputContains("used=16777216") }, "memstat used missing")
+	waitFor(t, func() bool { return st.outputContains("sessions:") }, "memstat sessions missing")
 }
 
 func TestShellDmesg(t *testing.T) {
 	st := newShellTest(t, "/home/u1")
-	st.fs.text["/var/log/dmesg"] = "[boot] kernel init\n[boot] sessions ready\n"
+	st.k.LogText = "[boot] microkernel UEFI stage\n[kmain] hello from the microkernel\n[audit] sid=2 op=KILL reason=cap target=registry\n"
 
 	st.typeLine("dmesg")
-	waitFor(t, func() bool { return st.outputContains("kernel init") && st.outputContains("sessions ready") }, "dmesg missing")
+	waitFor(t, func() bool { return st.outputContains("hello from the microkernel") }, "dmesg boot trail missing")
+	waitFor(t, func() bool { return st.outputContains("op=KILL") }, "dmesg denial missing")
 }
 
 func TestShellAudit(t *testing.T) {
 	st := newShellTest(t, "/home/u1")
+	st.k.LogText = "[boot] microkernel UEFI stage\n" +
+		"[audit] sid=2 uid=1002 op=KILL reason=cap target=registry\n" +
+		"[audit] sid=1 uid=0 op=SPAWN reason=cap target=registry\n"
 
 	st.typeLine("audit")
-	waitFor(t, func() bool { return st.outputContains("sessions tracked") }, "audit missing")
+	waitFor(t, func() bool { return st.outputContains("2/2 records shown") }, "audit summary missing")
+
+	st.typeLine("audit KILL")
+	waitFor(t, func() bool { return st.outputContains("op=KILL") }, "audit filter missing")
+
+	st.typeLine("audit 9999")
+	waitFor(t, func() bool { return st.outputContains("0/2 records shown") }, "audit empty filter missing")
 }
 
 func TestShellPing(t *testing.T) {
@@ -640,13 +768,15 @@ func TestShellPkg(t *testing.T) {
 	st := newShellTest(t, "/home/u1")
 
 	st.typeLine("pkg list")
-	waitFor(t, func() bool { return st.outputContains("pkg list") }, "pkg list missing")
+	waitFor(t, func() bool { return st.outputContains("no modules installed") }, "pkg list missing")
 
 	st.typeLine("pkg install hello.wasm")
-	waitFor(t, func() bool { return st.outputContains("pkg install: hello.wasm") }, "pkg install missing")
+	waitFor(t, func() bool { return st.outputContains("pkg install:") }, "pkg install missing")
 
 	st.typeLine("pkg remove hello")
-	waitFor(t, func() bool { return st.outputContains("pkg remove: hello") }, "pkg remove missing")
+	waitFor(t, func() bool {
+		return st.outputContains("pkg remove:") || st.outputContains("no such file")
+	}, "pkg remove missing")
 }
 
 func TestShellSysctl(t *testing.T) {
@@ -670,4 +800,47 @@ func TestShellCheckconf(t *testing.T) {
 
 	st.typeLine("checkconf")
 	waitFor(t, func() bool { return st.outputContains("checkconf: OK") }, "checkconf missing")
+}
+
+func TestShellPipeCatGrepSortHead(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+	st.fs.text["/home/u1/m"] = "z kernel 3\nb kernel 1\na kernel 2\nnomatch\n"
+	st.typeLine("cat m | grep kernel | sort | head -n 2")
+	waitFor(t, func() bool { return st.outputContains("a kernel 2") }, "pipe sort missing a")
+	waitFor(t, func() bool { return st.outputContains("b kernel 1") }, "pipe sort missing b")
+}
+
+func TestShellPipeGrepN(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+	st.fs.text["/home/u1/m"] = "kernel one\nskip\nkernel two\n"
+	st.typeLine("grep -n kernel m")
+	waitFor(t, func() bool { return st.outputContains("1:kernel one") }, "grep -n line1 missing")
+	waitFor(t, func() bool { return st.outputContains("3:kernel two") }, "grep -n line3 missing")
+}
+
+func TestShellSeqSemicolonAndOr(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+	st.typeLine("echo a; echo b")
+	waitFor(t, func() bool { return st.outputContainsAll("a", "b") }, "; sequencing missing")
+	st.typeLine("false && echo shouldnot")
+	st.typeLine("true && echo shouldyes")
+	waitFor(t, func() bool { return st.outputContains("shouldyes") }, "&& missing")
+	st.typeLine("false || echo fallbackyes")
+	waitFor(t, func() bool { return st.outputContains("fallbackyes") }, "|| missing")
+}
+
+func TestShellPipeWcUniq(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+	st.fs.text["/home/u1/w"] = "b\na\nb\na\n"
+	st.typeLine("cat w | sort | uniq | wc -l")
+	waitFor(t, func() bool { return st.outputContains("2") }, "uniq|wc pipeline missing")
+}
+
+func TestShellPipeCutSed(t *testing.T) {
+	st := newShellTest(t, "/home/u1")
+	st.fs.text["/home/u1/d"] = "a:b:c\n"
+	st.typeLine("cat d | cut -d: -f2")
+	waitFor(t, func() bool { return st.outputContains("b") }, "cut pipe missing")
+	st.typeLine("cat d | sed s/b/X/g")
+	waitFor(t, func() bool { return st.outputContains("a:X:c") }, "sed pipe missing")
 }

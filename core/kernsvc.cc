@@ -256,6 +256,11 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
                 vmod_grow_session(sched_runtime_of((uint32_t)nsid),
                                   32 * 1024 * 1024);
             }
+            if (nsid > 0 && !strcmp(modname, "shell")) {
+                /* shell needs headroom for Go runtime + pkg crypto */
+                vmod_grow_session(sched_runtime_of((uint32_t)nsid),
+                                  16 * 1024 * 1024);
+            }
             if (nsid > 0 && !strcmp(modname, "net")) {
                 /* §6 windows live in the net session's linear memory */
                 netwin_attach(sched_runtime_of((uint32_t)nsid));

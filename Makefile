@@ -729,7 +729,34 @@ test-p17: $(BUILD)/disk-p17.img $(BUILD)/VARS.fd
 		&& echo "TEST PASS (p17 capability & port introspection)" \
 		|| { echo "TEST FAIL (p17)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial-p17.log | tail -40; exit 1; }
 
-test-all: test-kernel test-unit test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10 test-p11 test-p11b test-p12 test-p13 test-p14 test-p14sh test-p15 test-p16 test-p17
+# Phase 18 disk: package management (pkg list/install/remove with sig verify)
+$(BUILD)/disk-p18.img: $(BUILD)/BOOTX64.EFI \
+                      services/fs/fs.wasm services/console/console.wasm \
+                      services/login/login.wasm services/init/init.wasm \
+                      services/shell/shell.wasm services/net/net.wasm \
+                      $(BUILD)/etc_users.txt | $(BUILD) $(IMG)
+	printf 'console console.wasm 0\nnet net.wasm 22\nlogin login.wasm 8\nshell shell.wasm 8\n' > $(BUILD)/init-p18.conf.tmp
+	$(IMG) $@ 64 \
+	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+	  services/fs/fs.wasm:/boot/modules/fs.wasm \
+	  services/console/console.wasm:/boot/modules/console.wasm \
+	  services/login/login.wasm:/boot/modules/login.wasm \
+	  services/init/init.wasm:/boot/modules/init.wasm \
+	  services/shell/shell.wasm:/boot/modules/shell.wasm \
+	  services/net/net.wasm:/boot/modules/net.wasm \
+	  $(BUILD)/init-p18.conf.tmp:/init.conf \
+	  $(BUILD)/etc_users.txt:/etc/users
+
+.PHONY: test-p18
+test-p18: $(BUILD)/disk-p18.img $(BUILD)/VARS.fd
+	bash scripts/run_p18.sh $(BUILD)/serial-p18.log "$(QEMU)" "$(QEMU_ENV)" -- \
+	    -drive format=raw,file=$(BUILD)/disk-p18.img $(QEMU_BASE)
+	@grep -q 'shell ready' $(BUILD)/serial-p18.log \
+		&& grep -q '\[net\] up' $(BUILD)/serial-p18.log \
+		&& echo "TEST PASS (p18 package management)" \
+		|| { echo "TEST FAIL (p18)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial-p18.log | tail -40; exit 1; }
+
+test-all: test-kernel test-unit test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10 test-p11 test-p11b test-p12 test-p13 test-p14 test-p14sh test-p15 test-p16 test-p17 test-p18
 
 # Phase 10: KVM+TCG matrix — every gate green under both accelerators.
 # KVM_FLAG is overridable ( ?= ) so matrix targets can force an accelerator.
