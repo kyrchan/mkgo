@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"net"
 	"sort"
 	"strconv"
 	"strings"
@@ -2298,6 +2297,21 @@ func (s *Shell) cmdAudit(args []string) {
 	s.out("audit: " + strconv.Itoa(shown) + "/" + strconv.Itoa(total) + " records shown")
 }
 
+func parseIPv4(s string, out *[4]byte) bool {
+	parts := strings.Split(s, ".")
+	if len(parts) != 4 {
+		return false
+	}
+	for i, p := range parts {
+		v, err := strconv.Atoi(p)
+		if err != nil || v < 0 || v > 255 {
+			return false
+		}
+		out[i] = byte(v)
+	}
+	return true
+}
+
 func (s *Shell) cmdPing(args []string) {
 	if len(args) == 0 {
 		s.out("usage: ping <ip>")
@@ -2362,7 +2376,7 @@ func (s *Shell) cmdNc(args []string) {
 		}
 	}
 	var hostIP [4]byte
-	if net.ParseIP(host) == nil {
+	if !parseIPv4(host, &hostIP) {
 		s.out("nc: resolving " + host + " (no DNS; use IP)")
 		return
 	}

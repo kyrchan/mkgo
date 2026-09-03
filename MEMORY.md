@@ -4,6 +4,103 @@ Read this first. Source of truth when context is compacted.
 The full phase-by-phase plan lives in `AGENTS.md` — this file is state,
 decisions, and gotchas. Update at milestones or near context limits.
 
+## Status — Phase 15 identity/auth/observability GREEN (2026-09-03)
+
+**Capability system: single source-of-truth cap table, REQUIRE_CAP gating on all kern_* imports, well-known port binding, login minting rule, audit-on-use.**
+
+Gates: `make test-p4 test-p7 test-p17 test-p18` PASS (KVM) + hosttest 95/97 (T3/T4 pre-existing F18 format failures) +
+login/shell/fs/pkg host suites green. Neighbors re-evidenced: p7, p9, p15, p16 PASS on the same tree.
+
+### Capability table (§7, v2.0 additive)
+
+| bit | name      | hex    | gated import(s)                          |
+| --- | --------- | ------ | ---------------------------------------- |
+| 0   | KILL      | 0x1    | registry op 3 (KILL)                     |
+| 1   | DEVMAN    | 0x2    | registry op 10 (CHCAPS)                  |
+| 2   | POWER     | 0x4    | power port reboot/off                    |
+| 3   | FOCUS     | 0x8    | kern_input_recv, kern_focus_set          |
+| 4   | FS_ADMIN  | 0x10   | kern_blk_read, kern_blk_write            |
+| 5   | NET_ADMIN | 0x20   | —                                        |
+| 6   | SPAWN     | 0x40   | registry op 4 (SPAWN)                    |
+| 7   | CONF      | 0x80   | registry op 6 (SETCONF)                  |
+| 8   | PCI       | 0x100  | kern_pci_read32/write32/map_bar/etc.     |
+| 9   | FB        | 0x200  | kern_fb_set_mode/set_cursor/present      |
+| 10  | DOORBELL  | 0x400  | kern_doorbell_wait                       |
+| 11  | VMWARE    | 0x800  | kern_vmware_backdoor                     |
+| 12  | PORTBIND  | 0x1000 | kern_port_bind on well-known names       |
+
+admin = all 13 bits = 0x1FFF. KERN_AUDIT_LEVEL=1 (deny + use-audit).
+
+### Phase 15 — what landed
+- **Kernel v1 syslog (new, ~120 LOC mechanism):** `core/log.{h,cc}`
+  16 KB ticket-locked ring + ever-growing total; one-line hook in
+  `arch/x86_64/uart.cc:console_putc` (skips `\r`). Captures EVERYTHING
+  on serial: boot trail, `[audit]` denials, panics, guest fd_write
+  (wasi_glue funnels through putc). Hook takes only the spinlock —
+  safe from isr_dump (IRQs off) and SMP.
+- **Registry ops 8/9 (ABI v2.1, wire-superset — modules stay ver=2):**
+  SYSSTAT `{mem_total, mem_used, quantum_us, preempt_on, ncpus}` backed
+  by new `mm_total/used_bytes` (`core/mm.cc`), `preempt_quantum_us`
+  (`core/preempt.cc`), `sched_ncpus` (`core/sched.cc`); LOGDUMP `{off}`
+  → `{total, begin, ≤4000 B}`. No cap required (v1; hardening may gate
+  later). Routine-poll spam suppressed for 8/9 like LIST. C++ linkage
+  gotcha fixed: first-decl-in-extern-"C" wins (decls added to
+  preempt.cc block + `sched.h`; `mm.h` already guarded).
+- **Host regressions (practice #2):** T16 ring push/read/wrap/clamp/EOF;
+  T17 SYSSTAT fields + LOGDUMP offset/marker round-trip through real
+  kernsvc_dispatch (hosttest 76→100). Stubs: mm_tot/used, sched_ncpus.
+- **login.wasm reloads /etc/users on every AUTH** (single attempt,
+  last-good retained; canned-tables tests unaffected). Test:
+  old-pw OK → change file → old BAD + new OK (real AUTH path).
+  fsc budget cut 5000→500 so failing re-reads stay in client budgets.
+- **shell built-ins (no fork/exec, pipes reused):** `passwd [user]
+  <newpw>` — sha256(salt+pw) rewrite preserving comments/order, self
+  only, CAP_FS_ADMIN for others, first-boot provisioning (missing file
+  + uid 0 → `admin:0:...:0x3ff` row; ramdisk ships no /etc/users, only
+  ESP does); `top` = LIST + SYSSTAT (cpus/quantum/preempt footer);
+  `dmesg` = LOGDUMP full; `audit [subs...]` = `[audit]`-filtered log;
+  `memstat` = pool total/used/free/pages + sessions. Tests for each
+  (+fakeFS Create/Write now really store).
+- **Serial `make test-p15`** (new `scripts/run_p15.sh`, polls for
+  shell-ready): boot shell (uid 0, FOCUS-only) shows `5 sessions live
+  (cpus=1 quantum=5000us preempt=on)`; `kill-session 1` denied AND
+  `[audit] sid=5 uid=0 op=KILL reason=cap` recorded; `dmesg`/`audit
+  KILL` read it back; `passwd newpass15` → ok (provisioning);
+  `memstat` pool numbers. Login old/new-accept split: proven in login
+  host tests (serial login scripting out of scope).
+- **Pre-existing breakage (NOT mine, verified on clean HEAD via stash):**
+  `guests/lib` netconn_test + `services/console` tests pass `*Bus`
+  where `Kernel` (now with ClockMs since 09-02) is required — build
+  fails. Same for `make test-unit`'s console/lib legs. VERIFY lane owns.
+
+## Status — Phase 14 shell pipes GREEN (2026-09-03)
+
+**Gate: `make test-p14sh` PASS (KVM) + shell `go test` green + hosttest 76/76.**
+
+### Phase 14 — in-shell pipes + sequencing (landed 2026-09-03)
+`services/shell/shell.go`: `exec` now handles `;`/`&&`/`||` sequencing
+(exitStatus-driven) and `|` pipelines threaded in-process via capture
+buffers (`capture`/`pin` fields, `runSingle`/`dispatch`/`execPipeline`).
+No SPAWN/fork: all stages run in-shell. Built-ins gained stdin fallback
++ flags: `cat` (multi-file/stdin), `grep -n/-i/-v`, `sort -n/-r/-u`,
+`head/tail -n N|-N|stdin`, `wc -l/-w/-c`, `uniq -c`, `tr -d/stdin`,
+`cut -d/-f` ranges, `sed -n/-e/p`, `test` (`-e`, `=`, `!=`, `-eq..-ge`,
+`[` `]`), `expr` (`* / % !=`), `find -name/-type`. `true` sets 0
+(was: left stale, broke `&&`); `dispatch` resets exitStatus=0 entry.
+Reliability fix: `sendReliable` retries PortSend on WouldBlock with
+Yield (was: dropped output when 32-deep console queue overflowed on
+long typed lines — manifested as 10s host-test timeouts on 38-char
+pipe commands). Tests: 5 new (`PipeCatGrepSortHead`, `PipeGrepN`,
+`SeqSemicolonAndOr`, `PipeWcUniq`, `PipeCutSed`); drain loops burst
+until empty. Serial: `test-p14sh` (new Makefile target, disk-p7.img +
+QEMU_BASE) runs `run_p14.sh` (now polls for `shell ready` up to 240s
+for TCG, then `cp /etc/motd /tmp/m`, `cat|grep|sort|head -n 3`,
+`sleep 1`, `date`); asserts `shell ready` + `microkernel` + `UTC`.
+Note: `test-p14` (AP bring-up, QEMU_SMP) and `test-p14sh` (shell,
+QEMU_BASE) share the number differently — intentional, see Makefile.
+shell.wasm rebuilt abi_ver=2 (3.0 MB). TCG full-boot to shell exceeds
+240s poll (5 wasm compiles); KVM gate passes in seconds.
+
 ## Status — AP bring-up scaffolding GREEN (2026-09-02)
 
 **Gates re-evidenced on 9151cbe: g1 g2 g3 p4 p5a g5b p7 p8a p9 p10

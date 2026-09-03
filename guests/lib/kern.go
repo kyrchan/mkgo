@@ -59,15 +59,19 @@ const (
 	CapConf     uint64 = 1 << 7 // v1.1: SETCONF right (init.wasm)
 	CapPCI      uint64 = 1 << 8 // v2.0: VFIO PCI access (graphics/e1000/ahci/usb)
 	CapFB       uint64 = 1 << 9 // v2.0: framebuffer modesetting/cursor
+	CapDoorbell uint64 = 1 << 10
+	CapVMware   uint64 = 1 << 11
+	CapPortBind uint64 = 1 << 12 // v2.0: bind well-known port names
 
 	// CapAll is the admin mask ("admin" holds every bit per AGENTS.md).
 	CapAll = CapKill | CapDevman | CapPower | CapFocus |
-		CapFSAdmin | CapNetAdmin | CapSpawn | CapConf | CapPCI | CapFB
+		CapFSAdmin | CapNetAdmin | CapSpawn | CapConf | CapPCI | CapFB |
+		CapDoorbell | CapVMware | CapPortBind
 )
 
 var capNames = [...]string{
 	"kill", "devman", "power", "focus", "fs_admin", "net_admin",
-	"spawn", "conf", "pci", "fb",
+	"spawn", "conf", "pci", "fb", "doorbell", "vmware", "portbind",
 }
 
 // CapNames renders a capability mask as bit names (unknown bits hex).

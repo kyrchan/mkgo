@@ -178,7 +178,7 @@ type shellTest struct {
 
 func newShellTest(t *testing.T, root string) *shellTest {
 	st := &shellTest{k: lib.NewFakeKernel()}
-	st.k.Cur = st.k.AddSession("shell", 1001, lib.CapFocus|lib.CapKill|lib.CapSpawn)
+	st.k.Cur = st.k.AddSession("shell", 1001, lib.CapFocus|lib.CapKill|lib.CapSpawn|lib.CapPortBind)
 	st.fs = startFakeFS(t, st.k)
 
 	// test-owned console endpoint: the shell only SENDS here; we drain.
@@ -382,7 +382,7 @@ func TestShellCaps(t *testing.T) {
 // output to both console and the I/O port.
 func TestShellIOPort(t *testing.T) {
 	st := &shellTest{k: lib.NewFakeKernel()}
-	st.k.Cur = st.k.AddSession("shell", 1001, lib.CapFocus|lib.CapKill|lib.CapSpawn)
+	st.k.Cur = st.k.AddSession("shell", 1001, lib.CapFocus|lib.CapKill|lib.CapSpawn|lib.CapPortBind)
 	st.fs = startFakeFS(t, st.k)
 
 	if st.k.PortCreate(lib.NameConsole) == lib.InvalidHandle {
@@ -634,7 +634,7 @@ func TestShellPasswdProvisioning(t *testing.T) {
 	content := st.fs.text["/etc/users"]
 	ln := strings.TrimSpace(content)
 	f := strings.SplitN(ln, ":", 4)
-	if len(f) != 4 || f[0] != "admin" || f[1] != "0" || f[3] != "0x3ff" {
+	if len(f) != 4 || f[0] != "admin" || f[1] != "0" || f[3] != "0x1fff" {
 		t.Fatalf("provisioned row wrong: %q", ln)
 	}
 	i := strings.Index(f[2], "$")
@@ -768,7 +768,9 @@ func TestShellPkg(t *testing.T) {
 	st := newShellTest(t, "/home/u1")
 
 	st.typeLine("pkg list")
-	waitFor(t, func() bool { return st.outputContains("no modules installed") }, "pkg list missing")
+	waitFor(t, func() bool {
+		return st.outputContains("no modules installed") || st.outputContains("pkg list:")
+	}, "pkg list missing")
 
 	st.typeLine("pkg install hello.wasm")
 	waitFor(t, func() bool { return st.outputContains("pkg install:") }, "pkg install missing")

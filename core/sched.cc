@@ -333,6 +333,11 @@ bool sched_is_login(uint32_t sid) {
     return ports_name_owned_by(sid, "login");
 }
 
+bool sched_is_init(uint32_t sid) {
+    return sid < MAX_SESSIONS && sessions[sid].state != S_FREE &&
+           !strcmp(sessions[sid].name, "init");
+}
+
 int sched_kill(uint32_t sid) {
     if (!sched_alive(sid)) {
         audit("KILL", "nosession", "registry");

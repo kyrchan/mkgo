@@ -22,6 +22,9 @@ int netwin_attached(void);
 int vmod_grow_session(void *runtime, uint32_t min_bytes);
 }
 
+#include "kernsvc.h"
+#include "cap_table.h"
+
 static void put16(uint8_t *p, uint16_t v) {
     p[0] = (uint8_t)v;
     p[1] = (uint8_t)(v >> 8);
@@ -63,14 +66,28 @@ static void kernsvc_reply(const uint8_t *data, uint32_t len) {
  * Every fall-through MUST answer so clients fail fast instead of spinning
  * their full recv budget on a lost reply. Canonical form. */
 static void kernsvc_nack(uint16_t op, uint16_t seq) {
-    static uint8_t nb[28];
+    uint8_t nb[28];
     put16(nb, op);
     put16(nb + 2, seq);
     put32(nb + 4, 0); /* kernel uid */
-    for (int i = 0; i < 16; i++)
-        nb[8 + i] = 0;
     put32(nb + 24, 0xFFFFFFFFu);
-    kernsvc_reply(nb, 28);
+    ports_kernel_enqueue(g_from_sid, g_reply_h, nb, sizeof(nb));
+}
+
+// kernsvc_audit: emit an audit record to the log ring (console_puts
+// feeds core/log.cc's ring buffer). Format:
+//   [audit] sid=X op=<op> reason=<reason> target=<target>\n
+void kernsvc_audit(uint32_t sid, const char *op, const char *reason,
+                   const char *target) {
+    console_puts("[audit] sid=");
+    console_hex64(sid);
+    console_puts(" op=");
+    console_puts(op);
+    console_puts(" reason=");
+    console_puts(reason);
+    console_puts(" target=");
+    console_puts(target);
+    console_puts("\n");
 }
 
 void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
@@ -288,6 +305,17 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
                             (payload[18] << 16) | ((uint32_t)payload[19] << 24);
             uint32_t nmask = payload[20] | (payload[21] << 8) |
                              (payload[22] << 16) | ((uint32_t)payload[23] << 24);
+            /* Minting check: caller must hold the caps it's about to grant,
+             * unless the caller is init (which is trusted to mint any mask). */
+            {
+                uint64_t caller_caps = sched_capmask_of(from_sid);
+                uint64_t nmask64 = (uint64_t)nmask;
+                if ((nmask64 & ~caller_caps) != 0 && !sched_is_init(from_sid)) {
+                    kernsvc_audit(from_sid, "LOGIN", "cap", "registry");
+                    knack();
+                    return;
+                }
+            }
             int tsid = sched_session_by_name(tname);
             console_puts("[ksvc] LOGIN target='");
             console_puts(tname);

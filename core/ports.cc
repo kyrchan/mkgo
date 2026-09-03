@@ -11,6 +11,29 @@ static constexpr int MAX_Q = 32;
 static constexpr int MSG_MAX = 4096;
 static constexpr int H_PER_SESS = 16;
 
+// Well-known names that require CAP_PORTBIND to bind to.
+// Kernel endpoints + names reserved for core services. Adding a name
+// here is an intentional ABI change (documented in abi/ABI.md §7.1).
+// Driver sessions are spawned by init with CAP_PORTBIND in their capmask.
+static const char *kWellKnownNames[] = {
+    "registry", "devman", "power",
+    "console", "login", "fs",
+    "net", "init", "shell",
+};
+static const int kWellKnownNamesLen =
+    sizeof(kWellKnownNames) / sizeof(kWellKnownNames[0]);
+
+bool is_well_known_name(const char *name, uint32_t name_len) {
+    for (int i = 0; i < kWellKnownNamesLen; i++) {
+        const char *w = kWellKnownNames[i];
+        int j = 0;
+        for (; j < (int)name_len && w[j]; j++)
+            if (name[j] != w[j]) break;
+        if (j == (int)name_len && w[j] == 0) return true;
+    }
+    return false;
+}
+
 struct msg {
     uint32_t from_sid;
     uint16_t len;

@@ -1,4 +1,20 @@
-# abi/ABI.md — guest-facing interface contracts (v2.0)
+# abi/ABI.md — guest-facing interface contracts (v2.1)
+
+## v2.1 changelog (2026-09-03 — Phase 15 observability, wire-superset of v2.0)
+
+- §7 registry gains op 8 = SYSSTAT → `{u32 status=0, u64 mem_total,
+  u64 mem_used, u32 quantum_us, u8 preempt_on, u32 ncpus}`. Read-only
+  bump-allocator accounting + scheduler config for top/memstat. No
+  capability required (v1; hardening may gate later — see MEMORY.md).
+- §7 registry gains op 9 = LOGDUMP `{u64 off}` → `{u32 status=0,
+  u64 total, u64 begin, bytes...}` (≤4000 B per reply; poll with
+  increasing off). Read-only v1 syslog path: everything emitted via
+  console_putc (kernel boot trail, [audit] denials, panics, guest
+  fd_write bytes). Backs dmesg/audit shell built-ins. No capability
+  required (v1).
+- Module `abi_ver` stays `0x02`: v2.1 is a pure registry-op superset —
+  no WASI/import/window changes, no module rebuild required. Only
+  shell.wasm was rebuilt (it calls the new ops).
 
 Binding on both kernel substrate and all services/guests. Changes require a
 version bump here + note in MEMORY.md. All integers little-endian (wasm
@@ -186,10 +202,37 @@ carry the same `seq`. Ops:
 
 Capability bits (u64 mask, enforced by kernel registry):
 bit0 KILL, bit1 DEVMAN, bit2 POWER, bit3 FOCUS, bit4 FS_ADMIN, bit5 NET_ADMIN,
-bit6 SPAWN, bit7 CONF. Login maps users→masks; `admin` gets all bits, regular
+bit6 SPAWN, bit7 CONF, bit8 PCI, bit9 FB, bit10 DOORBELL, bit11 VMWARE,
+bit12 PORTBIND. Login maps users→masks; `admin` gets all bits, regular
 users get none of 0-2 and scoped others. Unknown op / insufficient bit =>
 status -1, audited (see §10). LIST/CAPS gain self-or-admin gating at Phase
 10 (v2 roadmap); unguarded today by design of the stub phase.
+
+### §7.1 Well-known port names (CAP_PORTBIND required)
+
+The following names require CAP_PORTBIND to bind:
+  registry, devman, power (kernel endpoints)
+  console, login, fs, net, init, shell (core services)
+All other names are bindable by any session (dynamic namespace).
+init.wasm holds CAP_PORTBIND; driver sessions spawned by init
+receive it; user shells do not.
+
+### §7.2 LOGIN capmask minting
+
+The LOGIN op (§7 op 5) sets a session's capmask to the mask
+provided in the payload. The kernel enforces: the mask must be
+a subset of the caller's capmask, OR the caller must be the
+"init" session (which is trusted to mint any mask). This prevents
+a compromised login.wasm from granting capabilities it does not
+itself hold.
+
+### §7.3 Audit logging (KERN_AUDIT_LEVEL)
+
+KERN_AUDIT_LEVEL=0: log denials only.
+KERN_AUDIT_LEVEL=1 (default): log denials + successful use of
+  high-value caps (KILL, DEVMAN, POWER, SPAWN, PCI, FB, PORTBIND).
+Audit records: [audit] sid=X uid=Y op=<tag> reason=<cap|use>
+  target=wasi
 
 SPAWN semantics: kernel instantiates the named module from `/boot/modules/`
 as a fresh session with exactly the requested capmask (never more than the
@@ -466,6 +509,26 @@ IRQ-bearing devices. Never direct guest IRQs.
                            // Dynamically assign a PCI device to a session.
                            // Requires CAP_DEVMAN. Used by init.wasm at boot
                            // and for hot-plug reassignment.
+                8=SYSSTAT   {} -> {u32 status=0, u64 mem_total,
+                            u64 mem_used, u32 quantum_us, u8 preempt_on,
+                            u32 ncpus}             (v2.1, no cap required)
+                9=LOGDUMP   {u64 off} -> {u32 status=0, u64 total,
+                            u64 begin, bytes...}   (v2.1, no cap required;
+                            off is an absolute stream offset; begin is the
+                            oldest retained offset — clamp upward; poll
+                            with off=total for tails)
+               10=CHCAPS  {u32 sid, u32 clear, u32 set} -> status
+                            // Grant/revoke cap bits on a live session.
+                            // Requires CAP_POWER. Clears (clear mask) then
+                            // sets (set mask). Self-modification of
+                            // non-admin caps is denied. Audited.
+
+## Capability bits (§7, UPDATED)
+
+  bit0 KILL       bit1 DEVMAN     bit2 POWER      bit3 FOCUS
+  bit4 FS_ADMIN   bit5 NET_ADMIN  bit6 SPAWN       bit7 CONF
+  bit8 PCI        bit9 FB
+  bit10 DOORBELL  bit11 VMWARE    bit12 PORTBIND  (v2.0 additive)
 
 ## 9. Reserved device classes (UPDATED)
 

@@ -27,9 +27,10 @@ LDFLAGS := -nostdlib -no-pie -Wl,--build-id=none -Wl,-e,efi_main -T kernel/link.
 
 CORE_OBJS := $(BUILD)/core/main.o $(BUILD)/core/kmain.o $(BUILD)/core/lib.o \
                $(BUILD)/core/loader.o $(BUILD)/core/mm.o $(BUILD)/core/log.o $(BUILD)/core/rt.o \
-              $(BUILD)/core/engine.o $(BUILD)/core/wasi_glue.o \
-              $(BUILD)/core/sched.o $(BUILD)/core/ports.o $(BUILD)/core/kernsvc.o \
-              $(BUILD)/core/ctx.o $(BUILD)/core/devblk.o $(BUILD)/core/fstransport.o \
+               $(BUILD)/core/engine.o $(BUILD)/core/wasi_glue.o \
+               $(BUILD)/core/sched.o $(BUILD)/core/ports.o $(BUILD)/core/kernsvc.o \
+               $(BUILD)/core/cap_table.o \
+               $(BUILD)/core/ctx.o $(BUILD)/core/devblk.o $(BUILD)/core/fstransport.o \
               $(BUILD)/core/virtio_blk.o $(BUILD)/core/virtio_net.o \
               $(BUILD)/core/virtio_modern.o \
               $(BUILD)/core/input.o \
@@ -240,7 +241,7 @@ $(BUILD)/etc_users.txt:
 	@printf '# /etc/users — name:uid:salted-sha256:capmask\n# salted-hash = salt$$hex(sha256(salt + password))\n' > $@
 	@printf 'u1:1001:u1salt$$%s:0x18\n' "$$(echo -n 'u1saltu1' | sha256sum | cut -d' ' -f1)" >> $@
 	@printf 'u2:1002:u2salt$$%s:0x18\n' "$$(echo -n 'u2saltu2' | sha256sum | cut -d' ' -f1)" >> $@
-	@printf 'admin:0:adminsalt$$%s:0xff\n' "$$(echo -n 'adminsaltadmin' | sha256sum | cut -d' ' -f1)" >> $@
+	@printf 'admin:0:adminsalt$$%s:0x1fff\n' "$$(echo -n 'adminsaltadmin' | sha256sum | cut -d' ' -f1)" >> $@
 
 # one disk image per payload so gates never boot a stale guest
 IMG := $(BUILD)/../tools/img/img
@@ -314,7 +315,7 @@ $(BUILD)/disk-p7.img: $(BUILD)/BOOTX64.EFI services/fs/fs.wasm \
                        services/console/console.wasm services/login/login.wasm \
                        services/init/init.wasm services/shell/shell.wasm \
                        $(BUILD)/etc_users.txt | $(BUILD) $(IMG)
-	printf 'console console.wasm 0\nfs fs.wasm 10\nlogin login.wasm 8\nshell shell.wasm 8\n' > $(BUILD)/init.conf.tmp
+	printf 'console console.wasm 0x1000\nfs fs.wasm 0x1018\nlogin login.wasm 0x1008\nshell shell.wasm 0x1008\n' > $(BUILD)/init.conf.tmp
 	$(IMG) $@ 64 \
 	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
 	  services/fs/fs.wasm:/boot/modules/fs.wasm \
@@ -332,7 +333,7 @@ $(BUILD)/disk-p9.img: $(BUILD)/BOOTX64.EFI build/test_p9.wasm \
                       services/login/login.wasm services/init/init.wasm \
                       services/shell/shell.wasm services/net/net.wasm \
                       $(BUILD)/etc_users.txt | $(BUILD) $(IMG)
-	printf 'console console.wasm 0\nnet net.wasm 22\np9 p9.wasm 0 respawn=no\n' > $(BUILD)/init-p9.conf.tmp
+	printf 'console console.wasm 0x1000\nnet net.wasm 0x1022\np9 p9.wasm 0 respawn=no\n' > $(BUILD)/init-p9.conf.tmp
 	$(IMG) $@ 64 \
 	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
 	  services/fs/fs.wasm:/boot/modules/fs.wasm \
@@ -593,7 +594,7 @@ test-unit:
 HT_CXXFLAGS := -std=c++20 -O1 -g -Wall -Icore -Iarch/x86_64 -Ithird_party/wasm3
 HT_OBJS := $(BUILD)/ht/ports.o $(BUILD)/ht/kernsvc.o $(BUILD)/ht/fsroute.o \
            $(BUILD)/ht/devblk.o $(BUILD)/ht/input.o $(BUILD)/ht/vfio_hoststub.o \
-           $(BUILD)/ht/preempt.o $(BUILD)/ht/lock_host.o $(BUILD)/ht/log.o
+           $(BUILD)/ht/preempt.o $(BUILD)/ht/lock_host.o $(BUILD)/ht/log.o $(BUILD)/ht/cap_table.o
 
 $(BUILD)/hosttest: tools/hosttest.cc $(HT_OBJS) | $(BUILD)
 	@mkdir -p $(dir $@)
@@ -680,7 +681,7 @@ $(BUILD)/disk-p16.img: $(BUILD)/BOOTX64.EFI \
                       services/login/login.wasm services/init/init.wasm \
                       services/shell/shell.wasm services/net/net.wasm \
                       $(BUILD)/etc_users.txt | $(BUILD) $(IMG)
-	printf 'console console.wasm 0\nnet net.wasm 22\nlogin login.wasm 8\nshell shell.wasm 8\n' > $(BUILD)/init-p16.conf.tmp
+	printf 'console console.wasm 0x1000\nfs fs.wasm 0x1018\nnet net.wasm 0x1022\nlogin login.wasm 0x1008\nshell shell.wasm 0x1008\n' > $(BUILD)/init-p16.conf.tmp
 	$(IMG) $@ 64 \
 	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
 	  services/fs/fs.wasm:/boot/modules/fs.wasm \
@@ -708,7 +709,7 @@ $(BUILD)/disk-p17.img: $(BUILD)/BOOTX64.EFI \
                       services/login/login.wasm services/init/init.wasm \
                       services/shell/shell.wasm services/net/net.wasm \
                       $(BUILD)/etc_users.txt | $(BUILD) $(IMG)
-	printf 'console console.wasm 0\nnet net.wasm 22\nlogin login.wasm 8\nshell shell.wasm 8\n' > $(BUILD)/init-p17.conf.tmp
+	printf 'console console.wasm 0x1000\nfs fs.wasm 0x1018\nnet net.wasm 0x1022\nlogin login.wasm 0x1008\nshell shell.wasm 0x1008\n' > $(BUILD)/init-p17.conf.tmp
 	$(IMG) $@ 64 \
 	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
 	  services/fs/fs.wasm:/boot/modules/fs.wasm \
@@ -735,7 +736,7 @@ $(BUILD)/disk-p18.img: $(BUILD)/BOOTX64.EFI \
                       services/login/login.wasm services/init/init.wasm \
                       services/shell/shell.wasm services/net/net.wasm \
                       $(BUILD)/etc_users.txt | $(BUILD) $(IMG)
-	printf 'console console.wasm 0\nnet net.wasm 22\nlogin login.wasm 8\nshell shell.wasm 8\n' > $(BUILD)/init-p18.conf.tmp
+	printf 'console console.wasm 0x1000\nfs fs.wasm 0x1018\nnet net.wasm 0x1022\nlogin login.wasm 0x1008\nshell shell.wasm 0x1008\n' > $(BUILD)/init-p18.conf.tmp
 	$(IMG) $@ 64 \
 	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
 	  services/fs/fs.wasm:/boot/modules/fs.wasm \

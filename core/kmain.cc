@@ -120,7 +120,7 @@ void kmain(const struct boot_info *bi) {
             SCHED_CAP_KILL | SCHED_CAP_DEVMAN | SCHED_CAP_POWER |
                 SCHED_CAP_SPAWN | SCHED_CAP_FOCUS | SCHED_CAP_FSADM |
                 SCHED_CAP_CONF | SCHED_CAP_NETADM | SCHED_CAP_PCI |
-                SCHED_CAP_FB,
+                SCHED_CAP_FB | SCHED_CAP_PORTBIND,
             iargv, iargv[1] ? 2 : 1);
     } else {
         /* legacy gate mode: dual payload slots with admin caps */
@@ -129,28 +129,28 @@ void kmain(const struct boot_info *bi) {
             console_puts("[kmain] no init and no payloads; halting\n");
             cpu_halt();
         }
-        /* F37: payload slots are gate conveniences, not admins. ppa holds
-         * only what legacy gates exercise. gate_mask from bootinfo overrides
-         * the default KILL (used by Phase 11 graphics test which needs
-         * CAP_PCI|CAP_FB). */
-         const uint64_t GATE = bi->gate_mask ? bi->gate_mask : SCHED_CAP_KILL;
+         /* gate_mask overrides the default KILL (used by Phase 11 graphics test which needs
+          * CAP_PCI|CAP_FB). CAP_PORTBIND lets payload sessions bind
+          * kernel endpoints like "registry" for diagnostic LIST ops. */
+          const uint64_t GATE = bi->gate_mask ? bi->gate_mask :
+                                                 SCHED_CAP_KILL | SCHED_CAP_PORTBIND;
          /* boot services from ESP when present (Phase-4 style) */
           const uint8_t *c_ = (const uint8_t *)(uintptr_t)bi->mod_console;
           const uint8_t *l_ = (const uint8_t *)(uintptr_t)bi->mod_login;
           const uint8_t *f_ = (const uint8_t *)(uintptr_t)bi->mod_fs;
           const uint8_t *s_ = (const uint8_t *)(uintptr_t)bi->mod_shell;
           const uint8_t *g_ = (const uint8_t *)(uintptr_t)bi->mod_graphics;
-          if (c_) sched_spawn_named("console", c_, bi->mod_console_len, 0, 0);
+          if (c_) sched_spawn_named("console", c_, bi->mod_console_len, 0, SCHED_CAP_PORTBIND);
           int sfs = -1;
           if (f_) {
-              /* fs must be up before login binds its port */
-              sfs = sched_spawn_named("fs", f_, bi->mod_fs_len, 0,
-                                      SCHED_CAP_FSADM);
-              if (sfs > 0)
-                  devblk_attach();
+            /* fs must be up before login binds its port */
+            sfs = sched_spawn_named("fs", f_, bi->mod_fs_len, 0,
+                                    SCHED_CAP_FSADM | SCHED_CAP_PORTBIND);
+            if (sfs > 0)
+              devblk_attach();
           }
-          if (l_) sched_spawn_named("login", l_, bi->mod_login_len, 0, 0);
-          if (s_) sched_spawn_named("shell", s_, bi->mod_shell_len, 0, 0);
+          if (l_) sched_spawn_named("login", l_, bi->mod_login_len, 0, SCHED_CAP_PORTBIND);
+          if (s_) sched_spawn_named("shell", s_, bi->mod_shell_len, 0, SCHED_CAP_FOCUS | SCHED_CAP_PORTBIND);
           if (g_) sched_spawn_named("graphics", g_, bi->mod_graphics_len,
                                         0, SCHED_CAP_FB | SCHED_CAP_PCI);
 
@@ -181,8 +181,11 @@ void kmain(const struct boot_info *bi) {
         console_puts("[ap] ");
         console_hex64(acked);
         console_puts(" APs acked\n");
+        if (acked == (int)m->n_cpus - 1)
+            console_puts("[kmain] KERNEL-OK all subsystems up, APs booted\n");
     } else {
         console_puts("[ap] no MADT (single CPU)\n");
+        console_puts("[kmain] KERNEL-OK all subsystems up, single CPU\n");
     }
 
     /* Scheduler enters the round-robin loop. Preemption (Phase 8) is
@@ -191,6 +194,5 @@ void kmain(const struct boot_info *bi) {
      * sched_yield_current() checks preempt_pending on every call. */
     sti_impl();
     sched_run();
-    console_puts("[kmain] KERNEL-OK all subsystems up, guest ran clean\n");
     cpu_halt();
 }

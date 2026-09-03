@@ -21,6 +21,9 @@
 #define SCHED_CAP_CONF   (1ULL << 7)
 #define SCHED_CAP_PCI    (1ULL << 8)
 #define SCHED_CAP_FB     (1ULL << 9)
+#define SCHED_CAP_DOORBELL (1ULL << 10)
+#define SCHED_CAP_VMWARE   (1ULL << 11)
+#define SCHED_CAP_PORTBIND (1ULL << 12)
 
 constexpr int MAX_SESSIONS = 12;
 constexpr int MAX_IMAGES = 8;
@@ -135,6 +138,7 @@ void *sched_runtime_of(uint32_t sid);
 void sched_set_identity(uint32_t sid, uint32_t uid, uint64_t capmask);
 int  sched_set_capmask(uint32_t sid, uint64_t clear, uint64_t set);
 bool sched_is_login(uint32_t sid); /* does sid own the "login" port? */
+bool sched_is_init(uint32_t sid);  /* does sid == "init"? */
 #ifdef __cplusplus
 }
 #endif

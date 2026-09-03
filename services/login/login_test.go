@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -312,6 +313,100 @@ func TestAuthWrongPasswordRejected(t *testing.T) {
 	}
 	if mask2 != lib.CapFocus|lib.CapFSAdmin {
 		t.Fatalf("right pw mask=%x", mask2)
+	}
+}
+
+// TestAuthHonorsChangedPassword proves the Phase 15 gate slice: login
+// re-reads /etc/users on every AUTH, so a passwd-changed hash takes
+// effect immediately — old password rejected, new accepted.
+func TestAuthHonorsChangedPassword(t *testing.T) {
+	k := lib.NewFakeKernel()
+	stop := make(chan struct{})
+	defer close(stop)
+	k.Cur = k.AddSession("login", 0, lib.CapAll)
+
+	var mu sync.Mutex
+	usersText := mkEtcUsers([][5]string{{"u1", "1001", "salt1", "oldpw", "0x18"}})
+
+	// Minimal fs READ server for /etc/users with mutable content.
+	k.AddSession("fs", 0, 0)
+	fsH := k.PortBind(lib.NameFS)
+	if fsH == lib.InvalidHandle {
+		t.Fatal("bind fs failed")
+	}
+	book := lib.NewReplyBook(k)
+	go func() {
+		buf := make([]byte, lib.MaxMsg)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			n := k.PortRecv(fsH, buf)
+			if n <= 8 {
+				time.Sleep(time.Millisecond)
+				continue
+			}
+			hdr, ok := lib.ParseHeader(buf[:n])
+			if !ok || hdr.RNam == "" {
+				continue
+			}
+			pl := buf[lib.CanonicalHeaderLen:n]
+			rh, err := book.Bind(hdr.RNam)
+			if err != nil {
+				continue
+			}
+			mk := func(status int32, body ...byte) []byte {
+				r := make([]byte, 28, 28+len(body))
+				lib.Put16(r, hdr.Op)
+				lib.Put16(r[2:], hdr.Seq)
+				lib.Put32(r[24:], uint32(status))
+				return append(r, body...)
+			}
+			if hdr.Op != lib.OpFSRead {
+				k.PortSend(rh, mk(lib.FSIO))
+				continue
+			}
+			mu.Lock()
+			txt := usersText
+			mu.Unlock()
+			off := lib.Get64(pl[len(pl)-10:])
+			if off >= uint64(len(txt)) {
+				k.PortSend(rh, mk(lib.FSOK, 0, 0))
+				continue
+			}
+			data := txt[off:]
+			b := make([]byte, 2, 2+len(data))
+			lib.Put16(b, uint16(len(data)))
+			k.PortSend(rh, mk(lib.FSOK, append(b, data...)...))
+		}
+	}()
+
+	go Serve(k, LoginOptions{Stop: stop})
+	waitLoginPort(k)
+	cli := newAuthClient(t, k)
+
+	st, _, _, err := cli.auth("u1", "oldpw")
+	if err != nil || st != statusOK {
+		t.Fatalf("initial auth st=%d err=%v", st, err)
+	}
+
+	// passwd change: new salt + new password.
+	mu.Lock()
+	usersText = mkEtcUsers([][5]string{{"u1", "1001", "salt2", "newpw", "0x18"}})
+	mu.Unlock()
+
+	st, _, _, err = cli.auth("u1", "oldpw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st != statusBad {
+		t.Fatalf("old password still accepted after change (st=%d)", st)
+	}
+	st, _, _, err = cli.auth("u1", "newpw")
+	if err != nil || st != statusOK {
+		t.Fatalf("new password rejected after change (st=%d err=%v)", st, err)
 	}
 }
 

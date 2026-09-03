@@ -35,11 +35,31 @@ extern "C" {
 
 /* ---- session context: lives in the owning session (see sched.h) ---- */
 #include "sched.h"
+#include "cap_table.h"
+#include "kernsvc.h"
 
 static sched_wasi_state *wctx() { return sched_wasi_current(); }
 
 bool wasi_exited(void) { sched_wasi_state *w = wctx(); return w ? w->exited : false; }
 int wasi_exit_code(void) { sched_wasi_state *w = wctx(); return w ? w->exit_code : -1; }
+
+// Audit on denial (always). Audit on use (only if KERN_AUDIT_LEVEL >= 1
+// and cap_entry.log_on_use). Both call into kernsvc_audit.
+#define REQUIRE_CAP(sid, cap_bit, audit_tag) do {                            \
+    uint64_t __bm = (cap_bit);                                               \
+    if (!(__builtin_expect(sched_capmask_of(sid) & __bm, 1))) {             \
+        kernsvc_audit(sid, (audit_tag), "cap", "wasi");                      \
+        m3ApiReturn(-1);                                                     \
+    }                                                                        \
+    if (KERN_AUDIT_LEVEL >= 1) {                                             \
+        for (int __i = 0; __i < kCapTableLen; __i++) {                       \
+            if (kCapTable[__i].bit == __bm && kCapTable[__i].log_on_use) {   \
+                kernsvc_audit(sid, (audit_tag), "use", "wasi");              \
+                break;                                                       \
+            }                                                                \
+        }                                                                    \
+    }                                                                        \
+} while (0)
 
 /* errno (preview1) */
 #define WASI_ESUCCESS 0
@@ -645,8 +665,12 @@ m3ApiRawFunction(kern_port_bind) {
     m3ApiReturnType(int32_t)
     m3ApiGetArgMem(const char *, name)
     m3ApiGetArg(int32_t, name_len)
-    m3ApiReturn(port_bind(sched_current_sid(), name,
-                          name_len < 0 ? 0 : (uint32_t)name_len));
+    uint32_t sid = sched_current_sid();
+    uint32_t nl = name_len < 0 ? 0 : (uint32_t)name_len;
+    if (is_well_known_name(name, nl)) {
+        REQUIRE_CAP(sid, SCHED_CAP_PORTBIND, "PORT_BIND");
+    }
+    m3ApiReturn(port_bind(sid, name, nl));
 }
 
 m3ApiRawFunction(kern_port_send) {
@@ -676,7 +700,9 @@ m3ApiRawFunction(kern_blk_read) {
     m3ApiGetArg(int32_t, lba)
     m3ApiGetArgMem(void *, buf)
     m3ApiGetArg(int32_t, cnt)
-    m3ApiReturn(devblk_rw(sched_current_sid(), 0,
+    uint32_t sid = sched_current_sid();
+    REQUIRE_CAP(sid, SCHED_CAP_FSADM, "BLK_RW");
+    m3ApiReturn(devblk_rw(sid, 0,
                           (uint64_t)(uint32_t)lba, buf,
                           cnt < 0 ? 0 : (uint32_t)cnt));
 }
@@ -686,7 +712,9 @@ m3ApiRawFunction(kern_blk_write) {
     m3ApiGetArg(int32_t, lba)
     m3ApiGetArgMem(const void *, buf)
     m3ApiGetArg(int32_t, cnt)
-    m3ApiReturn(devblk_rw(sched_current_sid(), 1,
+    uint32_t sid = sched_current_sid();
+    REQUIRE_CAP(sid, SCHED_CAP_FSADM, "BLK_RW");
+    m3ApiReturn(devblk_rw(sid, 1,
                           (uint64_t)(uint32_t)lba, (void *)buf,
                           cnt < 0 ? 0 : (uint32_t)cnt));
 }
@@ -700,14 +728,18 @@ m3ApiRawFunction(kern_input_recv) {
     m3ApiReturnType(int32_t)
     m3ApiGetArgMem(void *, buf)
     m3ApiGetArg(int32_t, cap)
-    m3ApiReturn(input_recv(sched_current_sid(), buf,
+    uint32_t sid = sched_current_sid();
+    REQUIRE_CAP(sid, SCHED_CAP_FOCUS, "FOCUS_RECV");
+    m3ApiReturn(input_recv(sid, buf,
                            cap < 0 ? 0 : (uint32_t)cap));
 }
 
 m3ApiRawFunction(kern_focus_set) {
     m3ApiReturnType(int32_t)
     m3ApiGetArg(int32_t, h)
-    m3ApiReturn(input_focus_set(sched_current_sid(), h));
+    uint32_t sid = sched_current_sid();
+    REQUIRE_CAP(sid, SCHED_CAP_FOCUS, "FOCUS_SET");
+    m3ApiReturn(input_focus_set(sid, h));
 }
 
 /* F58 adjunct: legacy void-declared shape. Raw-call layout is
@@ -731,7 +763,7 @@ m3ApiRawFunction(kern_pci_read32) {
     m3ApiGetArg(int32_t, fn)
     m3ApiGetArg(int32_t, off)
     uint32_t sid = sched_current_sid();
-    if (!(sched_capmask_of(sid) & SCHED_CAP_PCI)) m3ApiReturn(-1);
+    REQUIRE_CAP(sid, SCHED_CAP_PCI, "PCI_READ");
     int32_t v = pci_read32((uint32_t)bus, (uint32_t)dev, (uint32_t)fn, (uint32_t)off);
     m3ApiReturn(v);
 }
@@ -743,7 +775,7 @@ m3ApiRawFunction(kern_pci_write32) {
     m3ApiGetArg(int32_t, off)
     m3ApiGetArg(int32_t, val)
     uint32_t sid = sched_current_sid();
-    if (!(sched_capmask_of(sid) & SCHED_CAP_PCI)) m3ApiReturn(-1);
+    REQUIRE_CAP(sid, SCHED_CAP_PCI, "PCI_WRITE");
     int32_t r = pci_write32((uint32_t)bus,(uint32_t)dev,(uint32_t)fn,(uint32_t)off,(uint32_t)val);
     m3ApiReturn(r);
 }
@@ -754,7 +786,7 @@ m3ApiRawFunction(kern_pci_map_bar) {
     m3ApiGetArg(int32_t, fn)
     m3ApiGetArg(int32_t, bar)
     uint32_t sid = sched_current_sid();
-    if (!(sched_capmask_of(sid) & SCHED_CAP_PCI)) m3ApiReturn(-1);
+    REQUIRE_CAP(sid, SCHED_CAP_PCI, "PCI_MAP");
     int64_t off = vfio_map_bar(sid, (uint32_t)bus,(uint32_t)dev,(uint32_t)fn,(uint32_t)bar);
     m3ApiReturn(off);
 }
@@ -764,7 +796,9 @@ m3ApiRawFunction(kern_pci_unmap_bar) {
     m3ApiGetArg(int32_t, dev)
     m3ApiGetArg(int32_t, fn)
     m3ApiGetArg(int32_t, bar)
-    int r = vfio_unmap_bar(sched_current_sid(), (uint32_t)bus,(uint32_t)dev,(uint32_t)fn,(uint32_t)bar);
+    uint32_t sid = sched_current_sid();
+    REQUIRE_CAP(sid, SCHED_CAP_PCI, "PCI_UNMAP");
+    int r = vfio_unmap_bar(sid, (uint32_t)bus,(uint32_t)dev,(uint32_t)fn,(uint32_t)bar);
     m3ApiReturn(r);
 }
 m3ApiRawFunction(kern_pci_enable_busmaster) {
@@ -773,7 +807,7 @@ m3ApiRawFunction(kern_pci_enable_busmaster) {
     m3ApiGetArg(int32_t, dev)
     m3ApiGetArg(int32_t, fn)
     uint32_t sid = sched_current_sid();
-    if (!(sched_capmask_of(sid) & SCHED_CAP_PCI)) m3ApiReturn(-1);
+    REQUIRE_CAP(sid, SCHED_CAP_PCI, "PCI_BMASTER");
     int r = pci_enable_busmaster((uint32_t)bus,(uint32_t)dev,(uint32_t)fn);
     // also allow vfio to track if needed
     (void)vfio_map_bar; // silence unused
@@ -786,7 +820,7 @@ m3ApiRawFunction(kern_pci_bind_irq) {
     m3ApiGetArg(int32_t, fn)
     m3ApiGetArg(int32_t, type)
     uint32_t sid = sched_current_sid();
-    if (!(sched_capmask_of(sid) & SCHED_CAP_PCI)) m3ApiReturn(-1);
+    REQUIRE_CAP(sid, SCHED_CAP_PCI, "PCI_IRQ");
     int h = vfio_bind_irq(sid, (uint32_t)bus,(uint32_t)dev,(uint32_t)fn,(uint32_t)type);
     m3ApiReturn(h);
 }
@@ -796,7 +830,7 @@ m3ApiRawFunction(kern_pci_flr) {
     m3ApiGetArg(int32_t, dev)
     m3ApiGetArg(int32_t, fn)
     uint32_t sid = sched_current_sid();
-    if (!(sched_capmask_of(sid) & SCHED_CAP_PCI)) m3ApiReturn(-1);
+    REQUIRE_CAP(sid, SCHED_CAP_PCI, "PCI_FLR");
     int r = pci_flr((uint32_t)bus,(uint32_t)dev,(uint32_t)fn);
     m3ApiReturn(r);
 }
@@ -805,14 +839,18 @@ m3ApiRawFunction(kern_fb_set_mode) {
     m3ApiGetArg(int32_t, w)
     m3ApiGetArg(int32_t, h)
     m3ApiGetArg(int32_t, bpp)
-    int r = vfio_fb_set_mode(sched_current_sid(), (uint32_t)w,(uint32_t)h,(uint32_t)bpp);
+    uint32_t sid = sched_current_sid();
+    REQUIRE_CAP(sid, SCHED_CAP_FB, "FB_MODE");
+    int r = vfio_fb_set_mode(sid, (uint32_t)w,(uint32_t)h,(uint32_t)bpp);
     m3ApiReturn(r);
 }
 m3ApiRawFunction(kern_fb_set_cursor) {
     m3ApiReturnType(int32_t)
     m3ApiGetArg(int32_t, x)
     m3ApiGetArg(int32_t, y)
-    int r = vfio_fb_set_cursor(sched_current_sid(), (uint32_t)x,(uint32_t)y);
+    uint32_t sid = sched_current_sid();
+    REQUIRE_CAP(sid, SCHED_CAP_FB, "FB_CURSOR");
+    int r = vfio_fb_set_cursor(sid, (uint32_t)x,(uint32_t)y);
     m3ApiReturn(r);
 }
 m3ApiRawFunction(kern_fb_present) {
@@ -820,14 +858,18 @@ m3ApiRawFunction(kern_fb_present) {
     // Present the guest framebuffer window to the physical LFB by copying
     // the session's FB BAR window (emulated DMA) into the real hardware
     // framebuffer. Returns the result of the underlying VFIO present op.
-    int r = vfio_fb_present(sched_current_sid());
+    uint32_t sid = sched_current_sid();
+    REQUIRE_CAP(sid, SCHED_CAP_FB, "FB_PRESENT");
+    int r = vfio_fb_present(sid);
     m3ApiReturn(r);
 }
 m3ApiRawFunction(kern_doorbell_wait) {
     m3ApiReturnType(int32_t)
     m3ApiGetArg(int32_t, handle)
     m3ApiGetArg(int32_t, timeout_ms)
-    int r = vfio_doorbell_wait(sched_current_sid(), (uint32_t)handle,(uint32_t)timeout_ms);
+    uint32_t sid = sched_current_sid();
+    REQUIRE_CAP(sid, SCHED_CAP_DOORBELL, "DOORBELL");
+    int r = vfio_doorbell_wait(sid, (uint32_t)handle,(uint32_t)timeout_ms);
     m3ApiReturn(r);
 }
 m3ApiRawFunction(kern_vmware_backdoor) {
@@ -835,6 +877,8 @@ m3ApiRawFunction(kern_vmware_backdoor) {
     m3ApiGetArg(int32_t, op)
     m3ApiGetArgMem(uint32_t *, time_low)
     m3ApiGetArgMem(uint32_t *, time_high)
+    uint32_t sid = sched_current_sid();
+    REQUIRE_CAP(sid, SCHED_CAP_VMWARE, "VMWARE");
     int r = 0;
     switch (op) {
         case 0: // present

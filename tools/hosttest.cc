@@ -18,6 +18,7 @@
 #include "ports.h"
 #include "fsroute.h"
 #include "devblk.h"
+#include "mm.h"
 
 extern "C" {
 bool ports_name_owned_by(uint32_t sid, const char *name);
@@ -99,6 +100,18 @@ void sched_exit_current(int) {}
 /* sched_is_login mirrors core/sched.cc: owner of the "login" port name */
 bool sched_is_login(uint32_t sid) { return ports_name_owned_by(sid, "login"); }
 
+bool sched_is_init(uint32_t sid) {
+    return sched_alive(sid) && !strcmp(g_s[sid].name, "init");
+}
+
+int sched_set_capmask(uint32_t sid, uint64_t clear, uint64_t set) {
+    if (sched_alive(sid)) {
+        g_s[sid].caps = (g_s[sid].caps & ~clear) | set;
+        return 0;
+    }
+    return -1;
+}
+
 extern "C" {
 /* ---------------- arch stubs ---------------- */
 /* Host-side console stub mirrors the x86_64 at_line_start logic so
@@ -153,6 +166,12 @@ int cpu_enable_vector(void) { return 0; }
 void gdt_install(void) {}
 void idt_install(void) {}
 void paging_identity_init(void) {}
+
+/* Phase 15 observability stubs (canned; real impls live in mm.cc/sched.cc
+ * which are excluded from this link — same pattern as sched_* above) */
+uint64_t mm_total_bytes(void) { return 0x20000000ULL; } /* 512 MiB */
+uint64_t mm_used_bytes(void) { return 0x1234000ULL; }
+int sched_ncpus(void) { return 1; }
 
 /* heap shims over libc (mm.o/rt.o excluded from this link) */
 static uint64_t g_alloc_bytes;
@@ -614,6 +633,102 @@ static void t_port_ring_lock(void) {
     CHECK(n == 0, "T15 third recv returns 0 (queue drained)");
 }
 
+/* ---- T16 (Phase 15): log ring push/read/wrap ---- */
+#include "log.h"
+static void t_log_ring(void) {
+    log_push("hello ", 6);
+    log_push("world\n", 6);
+    uint64_t total = 0, begin = 0;
+    uint8_t buf[32];
+    uint32_t n = log_read(0, buf, sizeof buf, &total, &begin);
+    CHECK(total == 12 && begin == 0, "T16 total=12 begin=0 pre-wrap");
+    CHECK(n == 12, "T16 read returns 12 bytes");
+    CHECK(memcmp(buf, "hello world\n", 12) == 0, "T16 content byte-identical");
+
+    /* overflow the 16384 ring to prove wrap + clamp */
+    for (int i = 0; i < 20000; i++) {
+        char c = (char)('A' + (i % 26));
+        log_push(&c, 1);
+    }
+    n = log_read(0, buf, sizeof buf, &total, &begin);
+    CHECK(total == 20012, "T16 total=20012 after overflow");
+    CHECK(begin == 20012 - 16384, "T16 begin clamped to total-16384");
+    /* first retained byte is stream offset 3628 -> 'A'+(3616%26) */
+    uint64_t first_stream = 3628;
+    char expect0 = (char)('A' + ((first_stream - 12) % 26));
+    CHECK(buf[0] == (uint8_t)expect0, "T16 wrapped head byte correct");
+    n = log_read(total, buf, sizeof buf, &total, &begin);
+    CHECK(n == 0, "T16 read at total returns 0 (EOF)");
+}
+
+static uint64_t get64u(const uint8_t *p) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++)
+        v |= (uint64_t)p[i] << (8 * i);
+    return v;
+}
+
+/* ---- T17 (Phase 15): SYSSTAT + LOGDUMP registry ops ---- */
+static void t_sysstat_logdump_ops(void) {
+    reset_sessions();
+    ports_init();
+    int q = port_create(S_EVIL, "evil-q", 6);
+    CHECK(q >= 0, "T17 caller queue created");
+    int rh = port_bind(S_EVIL, "registry", 8);
+    CHECK(rh >= 0, "T17 bind registry");
+
+    /* SYSSTAT op 8, empty payload */
+    uint8_t fr[32];
+    memset(fr, 0, sizeof fr);
+    put16(fr, 8);
+    put16(fr + 2, 21);
+    memcpy(fr + 8, "evil-q", 6);
+    CHECK(port_send(S_EVIL, rh, fr, sizeof fr) == 0, "T17 SYSSTAT send");
+    static uint8_t rx[4096];
+    int got = -1;
+    for (int i = 0; i < 5 && got <= 0; i++)
+        got = port_recv(S_EVIL, q, rx, sizeof rx);
+    CHECK(got == 24 + 4 + 16 + 4 + 1 + 4, "T17 SYSSTAT reply length");
+    if (got == 24 + 4 + 16 + 4 + 1 + 4) {
+        CHECK(get16(rx) == 8 && get16(rx + 2) == 21, "T17 SYSSTAT op/seq");
+        CHECK(get32(rx + 24) == 0, "T17 SYSSTAT status 0");
+        CHECK(get64u(rx + 28) == 0x20000000ULL, "T17 mem_total stub");
+        CHECK(get64u(rx + 36) == 0x1234000ULL, "T17 mem_used stub");
+        CHECK(get32(rx + 44) == 5000, "T17 quantum 5000us (ticks=5)");
+        CHECK(rx[48] == 1, "T17 preempt_on default 1");
+        CHECK(get32(rx + 49) == 1, "T17 ncpus stub 1");
+    }
+
+    /* LOGDUMP op 9: push a marker, fetch tail by offset */
+    const char *mk = "T17-marker-xyz\n";
+    log_push(mk, 15);
+    uint64_t total = 0, begin = 0;
+    uint8_t tmp[8];
+    log_read(0, tmp, 0, &total, &begin);
+    uint64_t want_off = total > 100 ? total - 100 : 0;
+    memset(fr, 0, sizeof fr);
+    put16(fr, 9);
+    put16(fr + 2, 22);
+    memcpy(fr + 8, "evil-q", 6);
+    for (int i = 0; i < 8; i++)
+        fr[24 + i] = (uint8_t)(want_off >> (8 * i));
+    CHECK(port_send(S_EVIL, rh, fr, sizeof fr) == 0, "T17 LOGDUMP send");
+    got = -1;
+    for (int i = 0; i < 5 && got <= 0; i++)
+        got = port_recv(S_EVIL, q, rx, sizeof rx);
+    CHECK(got > 44, "T17 LOGDUMP reply has bytes");
+    if (got > 44) {
+        CHECK(get16(rx) == 9 && get16(rx + 2) == 22, "T17 LOGDUMP op/seq");
+        CHECK(get32(rx + 24) == 0, "T17 LOGDUMP status 0");
+        CHECK(get64u(rx + 28) == total, "T17 LOGDUMP total matches ring");
+        int found = 0;
+        for (int i = 44; i + 15 <= got; i++)
+            if (memcmp(rx + i, mk, 15) == 0)
+                found = 1;
+        CHECK(found, "T17 LOGDUMP tail contains marker");
+    }
+}
+
 int main(void) {
     fprintf(stderr, "== hosttest: kernel substrate units ==\n");
     t_owner_vs_binder();
@@ -631,6 +746,8 @@ int main(void) {
     t_lock_api();
     t_irq_save_discipline();
     t_port_ring_lock();
+    t_log_ring();
+    t_sysstat_logdump_ops();
     fprintf(stderr, "== %d/%d passed, %d failed ==\n", g_run - g_fail,
             g_run, g_fail);
     return g_fail ? 1 : 0;

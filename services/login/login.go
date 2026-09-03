@@ -3,11 +3,14 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"strconv"
 	"strings"
 
 	lib "kernel.lane/guests/lib"
 )
+
+var errNoFS = errors.New("login: no fs client")
 
 // login.wasm — well-known "login" service (abi/ABI.md §7 capability
 // issuance). Phase 10: reads /etc/users from fs.wasm
@@ -97,10 +100,30 @@ func Serve(k lib.Kernel, opts LoginOptions) {
 	reg.SetBudget(5000)
 
 	// Phase 10: prefer /etc/users; fall back to opts.DefaultUsers.
+	// Phase 15: the FS table is re-read on every AUTH (single attempt,
+	// last-good retained) so passwd changes take effect without a
+	// reboot or a reload signal (ABI.md §10). Canned opts.Users (tests)
+	// never reload.
 	users := opts.Users
+	useFS := len(users) == 0
+	var fsc *lib.FSClient
 	var conh lib.Handle = lib.InvalidHandle
-	if len(users) == 0 {
-		if loaded, err := loadUsersFromFS(k); err == nil && len(loaded) > 0 {
+	if useFS {
+		for i := 0; i < 300 && fsc == nil; i++ {
+			var err error
+			fsc, err = lib.BindFS(k, "login")
+			if err != nil {
+				fsc = nil
+				k.Yield()
+			}
+		}
+		// Short budget: startup tolerates one slow read, but every
+		// AUTH re-reads — a missing/slow fs must fail fast so AUTH
+		// replies stay within client budgets.
+		if fsc != nil {
+			fsc.SetBudget(500)
+		}
+		if loaded, err := readUsers(fsc); err == nil && len(loaded) > 0 {
 			users = loaded
 			consoleOut(k, &conh, "loaded "+strconv.Itoa(len(loaded))+" users from /etc/users\n")
 		} else {
@@ -114,6 +137,11 @@ func Serve(k lib.Kernel, opts LoginOptions) {
 	for {
 		n := k.PortRecv(h, buf)
 		if n > 8 {
+			if useFS && fsc != nil {
+				if fresh, err := readUsers(fsc); err == nil && len(fresh) > 0 {
+					users = fresh
+				}
+			}
 			kernAuth(k, reg, replies, buf[:int(n)], users, opts.shell(), &conh)
 		}
 		if stopped(opts.Stop) {
@@ -126,7 +154,8 @@ func Serve(k lib.Kernel, opts LoginOptions) {
 }
 
 // loadUsersFromFS reads /etc/users from the fs service with bounded
-// retries (fs may not be up yet at login startup).
+// retries (fs may not be up yet at login startup). Kept for
+// compatibility; Serve now binds once and uses readUsers per AUTH.
 func loadUsersFromFS(k lib.Kernel) ([]User, error) {
 	var fsc *lib.FSClient
 	var err error
@@ -141,6 +170,15 @@ func loadUsersFromFS(k lib.Kernel) ([]User, error) {
 		return nil, err
 	}
 	fsc.SetBudget(5000)
+	return readUsers(fsc)
+}
+
+// readUsers performs one single-attempt read of /etc/users over an
+// already-bound FS client (nil client => error, caller keeps last-good).
+func readUsers(fsc *lib.FSClient) ([]User, error) {
+	if fsc == nil {
+		return nil, errNoFS
+	}
 	buf := make([]byte, 8192)
 	n, err := fsc.ReadFile("/etc/users", 0, buf)
 	if err != nil {
@@ -275,11 +313,15 @@ func registerFS(k lib.Kernel, u *User, conh *lib.Handle) {
 }
 
 func doSpawn(k lib.Kernel, reg *lib.RegistryClient, shell string, u *User) uint32 {
-	sid, err := reg.Spawn(shell, shell, 0, "/home/"+u.Name)
+	/* Login holds CAP_PORTBIND; grant it to the shell session so it can
+	bind well-known ports ("console", "shell") for I/O. The user's own
+	caps are layered on top — login cannot escalate beyond its own set. */
+	mask := u.Mask | lib.CapPortBind
+	sid, err := reg.Spawn(shell, shell, mask, "/home/"+u.Name)
 	if err != nil {
 		return spawnNone
 	}
-	_ = reg.Login(shell, u.UID, u.Mask)
+	_ = reg.Login(shell, u.UID, mask)
 	return sid
 }
 

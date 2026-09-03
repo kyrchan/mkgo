@@ -30,13 +30,11 @@ type Manager struct {
 	modulesDir string
 }
 
-// New builds a Manager; reads /etc/trusted for hex-encoded ed25519 public
-// keys (one per line, lines starting with # are comments). modulesDir is
-// typically "/boot/modules".
+// New builds a Manager. Trusted keys are loaded lazily on first Verify
+// to avoid blocking during construction. modulesDir is typically
+// "/boot/modules".
 func New(f FS, modulesDir string) *Manager {
-	m := &Manager{fs: f, modulesDir: modulesDir}
-	m.trusted = m.readTrusted()
-	return m
+	return &Manager{fs: f, modulesDir: modulesDir}
 }
 
 // readTrusted parses /etc/trusted into a list of public keys.
@@ -70,8 +68,20 @@ func (m *Manager) readTrusted() []ed25519.PublicKey {
 }
 
 // TrustedKeyCount returns how many keys are loaded (for diagnostics).
-func (m *Manager) TrustedKeyCount() int { return len(m.trusted) }
+func (m *Manager) TrustedKeyCount() int {
+	if len(m.trusted) == 0 {
+		m.trusted = m.readTrusted()
+	}
+	return len(m.trusted)
+}
 
+// ensureKeys loads trusted keys if not already done.
+func (m *Manager) ensureKeys() {
+	if len(m.trusted) > 0 {
+		return
+	}
+	m.trusted = m.readTrusted()
+}
 // extractABIVer finds the custom section named `abi_ver` and returns its
 // first byte (the ABI version).
 func extractABIVer(data []byte) (byte, bool) {
@@ -113,6 +123,7 @@ func stripSigSection(data []byte) []byte {
 // Verify checks the module's abi_ver + ed25519 signature against all
 // trusted keys. Returns nil on first matching key.
 func (m *Manager) Verify(wasm []byte) error {
+	m.ensureKeys()
 	if len(m.trusted) == 0 {
 		return fmt.Errorf("no trusted keys loaded")
 	}
