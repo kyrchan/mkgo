@@ -1,5 +1,80 @@
 # MEMORY.md — kernel project state
 
+## Status — Phase 19 supervision & config GREEN (2026-09-04)
+
+**Gate: `make test-p19` PASS (KVM) + hosttest 161/163 (T3/T4 pre-existing
+F18 failures, unchanged) + shell/init/conf/lib Go suites green.**
+
+### Phase 19 — what landed
+- **Kernel (ABI v2.2, wire-superset — modules stay ver=2):**
+  registry ops 11=KNOBS_GET / 12=KNOBS_SET over a fixed `u64 knobs[8]`
+  (`core/sched.{h,cc}`: 0=quantum_us, 1=log_level, 2=audit_mask).
+  KNOBS_SET needs CAP_CONF (denial audited + status -1 reply); success
+  audited. Knob 0 writes reprogram the PIT live via conf_set_quantum_us
+  (100..200000us clamp); op 6 SETCONF routes known keys the same way
+  (quantum_us/quantum/quantum_ms→quantum, preempt→switch,
+  log_level/audit_mask→store; unknown keys logged+accepted).
+  LIST records grow one trailing byte: `u8 source` (0=login, 1=chcaps,
+  2=init). Host-build fix: `pit_reprogram_for_quantum` compiles port I/O
+  out under HOST_BUILD (outb SIGSEGVs in userspace); targeted
+  `-DHOST_BUILD` only for `build/ht/preempt.o` (mm.h depends on the macro
+  being UNSET elsewhere — learned the hard way).
+- **Host regressions (practice #2):** T21 knobs get/set/deny/readback;
+  T22 CHCAPS stamps source=1; T23 LIST carries source=2; T24 knob bounds
+  (idx≥8: set→-1, get→0) + SETCONF/KNOBS_SET both move SYSSTAT quantum
+  live (20000/30000) with restore to 5000.
+- **guests/lib:** `KnobsGet/KnobsSet` + LIST source byte (`registry.go`);
+  new `initctl.go` (subops 1-4, statuses 0-4, `InitClient` over inbox
+  ports, `SplitPolicyPayload`); FakeKernel models ops 11/12 incl. the
+  -1 denial reply (was: dropped — model bug fixed to match kernsvc).
+  Drive-by fix (VERIFY-owned, blocking): `*Bus` gained `HasClock/ClockMs`
+  so the lib suite builds again (pre-existing failure since 09-02).
+- **services/shell/conf (new):** fuzz-tested validators for init.conf /
+  kernel.conf / users / trusted (line cap 256, NUL-safe, ≤10 errors;
+  kernel.conf ranges mirror kernel clamps; provisioning `admin:0::0x1fff`
+  row accepted). 15s fuzz smoke ×4 clean; 30s soaks at commit time.
+- **shell built-ins (real, were stubs):** `sysctl [key|=]` (lists all by
+  default; quantum_ms alias ×1000; denied without CAP_CONF), `initctl
+  restart|reload-conf|apply-knobs|respawn` (inbox-port RPC to init),
+  `checkconf [--stdin]` (validates all four files, missing = skipped),
+  `caps [sid]` (self default + `source=` suffix), `sessinfo` (+source/caps).
+- **services/init:** serves initctl on well-known "init" (canonical
+  framing + ReplyBook, bounded batch/turn); restart (kill+spawn, backoff
+  reset), reload (ReadFile hook; lazy fs client in production; diff
+  add/drop/update + immediate respawn of dead), apply-knobs (replays
+  boot knob text), respawn-policy. Tests for each incl. unavailable/bad-conf.
+- **Serial `make test-p19`** (new `scripts/run_p19.sh` + `disk-p19.img`
+  whose shell holds CAP_CONF=0x1088 — the ONLY disk granting shells CONF):
+  `sysctl quantum_us`→5000; `sysctl quantum_ms=20`→`quantum_us = 20000`;
+  `top`→`quantum=20000us`; `caps`→`source=init`; `checkconf`→OK (fresh
+  ramdisk skips); `initctl restart fs`→`restart fs ok (sid=N)` last.
+  Note: the AGENTS "applied via init" leg is init's boot applyKnobs +
+  apply-knobs subop (same SETCONF path); serial proves the knob→scheduler
+  leg through the shell because only init holds CONF on stock disks.
+- **Docs:** `abi/ABI.md` v2.2 (§7 ops 11/12, LIST source byte, SETCONF
+  routing, §7.4 initctl, knob index table; abi_ver stays 0x02).
+
+### Phase 19 — pre-existing failures (NOT regressions, out of scope)
+- **test-p10 FAILs on HEAD (legacy LOGIN vs minting rule):** HEAD 43881ca
+  added the LOGIN minting check (caller must hold granted caps unless
+  init) but legacy-mode login.wasm spawns with PORTBIND-only caps
+  (`core/kmain.cc`), so registry LOGIN is denied (`[audit] sid=3
+  op=LOGIN reason=cap`). Downstream chain verified: identity stays uid 0
+  → relative `Create("secret.txt")` → `absPath` fails → `FSBadName`
+  (`[p10a] FAIL create fs: bad name`). Untouched by Phase 19 (no LOGIN /
+  legacy-spawn edits). Fix belongs to a Phase-10-followup: grant legacy
+  login a minting cap or route p10 through init.
+- **login.wasm OOMs iff net.wasm is co-resident (p17/p18 disks, NOT p19):**
+  `out of memory: cannot allocate 524288-byte block (1966080 in use)`
+  right after `[lg] using default user table`; pool has ~423 MB free, so
+  this is allocator/wasm3-growth behavior under net's eager 68 MB grow,
+  not exhaustion. Proven NOT Phase 19: rebuilding login.wasm WITHOUT
+  `guests/lib/initctl.go` changes the binary by TEN bytes (Go dead-code
+  elimination — zero live-code delta), and kernel allocation paths are
+  untouched (preempt diff is HOST_BUILD-guarded). p17/p18 gates still PASS
+  (their asserts don't need login). Needs a dedicated memory
+  investigation; do not conflate with Phase 19.
+
 Read this first. Source of truth when context is compacted.
 The full phase-by-phase plan lives in `AGENTS.md` — this file is state,
 decisions, and gotchas. Update at milestones or near context limits.

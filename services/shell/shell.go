@@ -11,6 +11,7 @@ import (
 	"time"
 
 	lib "kernel.lane/guests/lib"
+	kconf "kernel.lane/services/shell/conf"
 )
 
 // shell.wasm — the interactive shell (AGENTS.md Phase 7): prompt loop
@@ -49,6 +50,7 @@ type Shell struct {
 	ioin   lib.Handle // handle for --io-in input (InvalidHandle if unused)
 	line   []rune
 	exitStatus int
+	initCli *lib.InitClient // lazy initctl client (nil until first use)
 	// Phase 14 pipeline support: when capture != nil, out() appends
 	// to capture instead of sending to console. pin holds the current
 	// stage's stdin (previous stage's stdout).
@@ -443,7 +445,7 @@ func (s *Shell) dispatch(cmd string, args []string) {
 	s.exitStatus = 0
 	switch cmd {
 	case "help":
-		s.out("built-ins: echo ls cat stat cp mv rmdir grep find head tail wc sort uniq tr cut sed sleep true false test date clear whoami id env printenv kill-session sessions caps run help vi pwd cd mkdir rm touch passwd top dmesg memstat audit ping nc http netstat ipaddr ssh ports sessinfo caphint chcaps pkg")
+		s.out("built-ins: echo ls cat stat cp mv rmdir grep find head tail wc sort uniq tr cut sed sleep true false test date clear whoami id env printenv kill-session sessions caps run help vi pwd cd mkdir rm touch passwd top dmesg memstat audit ping nc http netstat ipaddr ssh ports sessinfo caphint chcaps pkg sysctl initctl checkconf")
 	case "echo":
 		s.out(strings.Join(args, " "))
 	case "pwd":
@@ -781,24 +783,34 @@ func (s *Shell) cmdSessions() {
 }
 
 // cmdCaps dumps one session's capability set for auditing
-// (abi/ABI.md §7 CAPS {sid}). Lists each held bit by name.
+// (abi/ABI.md §7 CAPS {sid}). Lists each held bit by name plus the
+// Phase 19 cap source (login-issued vs chcaps-granted vs init-issued).
+// With no argument it reports the shell's own session.
 func (s *Shell) cmdCaps(args []string) {
-	if s.reg == nil || len(args) == 0 {
-		s.out("usage: caps <sid>")
+	if s.reg == nil {
+		s.out("caps: registry unavailable")
 		return
 	}
-	sid, err := strconv.ParseUint(args[0], 10, 32)
-	if err != nil {
-		s.out("caps: bad sid")
-		return
+	var sid uint32
+	if len(args) == 0 {
+		sid, _ = s.ownSidUid()
+	} else {
+		v, err := strconv.ParseUint(args[0], 10, 32)
+		if err != nil {
+			s.out("caps: bad sid")
+			return
+		}
+		sid = uint32(v)
 	}
-	caps, err := s.reg.Caps(uint32(sid))
+	label := strconv.FormatUint(uint64(sid), 10)
+	src := s.capSourceOf(sid)
+	caps, err := s.reg.Caps(sid)
 	if err != nil {
 		s.out("caps: " + err.Error())
 		return
 	}
 	if len(caps) == 0 {
-		s.out(args[0] + ": (no capabilities)")
+		s.out(label + ": (no capabilities) source=" + src)
 		return
 	}
 	var parts []string
@@ -807,7 +819,37 @@ func (s *Shell) cmdCaps(args []string) {
 		parts = append(parts, lib.CapNames(c.Rights)...)
 		mask |= c.Rights
 	}
-	s.out(args[0] + ": " + strings.Join(parts, " ") + " (0x" + strconv.FormatUint(mask, 16) + ")")
+	s.out(label + ": " + strings.Join(parts, " ") + " (0x" + strconv.FormatUint(mask, 16) + ") source=" + src)
+}
+
+// capSourceOf resolves a sid's cap-source byte through LIST (Phase 19).
+func (s *Shell) capSourceOf(sid uint32) string {
+	if s.reg == nil {
+		return "?"
+	}
+	list, err := s.reg.List()
+	if err != nil {
+		return "?"
+	}
+	for _, si := range list {
+		if si.Sid == sid {
+			return capSourceName(si.Source)
+		}
+	}
+	return "?"
+}
+
+// capSourceName renders the ABI §7 LIST source byte.
+func capSourceName(src uint8) string {
+	switch src {
+	case 0:
+		return "login"
+	case 1:
+		return "chcaps"
+	case 2:
+		return "init"
+	}
+	return "?"
 }
 // capability set (looked up through LIST+CAPS; never-more-than-caller).
 func (s *Shell) cmdRun(args []string) {
@@ -2644,6 +2686,20 @@ func (s *Shell) cmdSessinfo(args []string) {
 			s.out("uid=" + strconv.FormatUint(uint64(si.UID), 10))
 			s.out("name=" + si.Name)
 			s.out("state=" + strconv.Itoa(int(si.State)))
+			s.out("source=" + capSourceName(si.Source))
+			if caps, err := s.reg.Caps(si.Sid); err == nil {
+				var mask uint64
+				var parts []string
+				for _, c := range caps {
+					parts = append(parts, lib.CapNames(c.Rights)...)
+					mask |= c.Rights
+				}
+				if len(parts) == 0 {
+					s.out("caps=(none)")
+				} else {
+					s.out("caps=" + strings.Join(parts, " ") + " (0x" + strconv.FormatUint(mask, 16) + ")")
+				}
+			}
 			return
 		}
 	}
@@ -2779,80 +2835,213 @@ func (s *Shell) cmdPkg(args []string) {
 }
 
 func (s *Shell) cmdSysctl(args []string) {
-	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		s.out("usage: sysctl <key=value|key>")
+	// sysctl [key | key=value]: read/write kernel knobs (ABI §7 ops
+	// 11/12) without parsing any file — init owns /etc/kernel.conf.
+	// quantum_ms is a millisecond alias of knob 0 (quantum_us).
+	if s.reg == nil {
+		s.out("sysctl: registry unavailable")
 		return
 	}
-	if s.fs == nil {
-		s.out("sysctl: fs unavailable")
+	if len(args) == 0 {
+		for _, key := range []string{"quantum_us", "log_level", "audit_mask"} {
+			idx, _ := kconf.KnobIndex(key)
+			ki, err := s.reg.KnobsGet(idx)
+			if err != nil {
+				s.out("sysctl: " + key + ": " + err.Error())
+				continue
+			}
+			s.out(key + " = " + strconv.FormatUint(ki.Value, 10))
+		}
 		return
 	}
-	// kernel.conf is read by init; shell just displays the request
-	s.out("sysctl: " + args[0] + " (applied via registry port — Phase 19)")
+	expr := args[0]
+	if i := strings.IndexByte(expr, '='); i >= 0 {
+		key, valstr := expr[:i], expr[i+1:]
+		canon, ok := kconf.NormalizeKnob(key)
+		if !ok {
+			s.out("sysctl: unknown key '" + key + "'")
+			s.exitStatus = 1
+			return
+		}
+		num, err := strconv.ParseUint(valstr, 10, 64)
+		if err != nil {
+			s.out("sysctl: bad value '" + valstr + "'")
+			s.exitStatus = 1
+			return
+		}
+		store := num
+		if key == "quantum_ms" || key == "quantum" {
+			store = num * 1000
+		}
+		idx, _ := kconf.KnobIndex(canon)
+		if err := s.reg.KnobsSet(idx, store); err != nil {
+			if err == lib.ErrRejected {
+				s.out("sysctl: denied (need CAP_CONF)")
+			} else {
+				s.out("sysctl: " + err.Error())
+			}
+			s.exitStatus = 1
+			return
+		}
+		s.out(canon + " = " + strconv.FormatUint(store, 10))
+		return
+	}
+	canon, ok := kconf.NormalizeKnob(expr)
+	if !ok {
+		s.out("sysctl: unknown key '" + expr + "'")
+		s.exitStatus = 1
+		return
+	}
+	idx, _ := kconf.KnobIndex(canon)
+	ki, err := s.reg.KnobsGet(idx)
+	if err != nil {
+		s.out("sysctl: " + err.Error())
+		s.exitStatus = 1
+		return
+	}
+	s.out(canon + " = " + strconv.FormatUint(ki.Value, 10))
+}
+
+// initClient lazily binds the initctl channel (nil = init not running).
+func (s *Shell) initClient() *lib.InitClient {
+	if s.initCli != nil {
+		return s.initCli
+	}
+	ic, err := lib.BindInit(s.k)
+	if err != nil {
+		return nil
+	}
+	ic.SetBudget(20000)
+	s.initCli = ic
+	return ic
 }
 
 func (s *Shell) cmdInitctl(args []string) {
+	// initctl restart <svc> | reload-conf | apply-knobs | respawn <svc> yes|no:
+	// supervision RPCs to init.wasm over the "init" port (Phase 19).
 	if len(args) == 0 {
-		s.out("usage: initctl <restart <service>|reload-conf>")
+		s.out("usage: initctl <restart <service>|reload-conf|apply-knobs|respawn <service> <yes|no>>")
+		s.exitStatus = 1
 		return
 	}
-	cmd := args[0]
-	switch cmd {
+	ic := s.initClient()
+	if ic == nil {
+		s.out("initctl: init not responding")
+		s.exitStatus = 1
+		return
+	}
+	switch args[0] {
 	case "restart":
 		if len(args) < 2 {
 			s.out("usage: initctl restart <service>")
+			s.exitStatus = 1
 			return
 		}
-		s.out("initctl: restart " + args[1] + " (via registry SPAWN — Phase 19)")
+		st, detail, err := ic.Restart(args[1])
+		if err != nil {
+			s.out("initctl: restart " + args[1] + ": " + err.Error())
+			s.exitStatus = 1
+			return
+		}
+		if st != lib.InitOK {
+			s.out("initctl: restart " + args[1] + ": " + lib.InitStatusText(st))
+			s.exitStatus = 1
+			return
+		}
+		s.out("initctl: restart " + args[1] + " ok (" + detail + ")")
 	case "reload-conf":
-		s.out("initctl: reload-conf (init re-reads /etc/init.conf)")
+		st, detail, err := ic.Reload()
+		if err != nil {
+			s.out("initctl: reload-conf: " + err.Error())
+			s.exitStatus = 1
+			return
+		}
+		if st != lib.InitOK {
+			s.out("initctl: reload-conf: " + lib.InitStatusText(st) + " " + detail)
+			s.exitStatus = 1
+			return
+		}
+		s.out("initctl: reload ok (" + detail + ")")
+	case "apply-knobs":
+		st, detail, err := ic.ApplyKnobs()
+		if err != nil {
+			s.out("initctl: apply-knobs: " + err.Error())
+			s.exitStatus = 1
+			return
+		}
+		if st != lib.InitOK {
+			s.out("initctl: apply-knobs: " + lib.InitStatusText(st))
+			s.exitStatus = 1
+			return
+		}
+		s.out("initctl: apply-knobs ok (" + detail + ")")
+	case "respawn":
+		if len(args) < 3 || (args[2] != "yes" && args[2] != "no") {
+			s.out("usage: initctl respawn <service> <yes|no>")
+			s.exitStatus = 1
+			return
+		}
+		st, detail, err := ic.RespawnPolicy(args[1], args[2] == "yes")
+		if err != nil {
+			s.out("initctl: respawn " + args[1] + ": " + err.Error())
+			s.exitStatus = 1
+			return
+		}
+		if st != lib.InitOK {
+			s.out("initctl: respawn " + args[1] + ": " + lib.InitStatusText(st))
+			s.exitStatus = 1
+			return
+		}
+		s.out("initctl: respawn " + args[1] + " " + detail)
 	default:
-		s.out("initctl: unknown subcommand '" + cmd + "'")
+		s.out("initctl: unknown subcommand '" + args[0] + "'")
+		s.exitStatus = 1
 	}
 }
 
 func (s *Shell) cmdCheckconf(args []string) {
+	// checkconf [--stdin]: validate /etc/init.conf + /etc/users +
+	// /etc/trusted + /etc/kernel.conf syntax before commit (Phase 19).
+	// Missing files are skipped (fresh ramdisk), never errors.
+	if len(args) == 1 && args[0] == "--stdin" {
+		errs := kconf.ValidateInitConfFile("<stdin>", s.pin)
+		for _, e := range errs {
+			s.out(e.Error())
+		}
+		if len(errs) == 0 {
+			s.out("checkconf: OK")
+		} else {
+			s.out("checkconf: " + strconv.Itoa(len(errs)) + " error(s)")
+			s.exitStatus = 1
+		}
+		return
+	}
 	if s.fs == nil {
 		s.out("checkconf: fs unavailable")
+		s.exitStatus = 1
 		return
 	}
-	// Check /etc/init.conf
-	data, err := s.readAll("/etc/init.conf")
-	if err != nil {
-		s.out("checkconf: cannot read /etc/init.conf: " + err.Error())
-		return
-	}
-	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
-	errors := 0
-	for i, ln := range lines {
-		ln = strings.TrimSpace(ln)
-		if ln == "" || strings.HasPrefix(ln, "#") {
-			continue
+	read := func(path string) string {
+		data, err := s.readAll(path)
+		if err != nil {
+			s.out("checkconf: " + path + ": not found (skipped)")
+			return ""
 		}
-		// Format: <name> <path> <capmask-hex> [respawn]
-		fields := strings.Fields(ln)
-		if len(fields) < 3 {
-			s.out("checkconf: line " + strconv.Itoa(i+1) + ": too few fields")
-			errors++
-		}
+		return string(data)
 	}
-	// Check /etc/users
-	data, err = s.readAll("/etc/users")
-	if err != nil {
-		s.out("checkconf: cannot read /etc/users: " + err.Error())
-	} else {
-		lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
-		for i, ln := range lines {
-			parts := strings.SplitN(ln, ":", 4)
-			if len(parts) < 3 {
-				s.out("checkconf: /etc/users line " + strconv.Itoa(i+1) + ": bad format")
-				errors++
-			}
-		}
+	errs := kconf.ValidateAll(
+		read(kconf.FileInitConf),
+		read(kconf.FileUsers),
+		read(kconf.FileTrusted),
+		read(kconf.FileKernelConf),
+	)
+	for _, e := range errs {
+		s.out(e.Error())
 	}
-	if errors == 0 {
+	if len(errs) == 0 {
 		s.out("checkconf: OK")
 	} else {
-		s.out("checkconf: " + strconv.Itoa(errors) + " error(s)")
+		s.out("checkconf: " + strconv.Itoa(len(errs)) + " error(s)")
+		s.exitStatus = 1
 	}
 }

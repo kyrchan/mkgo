@@ -104,6 +104,7 @@ type SessionInfo struct {
 	UID   uint32
 	State uint8
 	Name  string
+	Source uint8 // 0=login, 1=chcaps, 2=init
 }
 
 // Session states (core/sched.cc enum st mirrored).

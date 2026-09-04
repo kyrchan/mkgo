@@ -24,6 +24,7 @@
 #define SCHED_CAP_DOORBELL (1ULL << 10)
 #define SCHED_CAP_VMWARE   (1ULL << 11)
 #define SCHED_CAP_PORTBIND (1ULL << 12)
+#define SCHED_CAP_ALL    ((1ULL << 13) - 1)
 
 constexpr int MAX_SESSIONS = 12;
 constexpr int MAX_IMAGES = 8;
@@ -51,7 +52,8 @@ struct session {
     uint32_t sid;
     uint32_t uid;
     uint64_t capmask;
-    char name[16];
+    uint8_t cap_source; /* 0=login-issued, 1=chcaps, 2=init-issued */
+    char name[15]; /* room for NUL */
     int state;
     struct engine eng;
     bool eng_live;
@@ -136,9 +138,14 @@ void sched_preload_image(const char *name, const uint8_t *blob, uint64_t len);
 int  sched_session_by_name(const char *name); /* sid | -1 */
 void *sched_runtime_of(uint32_t sid);
 void sched_set_identity(uint32_t sid, uint32_t uid, uint64_t capmask);
-int  sched_set_capmask(uint32_t sid, uint64_t clear, uint64_t set);
+int  sched_set_capmask(uint32_t sid, uint64_t clear, uint64_t set, uint8_t source);
+/* cap_source values */
+constexpr uint8_t CAP_SRC_LOGIN = 0;
+constexpr uint8_t CAP_SRC_CHCAPS = 1;
+constexpr uint8_t CAP_SRC_INIT = 2;
 bool sched_is_login(uint32_t sid); /* does sid own the "login" port? */
 bool sched_is_init(uint32_t sid);  /* does sid == "init"? */
+uint8_t sched_cap_source(uint32_t sid); /* 0=login, 1=chcaps, 2=init */
 #ifdef __cplusplus
 }
 #endif
@@ -155,6 +162,17 @@ int sched_spawn_named_argv(const char *name, const uint8_t *blob,
 
 /* Enter the round-robin loop; returns when every session is dead. */
 void sched_run(void);
+
+/* Knob store (registry ops 11/12). Fixed 8 entries.
+ * 0=quantum_us, 1=log_level, 2=audit_mask, 3..7 reserved. */
+constexpr int KNOB_COUNT = 8;
+constexpr int KNOB_QUANTUM_US = 0;
+constexpr int KNOB_LOG_LEVEL = 1;
+constexpr int KNOB_AUDIT_MASK = 2;
+
+int  sched_knob_set(uint8_t idx, uint64_t val);
+uint64_t sched_knob_get(uint8_t idx);
+void sched_knobs_init(void);
 
 /* --- called from session stacks (raw imports) --- */
 void sched_yield_current(void);

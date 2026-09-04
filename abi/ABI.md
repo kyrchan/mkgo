@@ -1,4 +1,31 @@
-# abi/ABI.md — guest-facing interface contracts (v2.1)
+# abi/ABI.md — guest-facing interface contracts (v2.2)
+
+## v2.2 changelog (2026-09-04 — Phase 19 supervision & config, wire-superset of v2.1)
+
+- §7 registry gains op 11 = KNOBS_GET `{u8 idx}` → `{u32 status=0,
+  u64 value, char key[16]}` and op 12 = KNOBS_SET `{u8 idx, u64 value}`
+  → `{u32 status}` (CAP_CONF required; audited on use and on denial).
+  Fixed 8-entry knob store, kernel-side: 0=quantum_us, 1=log_level,
+  2=audit_mask, 3..7 reserved. Setting knob 0 reprograms the scheduler
+  quantum live (same clamp as SETCONF: 100..200000us).
+- §7 op 6 = SETCONF routes known keys to live subsystems (CAP_CONF
+  required, unchanged): quantum_us/quantum/quantum_ms → scheduler
+  quantum (ms forms ×1000), preempt → preemption switch, log_level /
+  audit_mask → knob store. Unknown keys are accepted + logged (forward
+  compat). The kernel still never parses /etc/kernel.conf — init owns
+  the file and pushes entries through this op.
+- §7 op 1 = LIST records grow one trailing byte: `{u32 sid, u32 uid,
+  u8 state, char name[16], u8 source}` (26 B now, was 25). source:
+  0=login-issued, 1=chcaps-granted, 2=init-issued. Old parsers that
+  read the v2.1 prefix are unaffected (trailing byte ignored).
+- §7.4 (new): initctl supervision protocol — NOT a kernel op. Shells
+  send canonical-framed datagrams to the well-known "init" port with
+  op = subop (1=restart, 2=reload-conf, 3=apply-knobs, 4=respawn-policy)
+  and service-name payloads; init replies `{u32 status, detail bytes}`
+  (0=ok, 1=not_found, 2=bad_name, 3=already, 4=unavailable).
+- Module `abi_ver` stays `0x02`: v2.2 is a pure registry-op superset —
+  no WASI/import/window changes, no module rebuild required. Only
+  shell.wasm (new built-ins) and init.wasm (initctl server) were rebuilt.
 
 ## v2.1 changelog (2026-09-03 — Phase 15 observability, wire-superset of v2.0)
 
@@ -184,8 +211,10 @@ no extra imports beyond §1 needed — admin tools are ordinary clients):
 Request framing: single §1 datagram `{u16 op, u16 seq, payload}`; replies
 carry the same `seq`. Ops:
 
-    registry: 1=LIST    -> records {u32 sid, u32 uid, u8 state,
-                                    char name[16]} per session
+     registry: 1=LIST    -> records {u32 sid, u32 uid, u8 state,
+                                     char name[16], u8 source} per session
+                                     (source: 0=login, 1=chcaps, 2=init;
+                                     v2.2 trailing byte, see §7.4)
               2=CAPS    {u32 sid} -> {u32 n; rec{n u32 cap_id, u64 rights}}
               3=KILL    {u32 sid} -> status      (needs CAP_KILL right)
               4=SPAWN   {char name[16], char path[64], u32 capmask,
@@ -193,8 +222,17 @@ carry the same `seq`. Ops:
                                                    (needs CAP_SPAWN right)
               5=LOGIN   {char name[16], u32 uid, u32 capmask} -> status
                           (login-name owner only; see changelog)
-              6=SETCONF {char key[16], u64 value} -> status
-                          (needs CAP_CONF right; intended: init.wasm)
+               6=SETCONF {char key[16], u64 value} -> status
+                           (needs CAP_CONF right; intended: init.wasm;
+                           known keys route live — quantum_us/quantum/
+                           quantum_ms to the scheduler quantum, preempt
+                           to the preemption switch, log_level/audit_mask
+                           to the knob store; unknown keys logged+accepted)
+                11=KNOBS_GET {u8 idx} -> {u32 status=0, u64 value,
+                             char key[16]}          (v2.2, no cap required)
+                12=KNOBS_SET {u8 idx, u64 value} -> status
+                             (v2.2, needs CAP_CONF; idx 0 reprograms the
+                             scheduler quantum live; audited)
     devman:    1=ENUM   -> {u32 n; rec{u32 class(1=block,2=net,3=input,
                                     4=timer,5=console), u32 inst,
                                     u64 win_off}}   (needs CAP_DEVMAN)
@@ -233,11 +271,37 @@ KERN_AUDIT_LEVEL=1 (default): log denials + successful use of
   high-value caps (KILL, DEVMAN, POWER, SPAWN, PCI, FB, PORTBIND).
 Audit records: [audit] sid=X uid=Y op=<tag> reason=<cap|use>
   target=wasi
+KNOBS_SET (op 12) and CHCAPS (op 10) audit every use via their own records
+(use + denials), independent of KERN_AUDIT_LEVEL.
 
 SPAWN semantics: kernel instantiates the named module from `/boot/modules/`
 as a fresh session with exactly the requested capmask (never more than the
 caller's own rights allow — privilege escalation rejected). This is how
 shells launch programs; there is no fork/exec anywhere in the system.
+
+### §7.4 initctl supervision protocol (v2.2, Phase 19)
+
+initctl is NOT a kernel op — the kernel only relays these datagrams like
+any other port traffic. Shells send canonical-framed (§1) requests to the
+well-known "init" port with op = subop and a service-name payload; init
+replies on the requester's rname inbox with `{u32 status, detail bytes}`:
+
+    1=restart       {name bytes} -> status + "sid=N" (kill if alive, respawn
+                                                     at once, backoff reset)
+    2=reload-conf   {} -> status + "N services" (init re-reads
+                        /etc/init.conf itself; new names spawn, dropped
+                        names stop being supervised, dead ones respawn)
+    3=apply-knobs   {} -> status (init re-applies its kernel.conf text
+                        through SETCONF)
+    4=respawn       {name bytes, 0x00, '0'|'1'} -> status (set respawn flag)
+
+Status: 0=ok, 1=not_found, 2=bad_name, 3=already, 4=unavailable (e.g. no
+conf source). Any session may message init in v1 (no cap check at init;
+hardening may gate later — see MEMORY.md). Shell built-ins: `initctl
+restart <svc> | reload-conf | apply-knobs | respawn <svc> yes|no`.
+
+Knob indexes (ops 11/12): 0=quantum_us, 1=log_level, 2=audit_mask,
+3..7 reserved. Shell alias: quantum_ms/quantum = knob 0 in milliseconds.
 
 ## 8. Device driver model (two-layer rule)
 

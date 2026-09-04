@@ -781,19 +781,9 @@ func TestShellPkg(t *testing.T) {
 	}, "pkg remove missing")
 }
 
-func TestShellSysctl(t *testing.T) {
-	st := newShellTest(t, "/home/u1")
-
-	st.typeLine("sysctl quantum_ms=20")
-	waitFor(t, func() bool { return st.outputContains("sysctl") }, "sysctl output missing")
-}
-
-func TestShellInitctl(t *testing.T) {
-	st := newShellTest(t, "/home/u1")
-
-	st.typeLine("initctl restart fs")
-	waitFor(t, func() bool { return st.outputContains("initctl: restart fs") }, "initctl restart missing")
-}
+// NOTE: sysctl/initctl behavior is pinned in phase19_test.go
+// (TestPhase19Sysctl*, TestPhase19Initctl*); the stub-era assertions below
+// were retired when the Phase 19 control plane landed.
 
 func TestShellCheckconf(t *testing.T) {
 	st := newShellTest(t, "/home/u1")

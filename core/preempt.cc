@@ -35,6 +35,7 @@ void preempt_mark_pending(uint32_t sid);
 
 uint32_t preempt_take_pending(void);
 uint8_t preempt_is_on(void);
+uint32_t preempt_quantum_us(void);
 
 /* Reprograms the PIT to fire at the requested quantum. Idempotent. */
 void pit_reprogram_for_quantum(uint32_t quantum_us);
@@ -62,6 +63,11 @@ uint32_t preempt_take_pending(void) {
 
 uint8_t preempt_is_on(void) { return preempt_on; }
 
+/* Phase 15 observability (top via registry SYSSTAT): scheduler quantum
+ * in microseconds, derived from the same ticks the PIT is programmed
+ * with. Real in kernel and host builds (preempt.o links both). */
+uint32_t preempt_quantum_us(void) { return quantum_ticks * 1000U; }
+
 void conf_set_quantum_us(uint64_t us) {
     if (us >= 100 && us <= 200000) {
         quantum_ticks = (uint32_t)(us / 1000);
@@ -87,7 +93,11 @@ void pit_reprogram_for_quantum(uint32_t quantum_us) {
     uint64_t d = (uint64_t)1193182U * (uint64_t)quantum_us / 1000000ULL;
     if (d < 1) d = 1;
     if (d > 65535) d = 65535;
+#ifdef HOST_BUILD
+    (void)d; /* no port I/O in userspace (outb would SIGSEGV) */
+#else
     outb(0x43, 0x36);
     outb(0x40, (uint8_t)(d & 0xFF));
     outb(0x40, (uint8_t)((d >> 8) & 0xFF));
+#endif
 }

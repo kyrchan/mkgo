@@ -13,6 +13,9 @@ const (
 	OpRegistryAssignPCI uint16 = 7 // v2.0: assign PCI device to session
 	OpRegistrySysstat   uint16 = 8 // v2.1: mem + scheduler observability
 	OpRegistryLogdump   uint16 = 9 // v2.1: v1 syslog readback
+	OpRegistryChcaps    uint16 = 10 // v2.1: grant/revoke caps on a live session
+	OpRegistryKnobsGet  uint16 = 11 // Phase 19: get kernel knob by index
+	OpRegistryKnobsSet  uint16 = 12 // Phase 19: set kernel knob (CAP_CONF)
 	OpDevmanEnum        uint16 = 1
 	OpPowerReboot       uint16 = 1
 	OpPowerOff          uint16 = 2
@@ -68,7 +71,7 @@ func (r *RegistryClient) List() ([]SessionInfo, error) {
 	out := make([]SessionInfo, 0, n)
 	off := 28
 	for i := 0; i < n; i++ {
-		if off+25 > len(rep) {
+		if off+26 > len(rep) {
 			break
 		}
 		si := SessionInfo{
@@ -76,9 +79,10 @@ func (r *RegistryClient) List() ([]SessionInfo, error) {
 			UID:   Get32(rep[off+4:]),
 			State: rep[off+8],
 			Name:  cstr16(rep[off+9 : off+25]),
+			Source: rep[off+25], // Phase 19 cap_source
 		}
 		out = append(out, si)
-		off += 25
+		off += 26
 	}
 	return out, nil
 }
@@ -171,6 +175,57 @@ func (r *RegistryClient) SetConf(key string, value uint64) error {
 	copy(pl[0:16], padName(key))
 	Put64(pl[16:], value)
 	rep, err := r.c.Request(r.rg, OpRegistrySetconf, pl)
+	if err != nil {
+		return err
+	}
+	if len(rep) < 28 {
+		return ErrShort
+	}
+	if st := int32(Get32(rep[24:28])); st != 0 {
+		return ErrRejected
+	}
+	return nil
+}
+
+// KnobKey maps a human-readable key to its numeric index.
+var KnobKey = map[string]uint8{
+	"quantum_us": 0,
+	"log_level":  1,
+	"audit_mask": 2,
+}
+
+// KnobInfo is the reply for KnobsGet.
+type KnobInfo struct {
+	Value uint64
+	Key   string
+}
+
+// KnobsGet reads a kernel knob by index (§7 op 11).
+func (r *RegistryClient) KnobsGet(idx uint8) (*KnobInfo, error) {
+	pl := []byte{idx}
+	rep, err := r.c.Request(r.rg, OpRegistryKnobsGet, pl)
+	if err != nil {
+		return nil, err
+	}
+	if len(rep) < 28+8+16 {
+		return nil, ErrShort
+	}
+	if st := int32(Get32(rep[24:28])); st != 0 {
+		return nil, ErrRejected
+	}
+	ki := &KnobInfo{
+		Value: Get64(rep[28:]),
+		Key:   cstr16(rep[36:]),
+	}
+	return ki, nil
+}
+
+// KnobsSet writes a kernel knob (§7 op 12, CAP_CONF required).
+func (r *RegistryClient) KnobsSet(idx uint8, val uint64) error {
+	pl := make([]byte, 9)
+	pl[0] = idx
+	Put64(pl[1:], val)
+	rep, err := r.c.Request(r.rg, OpRegistryKnobsSet, pl)
 	if err != nil {
 		return err
 	}

@@ -605,6 +605,13 @@ $(BUILD)/ht/%.o: core/%.cc $(wildcard core/*.h) | $(BUILD)
 	@mkdir -p $(dir $@)
 	$(CXX) $(HT_CXXFLAGS) -c $< -o $@
 
+# preempt.o programs the PIT via port I/O (outb) — a privileged
+# instruction that SIGSEGVs in userspace. HOST_BUILD compiles that path
+# out (divisor math + quantum state stay live for the T24 gate).
+$(BUILD)/ht/preempt.o: core/preempt.cc $(wildcard core/*.h) | $(BUILD)
+	@mkdir -p $(dir $@)
+	$(CXX) $(HT_CXXFLAGS) -DHOST_BUILD -c $< -o $@
+
 $(BUILD)/ht/vfio_hoststub.o: core/vfio_hoststub.cc core/vfio.h | $(BUILD)
 	@mkdir -p $(dir $@)
 	$(CXX) $(HT_CXXFLAGS) -c $< -o $@
@@ -757,7 +764,41 @@ test-p18: $(BUILD)/disk-p18.img $(BUILD)/VARS.fd
 		&& echo "TEST PASS (p18 package management)" \
 		|| { echo "TEST FAIL (p18)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial-p18.log | tail -40; exit 1; }
 
-test-all: test-kernel test-unit test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10 test-p11 test-p11b test-p12 test-p13 test-p14 test-p14sh test-p15 test-p16 test-p17 test-p18
+# Phase 19 disk: supervision & config control surface. The boot shell holds
+# CAP_CONF here (0x1088 = FOCUS|CONF|PORTBIND) so the serial gate can prove
+# the full sysctl-write -> knob-store -> scheduler-quantum path live; no
+# other disk grants shells CONF.
+$(BUILD)/disk-p19.img: $(BUILD)/BOOTX64.EFI \
+                      services/fs/fs.wasm services/console/console.wasm \
+                      services/login/login.wasm services/init/init.wasm \
+                      services/shell/shell.wasm \
+                      $(BUILD)/etc_users.txt | $(BUILD) $(IMG)
+	printf 'console console.wasm 0x1000\nfs fs.wasm 0x1018\nlogin login.wasm 0x1008\nshell shell.wasm 0x1088\n' > $(BUILD)/init-p19.conf.tmp
+	$(IMG) $@ 64 \
+	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
+	  services/fs/fs.wasm:/boot/modules/fs.wasm \
+	  services/console/console.wasm:/boot/modules/console.wasm \
+	  services/login/login.wasm:/boot/modules/login.wasm \
+	  services/init/init.wasm:/boot/modules/init.wasm \
+	  services/shell/shell.wasm:/boot/modules/shell.wasm \
+	  $(BUILD)/init-p19.conf.tmp:/init.conf \
+	  $(BUILD)/etc_users.txt:/etc/users
+
+.PHONY: test-p19
+test-p19: $(BUILD)/disk-p19.img $(BUILD)/VARS.fd
+	bash scripts/run_p19.sh $(BUILD)/serial-p19.log "$(QEMU)" "$(QEMU_ENV)" -- \
+	    -drive format=raw,file=$(BUILD)/disk-p19.img $(QEMU_BASE)
+	@grep -q 'shell ready' $(BUILD)/serial-p19.log \
+		&& grep -q 'quantum_us = 5000' $(BUILD)/serial-p19.log \
+		&& grep -q 'quantum_us = 20000' $(BUILD)/serial-p19.log \
+		&& grep -q 'quantum=20000us' $(BUILD)/serial-p19.log \
+		&& grep -q 'source=init' $(BUILD)/serial-p19.log \
+		&& grep -q 'checkconf: OK' $(BUILD)/serial-p19.log \
+		&& grep -q 'initctl: restart fs ok' $(BUILD)/serial-p19.log \
+		&& echo "TEST PASS (p19 supervision & config)" \
+		|| { echo "TEST FAIL (p19)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial-p19.log | tail -40; exit 1; }
+
+test-all: test-kernel test-unit test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10 test-p11 test-p11b test-p12 test-p13 test-p14 test-p14sh test-p15 test-p16 test-p17 test-p18 test-p19
 
 # Phase 10: KVM+TCG matrix — every gate green under both accelerators.
 # KVM_FLAG is overridable ( ?= ) so matrix targets can force an accelerator.

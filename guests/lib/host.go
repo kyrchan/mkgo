@@ -157,6 +157,13 @@ func (b *Bus) Yield() {
 	time.Sleep(20 * time.Microsecond)
 }
 
+// HasClock is false on the bare bus (no kernel clock modelled; tests that
+// need time use FakeKernel or wall clock explicitly).
+func (b *Bus) HasClock() bool { return false }
+
+// ClockMs returns 0 on the bare bus.
+func (b *Bus) ClockMs() uint64 { return 0 }
+
 // === VFIO stubs (host test) — return success/capability-denied ===
 // hostTestCaps is a package-level capability mask used by host test stubs
 // (b.Cur was removed from Bus; tests that need capability gating set this).
@@ -327,6 +334,7 @@ type FakeSession struct {
 	UID     uint32
 	Name    string
 	Capmask uint64
+	CapSource uint8 // 0=login, 1=chcaps, 2=init
 	State   uint8
 }
 
@@ -341,12 +349,13 @@ type SpawnFn func(fk *FakeKernel, name, path string, mask uint64, args []string)
 type FakeKernel struct {
 	Bus
 
-	Sessions  []*FakeSession
-	Cur       *FakeSession      // identity attributed to sends from the test
-	Audit     []string          // captured audit lines
-	Knobs     map[string]uint64 // applied via SETCONF (v1.1)
-	SpawnHook SpawnFn
-	OnPower   func(op uint16)
+	Sessions    []*FakeSession
+	Cur         *FakeSession      // identity attributed to sends from the test
+	Audit       []string          // captured audit lines
+	Knobs       map[string]uint64 // applied via SETCONF (v1.1)
+	KnobsByIdx  [8]uint64         // Phase 19: knob store by index
+	SpawnHook   SpawnFn
+	OnPower     func(op uint16)
 	// Phase 15 observability stand-ins (registry ops 8/9).
 	SysMemTotal  uint64 // SYSSTAT mem_total (0 = default 512MiB)
 	SysMemUsed   uint64 // SYSSTAT mem_used
@@ -395,7 +404,7 @@ func (fk *FakeKernel) As(uid uint32) func() {
 // etc.) and returns it. The session's well-known port name is created
 // too when free — modeling a module that binds its own name at startup.
 func (fk *FakeKernel) AddSession(name string, uid uint32, mask uint64) *FakeSession {
-	s := &FakeSession{Sid: fk.nextSid, UID: uid, Name: name, Capmask: mask, State: StateRunning}
+	s := &FakeSession{Sid: fk.nextSid, UID: uid, Name: name, Capmask: mask, CapSource: 2, State: StateRunning}
 	fk.nextSid++
 	fk.Sessions = append(fk.Sessions, s)
 	if _, exists := fk.ports[name]; !exists && len(name) <= MaxName {
@@ -406,6 +415,19 @@ func (fk *FakeKernel) AddSession(name string, uid uint32, mask uint64) *FakeSess
 
 func (fk *FakeKernel) auditf(format string, args ...any) {
 	fk.Audit = append(fk.Audit, fmt.Sprintf(format, args...))
+}
+
+func knobName(idx uint8) string {
+	switch idx {
+	case 0:
+		return "quantum_us"
+	case 1:
+		return "log_level"
+	case 2:
+		return "audit_mask"
+	default:
+		return ""
+	}
 }
 
 // PortSend intercepts sends to kernel endpoints and dispatches inline;
@@ -484,17 +506,18 @@ func (fk *FakeKernel) dispatch(epname string, data []byte) []byte {
 			if n > listCap {
 				n = listCap
 			}
-			r := rep(28 + 25*n)
-			Put32(r[24:], uint32(n))
-			off := 28
-			for _, s := range fk.Sessions[:n] {
-				Put32(r[off:], s.Sid)
-				Put32(r[off+4:], s.UID)
-				r[off+8] = s.State
-				copy(r[off+9:off+25], pad16(s.Name))
-				off += 25
-			}
-			return r
+r := rep(28 + 26*n)
+		Put32(r[24:], uint32(n))
+		off := 28
+		for _, s := range fk.Sessions[:n] {
+			Put32(r[off:], s.Sid)
+			Put32(r[off+4:], s.UID)
+			r[off+8] = s.State
+			copy(r[off+9:off+25], pad16(s.Name))
+			r[off+25] = s.CapSource // Phase 19: cap source byte
+			off += 26
+		}
+		return r
 		case OpRegistryCaps:
 			sid := uint32(0xFFFFFFFF)
 			if len(payload) >= 4 {
@@ -557,6 +580,7 @@ func (fk *FakeKernel) dispatch(epname string, data []byte) []byte {
 				if s.Name == name {
 					s.UID = uid
 					s.Capmask = mask
+					s.CapSource = 0 // login-issued
 					rc = 0
 				}
 			}
@@ -675,12 +699,49 @@ func (fk *FakeKernel) dispatch(epname string, data []byte) []byte {
 			if t == nil {
 				return nil
 			}
-			t.Capmask = (t.Capmask &^ clear) | set
-			fk.auditf("[audit] sid=%d op=CHCAPS target=%d clear=0x%x set=0x%x", me.Sid, tsid, clear, set)
+t.Capmask = (t.Capmask &^ clear) | set
+		t.CapSource = 1 // chcaps
+		fk.auditf("[audit] sid=%d op=CHCAPS target=%d clear=0x%x set=0x%x", me.Sid, tsid, clear, set)
+		r := rep(24 + 4)
+		Put32(r[24:], 0)
+		return r
+	case 11: // KNOBS_GET
+		var idx uint8 = 0
+		if len(payload) >= 1 {
+			idx = payload[0]
+		}
+		r := rep(24 + 4 + 8 + 16)
+		Put32(r[24:], 0)
+		var val uint64
+		if int(idx) < len(fk.KnobsByIdx) {
+			val = fk.KnobsByIdx[idx]
+		}
+		Put64(r[28:], val)
+		copy(r[36:], knobName(idx))
+		return r
+	case 12: // KNOBS_SET
+		if me.Capmask&CapConf == 0 {
+			fk.auditf("[audit] sid=%d op=KNOBS_SET reason=cap target=registry", me.Sid)
+			// mirrors kernsvc knack(): denial is a status -1 reply
 			r := rep(24 + 4)
-			Put32(r[24:], 0)
+			Put32(r[24:], 0xFFFFFFFF)
 			return r
-		default:
+		}
+		if len(payload) < 9 {
+			return nil
+		}
+		idx := payload[0]
+		val := Get64(payload[1:])
+		if int(idx) >= len(fk.KnobsByIdx) {
+			r := rep(24 + 4)
+			Put32(r[24:], 0xFFFFFFFF)
+			return r
+		}
+		fk.KnobsByIdx[idx] = val
+		r := rep(24 + 4)
+		Put32(r[24:], 0)
+		return r
+	default:
 			fk.auditf("[audit] sid=%d uid=%d op=%d reason=op target=registry", me.Sid, me.UID, op)
 			return nil
 		}

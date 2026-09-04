@@ -252,3 +252,158 @@ func TestSweepDefersWhenListSaturated(t *testing.T) {
 		t.Fatalf("respawn attempted under saturation: %q", joined)
 	}
 }
+
+// ---- Phase 19 initctl tests ----
+
+// initctlCall dials the supervisor's "init" port like the shell does.
+func initctlCall(t *testing.T, k *lib.FakeKernel, subop uint16, pl []byte) (uint32, string) {
+	t.Helper()
+	ic, err := lib.BindInit(k)
+	if err != nil {
+		t.Fatalf("bind init: %v", err)
+	}
+	ic.SetBudget(50000)
+	var st uint32
+	var detail string
+	switch subop {
+	case lib.InitSubRestart:
+		st, detail, err = ic.Restart(string(pl))
+	case lib.InitSubReload:
+		st, detail, err = ic.Reload()
+	case lib.InitSubApplyKnobs:
+		st, detail, err = ic.ApplyKnobs()
+	default:
+		t.Fatalf("bad subop %d", subop)
+	}
+	if err != nil {
+		t.Fatalf("initctl: %v", err)
+	}
+	return st, detail
+}
+
+func runSupervisor(t *testing.T, k *lib.FakeKernel, conf string, readFile func(string) (string, error)) (chan struct{}, *recorder) {
+	t.Helper()
+	rec := &recorder{}
+	stop := make(chan struct{})
+	go Run(k, InitOptions{
+		Services:  mustConf(t, conf),
+		Log:       rec.log,
+		PollEvery: 100000, // sweeps off; initctl still served every turn
+		Stop:      stop,
+		ReadFile:  readFile,
+	})
+	return stop, rec
+}
+
+func TestInitctlRestart(t *testing.T) {
+	k := lib.NewFakeKernel()
+	k.Cur = k.AddSession("init", 0, lib.CapAll)
+	stop, rec := runSupervisor(t, k, "a /m/a.wasm 0x8 respawn=yes\nb /m/b.wasm 0x8 respawn=no\n", nil)
+	defer close(stop)
+	wait(t, func() bool { return rec.has("spawned b sid=") }, "boot spawns missing")
+
+	reg, _ := lib.BindRegistry(k)
+	before, _ := reg.List()
+	var aSid uint32
+	for _, s := range before {
+		if s.Name == "a" {
+			aSid = s.Sid
+		}
+	}
+	st, detail := initctlCall(t, k, lib.InitSubRestart, []byte("a"))
+	if st != lib.InitOK {
+		t.Fatalf("restart st=%d (%s)", st, detail)
+	}
+	wait(t, func() bool { return rec.has("restarted by initctl") }, "restart log missing")
+	after, _ := reg.List()
+	for _, s := range after {
+		if s.Name == "a" && s.Sid == aSid && lib.Alive(s.State) {
+			t.Fatal("old a instance still alive after restart")
+		}
+	}
+	// unknown service -> not_found, nothing spawned
+	if st, _ := initctlCall(t, k, lib.InitSubRestart, []byte("nosuch")); st != lib.InitNotFound {
+		t.Fatalf("nosuch st=%d", st)
+	}
+}
+
+func TestInitctlReload(t *testing.T) {
+	k := lib.NewFakeKernel()
+	k.Cur = k.AddSession("init", 0, lib.CapAll)
+	files := map[string]string{
+		"/etc/init.conf": "a /m/a.wasm 0x8\nc /m/c.wasm 0x8\n",
+	}
+	readFile := func(p string) (string, error) {
+		if s, ok := files[p]; ok {
+			return s, nil
+		}
+		return "", fmt.Errorf("not found")
+	}
+	stop, rec := runSupervisor(t, k, "a /m/a.wasm 0x8\nb /m/b.wasm 0x8 respawn=no\n", readFile)
+	defer close(stop)
+	wait(t, func() bool { return rec.has("spawned b sid=") }, "boot spawns missing")
+
+	st, detail := initctlCall(t, k, lib.InitSubReload, nil)
+	if st != lib.InitOK {
+		t.Fatalf("reload st=%d (%s)", st, detail)
+	}
+	wait(t, func() bool { return rec.has("spawned c sid=") }, "new service c never spawned")
+	wait(t, func() bool { return rec.has("reloaded init.conf (2 services)") }, "reload log missing")
+}
+
+func TestInitctlReloadUnavailable(t *testing.T) {
+	k := lib.NewFakeKernel()
+	k.Cur = k.AddSession("init", 0, lib.CapAll)
+	// no ReadFile and no fs server: reload must report unavailable, not hang
+	stop, rec := runSupervisor(t, k, "a /m/a.wasm 0x8\n", nil)
+	defer close(stop)
+	wait(t, func() bool { return rec.has("spawned a sid=") }, "boot spawn missing")
+	if st, _ := initctlCall(t, k, lib.InitSubReload, nil); st != lib.InitUnavailable {
+		t.Fatalf("st=%d want unavailable", st)
+	}
+}
+
+func TestInitctlReloadBadConf(t *testing.T) {
+	k := lib.NewFakeKernel()
+	k.Cur = k.AddSession("init", 0, lib.CapAll)
+	readFile := func(p string) (string, error) { return "onlyname\n", nil }
+	stop, rec := runSupervisor(t, k, "a /m/a.wasm 0x8\n", readFile)
+	defer close(stop)
+	wait(t, func() bool { return rec.has("spawned a sid=") }, "boot spawn missing")
+	if st, _ := initctlCall(t, k, lib.InitSubReload, nil); st != lib.InitBadName {
+		t.Fatalf("st=%d want bad-name", st)
+	}
+}
+
+func TestInitctlApplyKnobs(t *testing.T) {
+	k := lib.NewFakeKernel()
+	k.Cur = k.AddSession("init", 0, lib.CapAll)
+	stop, rec := runSupervisor(t, k, "a /m/a.wasm 0x8\n", nil)
+	defer close(stop)
+	wait(t, func() bool { return rec.has("spawned a sid=") }, "boot spawn missing")
+	// empty knob text: still ok (nothing to apply)
+	if st, _ := initctlCall(t, k, lib.InitSubApplyKnobs, nil); st != lib.InitOK {
+		t.Fatalf("st=%d", st)
+	}
+}
+
+func TestInitctlPolicy(t *testing.T) {
+	k := lib.NewFakeKernel()
+	k.Cur = k.AddSession("init", 0, lib.CapAll)
+	stop, rec := runSupervisor(t, k, "a /m/a.wasm 0x8 respawn=yes\n", nil)
+	defer close(stop)
+	wait(t, func() bool { return rec.has("spawned a sid=") }, "boot spawn missing")
+
+	ic, err := lib.BindInit(k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ic.SetBudget(50000)
+	if st, _, err := ic.RespawnPolicy("a", false); err != nil || st != lib.InitOK {
+		t.Fatalf("policy st=%d err=%v", st, err)
+	}
+	if st, _, err := ic.Restart("nosuch"); err != nil || st != lib.InitNotFound {
+		t.Fatalf("nosuch st=%d err=%v", st, err)
+	}
+	_ = rec
+}

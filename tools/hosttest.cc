@@ -36,9 +36,11 @@ struct fake_sess {
     bool alive;
     uint32_t uid;
     uint64_t caps;
+    uint8_t cap_src;
     const char *name;
 };
 static fake_sess g_s[12];
+static uint64_t g_knobs[8];
 
 #define S_FS   1
 #define S_LGN  2
@@ -48,13 +50,17 @@ static fake_sess g_s[12];
 
 static void reset_sessions(void) {
     for (int i = 0; i < 12; i++) {
-        g_s[i] = {false, 0, 0, "?"};
+        g_s[i] = {false, 0, 0, 0, "?"};
     }
-    g_s[S_FS] = {true, 0, 0, "fs"};
-    g_s[S_LGN] = {true, 0, 0, "login"};
-    g_s[S_EVIL] = {true, 0, 0, "evil"};
-    g_s[S_U1] = {true, 1001, 0, "ppa"};
-    g_s[S_U2] = {true, 1002, 0, "ppb"};
+    g_s[S_FS] = {true, 0, 0, 2, "fs"};
+    g_s[S_LGN] = {true, 0, 0, 2, "login"};
+    g_s[S_EVIL] = {true, 0, 0, 2, "evil"};
+    g_s[S_U1] = {true, 1001, 0, 2, "ppa"};
+    g_s[S_U2] = {true, 1002, 0, 2, "ppb"};
+    /* reset knob store to defaults */
+    g_knobs[0] = 5000;
+    g_knobs[1] = 1;
+    g_knobs[2] = 255;
 }
 
 bool sched_alive(uint32_t sid) {
@@ -80,7 +86,25 @@ void sched_set_identity(uint32_t sid, uint32_t uid, uint64_t caps) {
     if (sid < 12) {
         g_s[sid].uid = uid;
         g_s[sid].caps = caps;
+        g_s[sid].cap_src = 2; /* init-issued */
     }
+}
+uint8_t sched_cap_source(uint32_t sid) {
+    return sched_alive(sid) ? g_s[sid].cap_src : 0;
+}
+uint32_t sched_list(uint32_t *out, char (*names)[16], uint32_t max) {
+    uint32_t n = 0;
+    for (int i = 0; i < 12 && n < max; i++) {
+        if (!g_s[i].alive) continue;
+        out[n*3+0] = (uint32_t)i;
+        out[n*3+1] = g_s[i].uid;
+        out[n*3+2] = g_s[i].alive ? 1 : 0;
+        memset(names[n], 0, 16);
+        for (int k = 0; k < 16 && g_s[i].name[k]; k++)
+            names[n][k] = g_s[i].name[k];
+        n++;
+    }
+    return n;
 }
 int sched_kill(uint32_t sid) {
     if (!sched_alive(sid))
@@ -88,7 +112,6 @@ int sched_kill(uint32_t sid) {
     g_s[sid].alive = false;
     return 0;
 }
-uint32_t sched_list(uint32_t *, char (*)[16], uint32_t) { return 0; }
 int sched_spawn_image(const char *, uint32_t, uint64_t, const char *,
                       const char *const *, int) {
     return -1;
@@ -104,12 +127,27 @@ bool sched_is_init(uint32_t sid) {
     return sched_alive(sid) && !strcmp(g_s[sid].name, "init");
 }
 
-int sched_set_capmask(uint32_t sid, uint64_t clear, uint64_t set) {
+int sched_set_capmask(uint32_t sid, uint64_t clear, uint64_t set, uint8_t source) {
     if (sched_alive(sid)) {
         g_s[sid].caps = (g_s[sid].caps & ~clear) | set;
+        g_s[sid].cap_src = source;
         return 0;
     }
     return -1;
+}
+
+int sched_knob_set(uint8_t idx, uint64_t val) {
+    if (idx >= 8) return -1;
+    g_knobs[idx] = val;
+    return 0;
+}
+uint64_t sched_knob_get(uint8_t idx) {
+    return idx < 8 ? g_knobs[idx] : 0;
+}
+void sched_knobs_init(void) {
+    g_knobs[0] = 5000;
+    g_knobs[1] = 1;
+    g_knobs[2] = 255;
 }
 
 extern "C" {
@@ -208,6 +246,16 @@ static uint16_t get16(const uint8_t *p) {
 static int32_t get32(const uint8_t *p) {
     return (int32_t)((uint32_t)p[0] | (uint32_t)p[1] << 8 |
                      (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24);
+}
+static void put32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16);
+    p[3] = (uint8_t)(v >> 24);
+}
+static uint32_t get32u(const uint8_t *p) {
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8 |
+           (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
 }
 
 /* ---- T1 (F13): binder must not count as owner ---- */
@@ -729,6 +777,259 @@ static void t_sysstat_logdump_ops(void) {
     }
 }
 
+/* ---- T21 (Phase 19): knob store get/set/audit ---- */
+static void t_knobs(void) {
+    reset_sessions();
+    ports_init();
+    int q = port_create(S_EVIL, "evil-q", 6);
+    int rh = port_bind(S_EVIL, "registry", 8);
+    CHECK(rh >= 0 && q >= 0, "T21 setup");
+    uint8_t rx[64];
+
+    /* default quantum is 5000 */
+    uint8_t fr[64];
+    memset(fr, 0, sizeof fr);
+    put16(fr, 11); /* KNOBS_GET */
+    put16(fr + 2, 1);
+    memcpy(fr + 8, "evil-q", 6);
+    fr[24] = 0; /* idx 0 = quantum_us */
+    CHECK(port_send(S_EVIL, rh, fr, sizeof fr) == 0, "T21 knobs get send");
+    int got = -1;
+    for (int i = 0; i < 3 && got <= 0; i++)
+        got = port_recv(S_EVIL, q, rx, sizeof rx);
+    CHECK(got >= 44, "T21 knobs get reply");
+    if (got >= 44) {
+        CHECK(get16(rx) == 11, "T21 KNOBS_GET op");
+        CHECK(get32(rx + 24) == 0, "T21 knobs get status 0");
+        CHECK(get64u(rx + 28) == 5000, "T21 knobs get default 5000");
+    }
+
+    /* set without CAP_CONF must be denied */
+    memset(fr, 0, sizeof fr);
+    put16(fr, 12); /* KNOBS_SET */
+    put16(fr + 2, 2);
+    memcpy(fr + 8, "evil-q", 6);
+    fr[24] = 0;
+    for (int i = 0; i < 8; i++)
+        fr[25 + i] = (uint8_t)(20000u >> (8 * i));
+    CHECK(port_send(S_EVIL, rh, fr, sizeof fr) == 0, "T21 knobs set send");
+    got = -1;
+    for (int i = 0; i < 3 && got <= 0; i++)
+        got = port_recv(S_EVIL, q, rx, sizeof rx);
+    CHECK(got == 28, "T21 knobs set denial replied");
+    if (got == 28) {
+        CHECK(get32(rx + 24) == 0xFFFFFFFFu, "T21 knobs set status -1");
+    }
+
+    /* grant CAP_CONF and set */
+    g_s[S_EVIL].caps |= SCHED_CAP_CONF;
+    CHECK(port_send(S_EVIL, rh, fr, sizeof fr) == 0, "T21 knobs set send2");
+    got = -1;
+    for (int i = 0; i < 3 && got <= 0; i++)
+        got = port_recv(S_EVIL, q, rx, sizeof rx);
+    CHECK(got == 28, "T21 knobs set ok reply");
+    if (got == 28) {
+        CHECK(get32(rx + 24) == 0, "T21 knobs set status 0");
+    }
+
+    /* read back */
+    memset(fr, 0, sizeof fr);
+    put16(fr, 11);
+    put16(fr + 2, 3);
+    memcpy(fr + 8, "evil-q", 6);
+    fr[24] = 0;
+    CHECK(port_send(S_EVIL, rh, fr, sizeof fr) == 0, "T21 knobs get2 send");
+    got = -1;
+    for (int i = 0; i < 3 && got <= 0; i++)
+        got = port_recv(S_EVIL, q, rx, sizeof rx);
+    CHECK(got >= 44, "T21 knobs get2 reply");
+    if (got >= 44) {
+        CHECK(get32(rx + 24) == 0, "T21 knobs get2 status 0");
+        CHECK(get64u(rx + 28) == 20000, "T21 knobs get2 value 20000");
+    }
+}
+
+/* ---- T22 (Phase 19): CHCAPS stamps cap_source=1 ---- */
+static void t_chcaps_source(void) {
+    reset_sessions();
+    ports_init();
+    int q = port_create(S_EVIL, "evil-q", 6);
+    int rh = port_bind(S_EVIL, "registry", 8);
+    CHECK(rh >= 0 && q >= 0, "T22 setup");
+    uint8_t rx[64];
+
+    /* evil has CAP_POWER (it's the test owner) */
+    g_s[S_EVIL].caps |= SCHED_CAP_POWER;
+
+    uint8_t fr[64];
+    memset(fr, 0, sizeof fr);
+    put16(fr, 10); /* CHCAPS */
+    put16(fr + 2, 1);
+    memcpy(fr + 8, "evil-q", 6);
+    put32(fr + 24, S_U1); /* target sid */
+    put32(fr + 28, 0);    /* clear */
+    put32(fr + 32, SCHED_CAP_SPAWN); /* set SPAWN */
+    CHECK(port_send(S_EVIL, rh, fr, sizeof fr) == 0, "T22 CHCAPS send");
+    int got = -1;
+    for (int i = 0; i < 3 && got <= 0; i++)
+        got = port_recv(S_EVIL, q, rx, sizeof rx);
+    CHECK(got == 28, "T22 CHCAPS reply");
+    if (got == 28) {
+        CHECK(get32(rx + 24) == 0, "T22 CHCAPS status 0");
+        CHECK(g_s[S_U1].cap_src == 1, "T22 CHCAPS stamps source=1");
+    }
+}
+
+/* ---- T23 (Phase 19): cap_source in LIST record ---- */
+static void t_list_cap_source(void) {
+    reset_sessions();
+    ports_init();
+    int q = port_create(S_EVIL, "evil-q", 6);
+    int rh = port_bind(S_EVIL, "registry", 8);
+    CHECK(rh >= 0 && q >= 0, "T23 setup");
+    uint8_t rx[64];
+
+    uint8_t fr[64];
+    memset(fr, 0, sizeof fr);
+    put16(fr, 1); /* LIST */
+    put16(fr + 2, 1);
+    memcpy(fr + 8, "evil-q", 6);
+    CHECK(port_send(S_EVIL, rh, fr, sizeof fr) == 0, "T23 LIST send");
+    int got = -1;
+    for (int i = 0; i < 3 && got <= 0; i++)
+        got = port_recv(S_EVIL, q, rx, sizeof rx);
+    CHECK(got >= 28, "T23 LIST reply");
+    if (got >= 28) {
+        uint32_t n = get32u(rx + 28);
+        CHECK(n >= 1, "T23 LIST has >=1 session");
+        /* record is 26 bytes now (was 25): sid,uid,state,name[16],cap_src */
+        CHECK(got >= 32 + 26 * n, "T23 LIST record size 26");
+        /* evil's record should have cap_src=2 (init-issued) */
+        for (uint32_t i = 0; i < n; i++) {
+            uint32_t off = 32 + i * 26;
+            uint32_t sid = get32u(rx + off);
+            uint8_t src = rx[off + 25];
+            if (sid == S_EVIL) {
+                CHECK(src == 2, "T23 evil cap_source=2 (init)");
+            }
+        }
+    }
+}
+
+/* ---- T24 (Phase 19): knob bounds + SETCONF routing to scheduler ---- */
+static void t_knob_bounds_setconf(void) {
+    reset_sessions();
+    ports_init();
+    int q = port_create(S_EVIL, "evil-q", 6);
+    int rh = port_bind(S_EVIL, "registry", 8);
+    CHECK(rh >= 0 && q >= 0, "T24 setup");
+    g_s[S_EVIL].caps |= SCHED_CAP_CONF;
+    uint8_t rx[128];
+
+    /* out-of-range KNOBS_SET nacks with status -1 (sched_knob_set bounds) */
+    uint8_t fr[64];
+    memset(fr, 0, sizeof fr);
+    put16(fr, 12);
+    put16(fr + 2, 41);
+    memcpy(fr + 8, "evil-q", 6);
+    fr[24] = 8; /* idx 8 >= KNOB_COUNT */
+    for (int i = 0; i < 8; i++)
+        fr[25 + i] = (uint8_t)(9999u >> (8 * i));
+    CHECK(port_send(S_EVIL, rh, fr, sizeof fr) == 0, "T24 bad-idx set send");
+    int got = -1;
+    for (int i = 0; i < 3 && got <= 0; i++)
+        got = port_recv(S_EVIL, q, rx, sizeof rx);
+    CHECK(got == 28, "T24 bad-idx set nacked");
+    if (got == 28)
+        CHECK(get32(rx + 24) == (int32_t)0xFFFFFFFFu, "T24 bad-idx status -1");
+
+    /* out-of-range KNOBS_GET replies status 0 val 0 (sched_knob_get clamp) */
+    memset(fr, 0, sizeof fr);
+    put16(fr, 11);
+    put16(fr + 2, 42);
+    memcpy(fr + 8, "evil-q", 6);
+    fr[24] = 8;
+    CHECK(port_send(S_EVIL, rh, fr, sizeof fr) == 0, "T24 bad-idx get send");
+    got = -1;
+    for (int i = 0; i < 3 && got <= 0; i++)
+        got = port_recv(S_EVIL, q, rx, sizeof rx);
+    CHECK(got >= 44, "T24 bad-idx get reply");
+    if (got >= 44) {
+        CHECK(get32(rx + 24) == 0, "T24 bad-idx get status 0");
+        CHECK(get64u(rx + 28) == 0, "T24 bad-idx get val 0");
+    }
+
+    /* SETCONF quantum_ms routes to the live scheduler quantum */
+    memset(fr, 0, sizeof fr);
+    put16(fr, 6);
+    put16(fr + 2, 43);
+    memcpy(fr + 8, "evil-q", 6);
+    memcpy(fr + 24, "quantum_ms", 10);
+    uint64_t v20 = 20;
+    for (int i = 0; i < 8; i++)
+        fr[24 + 16 + i] = (uint8_t)(v20 >> (8 * i));
+    CHECK(port_send(S_EVIL, rh, fr, sizeof fr) == 0, "T24 setconf send");
+    got = -1;
+    for (int i = 0; i < 3 && got <= 0; i++)
+        got = port_recv(S_EVIL, q, rx, sizeof rx);
+    CHECK(got == 28, "T24 setconf reply");
+    if (got == 28)
+        CHECK(get32(rx + 24) == 0, "T24 setconf status 0");
+
+    /* SYSSTAT must now report quantum 20000us */
+    memset(fr, 0, sizeof fr);
+    put16(fr, 8);
+    put16(fr + 2, 44);
+    memcpy(fr + 8, "evil-q", 6);
+    CHECK(port_send(S_EVIL, rh, fr, sizeof fr) == 0, "T24 sysstat send");
+    got = -1;
+    static uint8_t big[4096];
+    for (int i = 0; i < 5 && got <= 0; i++)
+        got = port_recv(S_EVIL, q, big, sizeof big);
+    CHECK(got == 24 + 4 + 16 + 4 + 1 + 4, "T24 sysstat reply length");
+    if (got == 24 + 4 + 16 + 4 + 1 + 4)
+        CHECK(get32(big + 44) == 20000, "T24 SETCONF quantum_ms=20 live");
+
+    /* KNOBS_SET idx 0 likewise reprograms the quantum */
+    memset(fr, 0, sizeof fr);
+    put16(fr, 12);
+    put16(fr + 2, 45);
+    memcpy(fr + 8, "evil-q", 6);
+    fr[24] = 0;
+    for (int i = 0; i < 8; i++)
+        fr[25 + i] = (uint8_t)(30000u >> (8 * i));
+    CHECK(port_send(S_EVIL, rh, fr, sizeof fr) == 0, "T24 knob0 set send");
+    got = -1;
+    for (int i = 0; i < 3 && got <= 0; i++)
+        got = port_recv(S_EVIL, q, rx, sizeof rx);
+    CHECK(got == 28 && get32(rx + 24) == 0, "T24 knob0 set ok");
+    memset(fr, 0, sizeof fr);
+    put16(fr, 8);
+    put16(fr + 2, 46);
+    memcpy(fr + 8, "evil-q", 6);
+    CHECK(port_send(S_EVIL, rh, fr, sizeof fr) == 0, "T24 sysstat2 send");
+    got = -1;
+    for (int i = 0; i < 5 && got <= 0; i++)
+        got = port_recv(S_EVIL, q, big, sizeof big);
+    if (got == 24 + 4 + 16 + 4 + 1 + 4)
+        CHECK(get32(big + 44) == 30000, "T24 KNOBS_SET quantum live");
+
+    /* restore the 5000us default for any later consumers */
+    memset(fr, 0, sizeof fr);
+    put16(fr, 6);
+    put16(fr + 2, 47);
+    memcpy(fr + 8, "evil-q", 6);
+    memcpy(fr + 24, "quantum_ms", 10);
+    uint64_t v5 = 5;
+    for (int i = 0; i < 8; i++)
+        fr[24 + 16 + i] = (uint8_t)(v5 >> (8 * i));
+    CHECK(port_send(S_EVIL, rh, fr, sizeof fr) == 0, "T24 restore send");
+    got = -1;
+    for (int i = 0; i < 3 && got <= 0; i++)
+        got = port_recv(S_EVIL, q, rx, sizeof rx);
+    CHECK(got == 28 && get32(rx + 24) == 0, "T24 restore ok");
+}
+
 int main(void) {
     fprintf(stderr, "== hosttest: kernel substrate units ==\n");
     t_owner_vs_binder();
@@ -748,6 +1049,10 @@ int main(void) {
     t_port_ring_lock();
     t_log_ring();
     t_sysstat_logdump_ops();
+    t_knobs();
+    t_chcaps_source();
+    t_list_cap_source();
+    t_knob_bounds_setconf();
     fprintf(stderr, "== %d/%d passed, %d failed ==\n", g_run - g_fail,
             g_run, g_fail);
     return g_fail ? 1 : 0;

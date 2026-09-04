@@ -198,14 +198,14 @@ func ppa() {
 	}
 	rep := regList(rg)
 	if len(rep) >= 28 {
-		/* canonical reply: body {u32 n; rec[25]{sid,uid,state,name[16]}} @24 */
+		/* canonical reply: body {u32 n; rec[26]{sid,uid,state,name[16],source}} @24 (v2.2) */
 		n := uint32(rep[24]) | uint32(rep[25])<<8 | uint32(rep[26])<<16 | uint32(rep[27])<<24
 		os.Stdout.WriteString("[reg] sessions=")
 		os.Stdout.WriteString(itoa(int(n)))
 		os.Stdout.WriteString(":")
 		consoleSid := int32(-1)
 		off := 28
-		for i := uint32(0); i < n && off+25 <= len(rep); i++ {
+		for i := uint32(0); i < n && off+26 <= len(rep); i++ {
 			sid := uint32(rep[off]) | uint32(rep[off+1])<<8 |
 				uint32(rep[off+2])<<16 | uint32(rep[off+3])<<24
 			name := string(rep[off+9 : off+25])
@@ -219,7 +219,7 @@ func ppa() {
 			if name == "console" {
 				consoleSid = int32(sid)
 			}
-			off += 25
+			off += 26
 		}
 		os.Stdout.WriteString("\n")
 		/* crash isolation: kill console */

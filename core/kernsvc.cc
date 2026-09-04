@@ -14,6 +14,8 @@
 extern "C" {
 uint32_t preempt_quantum_us(void);
 uint8_t preempt_is_on(void);
+void conf_set_quantum_us(uint64_t us);
+void conf_set_preempt(uint64_t on);
 }
 
 extern "C" {
@@ -39,6 +41,24 @@ static void put32(uint8_t *p, uint32_t v) {
 static uint32_t get32(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
            ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+static void put64(uint8_t *p, uint64_t v) {
+    for (int i = 0; i < 8; i++)
+        p[i] = (uint8_t)(v >> (8 * i));
+}
+static uint64_t get64(const uint8_t *p) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++)
+        v |= (uint64_t)p[i] << (8 * i);
+    return v;
+}
+static const char *knob_name(uint8_t idx) {
+    switch (idx) {
+    case 0: return "quantum_us";
+    case 1: return "log_level";
+    case 2: return "audit_mask";
+    default: return 0;
+    }
 }
 
 namespace {
@@ -140,7 +160,7 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
 
     if (!strcmp(epname, "registry")) {
         switch (op) {
-        case 1: { /* LIST -> body {u32 n; rec[25]} at 24 */
+        case 1: { /* LIST -> body {u32 n; rec[25]} at 24, rec ext: +u8 cap_src */
             rn = kbegin(1);
             char names[12][16];
             uint32_t recs[12 * 3];
@@ -148,12 +168,14 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
             put32(rbuf + rn, n);
             rn += 4;
             for (uint32_t i = 0; i < n; i++) {
-                put32(rbuf + rn, recs[i * 3 + 0]); /* sid */
+                uint32_t sid = recs[i * 3 + 0];
+                put32(rbuf + rn, sid); /* sid */
                 put32(rbuf + rn + 4, recs[i * 3 + 1]); /* uid */
                 rbuf[rn + 8] = (uint8_t)recs[i * 3 + 2]; /* state */
                 for (int k = 0; k < 16; k++)
                     rbuf[rn + 9 + k] = names[i][k];
-                rn += 25;
+                rbuf[rn + 25] = sched_cap_source(sid); /* cap_src (Phase 19) */
+                rn += 26;
             }
             kernsvc_reply(rbuf, rn);
             return;
@@ -327,6 +349,10 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
                 return;
             }
             sched_set_identity((uint32_t)tsid, nuid, nmask);
+            /* LOGIN stamps source: 0=login, 2=init (init is trusted to
+             * mint any mask). sched_set_identity sets 0; override for init. */
+            if (sched_is_init(from_sid))
+                sched_set_capmask((uint32_t)tsid, 0, nmask, 2);
             rn = kbegin(5);
             put32(rbuf + rn, 0);
             kernsvc_reply(rbuf, rn + 4);
@@ -353,6 +379,21 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
             console_puts("=");
             console_hex64(val);
             console_puts("\n");
+            /* Phase 19: SETCONF keys with scheduler/knob effects. The
+             * kernel never parses /etc/kernel.conf (init owns the file);
+             * this routes the already-parsed key to the live subsystem
+             * so init-applied knobs take effect immediately. Unknown
+             * keys are accepted (logged above) for forward compat. */
+            if (!strcmp(cfgkey, "quantum_us") || !strcmp(cfgkey, "quantum"))
+                conf_set_quantum_us(val);
+            else if (!strcmp(cfgkey, "quantum_ms"))
+                conf_set_quantum_us(val * 1000);
+            else if (!strcmp(cfgkey, "preempt"))
+                conf_set_preempt(val);
+            else if (!strcmp(cfgkey, "log_level"))
+                sched_knob_set(KNOB_LOG_LEVEL, val);
+            else if (!strcmp(cfgkey, "audit_mask"))
+                sched_knob_set(KNOB_AUDIT_MASK, val);
             rn = kbegin(6);
             put32(rbuf + rn, 0);
             kernsvc_reply(rbuf, rn + 4);
@@ -439,7 +480,7 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
             uint32_t tsid = get32(payload + 0);
             uint32_t clear = get32(payload + 4);
             uint32_t set = get32(payload + 8);
-            int rc = sched_set_capmask(tsid, clear, set);
+            int rc = sched_set_capmask(tsid, clear, set, 1);
             console_puts("[audit] sid=");
             console_hex64(from_sid);
             console_puts(" op=CHCAPS target=");
@@ -452,6 +493,44 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
             console_hex64(rc);
             console_puts("\n");
             rn = kbegin(10);
+            put32(rbuf + rn, (uint32_t)rc);
+            kernsvc_reply(rbuf, rn + 4);
+            return;
+        }
+        case 11: { /* KNOBS_GET (Phase 19) {u8 idx} -> {u32 status, u64 val, char key[16]} */
+            if (plen < 1) { knack(); return; }
+            uint8_t idx = payload[0];
+            rn = kbegin(11);
+            put32(rbuf + rn, 0); /* status */
+            rn += 4;
+            uint64_t val = sched_knob_get(idx);
+            put64(rbuf + rn, val);
+            rn += 8;
+            const char *key = knob_name(idx);
+            for (int i = 0; i < 16; i++)
+                rbuf[rn + i] = key ? key[i] : 0;
+            kernsvc_reply(rbuf, rn + 16);
+            return;
+        }
+        case 12: { /* KNOBS_SET (Phase 19) {u8 idx, u64 val} -> {u32 status} */
+            if (!(sched_capmask_of(from_sid) & SCHED_CAP_CONF)) {
+                kernsvc_audit(from_sid, "KNOBS_SET", "cap", "registry");
+                knack();
+                return;
+            }
+            if (plen < 9) { knack(); return; }
+            uint8_t idx = payload[0];
+            uint64_t val = get64(payload + 1);
+            int rc = sched_knob_set(idx, val);
+            if (rc == 0) {
+                /* idx 0 is the scheduler quantum: reprogram the PIT so
+                 * `sysctl quantum_ms=20` is visible in top/SYSSTAT at
+                 * once (conf_set_quantum_us clamps 100..200000us). */
+                if (idx == KNOB_QUANTUM_US)
+                    conf_set_quantum_us(val);
+                kernsvc_audit(from_sid, "KNOBS_SET", "use", "registry");
+            }
+            rn = kbegin(12);
             put32(rbuf + rn, (uint32_t)rc);
             kernsvc_reply(rbuf, rn + 4);
             return;

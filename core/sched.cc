@@ -134,6 +134,7 @@ void sched_init(void) {
         sessions[i].sid = (uint32_t)i;
         sessions[i].stack = 0;
         sessions[i].eng_live = false;
+        sessions[i].cap_source = 2; /* init-issued default */
     }
     next_rr = 1;
     cur = 0;
@@ -150,6 +151,7 @@ void sched_init(void) {
     }
     g_cpu[0].ap_ready = 1;
     g_n_cpus = 1;
+    sched_knobs_init();
 #ifndef HOST_BUILD
     wr_gs_base((uint64_t)&g_cpu[0]);
 #endif
@@ -304,6 +306,7 @@ void sched_set_identity(uint32_t sid, uint32_t uid, uint64_t capmask) {
     if (sid < MAX_SESSIONS && sessions[sid].state != S_FREE) {
         sessions[sid].uid = uid;
         sessions[sid].capmask = capmask;
+        sessions[sid].cap_source = 0; /* LOGIN-issued */
         console_puts("[sched] identity '");
         console_puts(sessions[sid].name);
         console_puts("' uid=");
@@ -314,9 +317,10 @@ void sched_set_identity(uint32_t sid, uint32_t uid, uint64_t capmask) {
     }
 }
 
-int sched_set_capmask(uint32_t sid, uint64_t clear, uint64_t set) {
+int sched_set_capmask(uint32_t sid, uint64_t clear, uint64_t set, uint8_t source) {
     if (sid < MAX_SESSIONS && sessions[sid].state != S_FREE) {
         sessions[sid].capmask = (sessions[sid].capmask & ~clear) | set;
+        sessions[sid].cap_source = source;
         console_puts("[sched] chcaps '");
         console_puts(sessions[sid].name);
         console_puts("' caps=0x");
@@ -338,6 +342,10 @@ bool sched_is_init(uint32_t sid) {
            !strcmp(sessions[sid].name, "init");
 }
 
+uint8_t sched_cap_source(uint32_t sid) {
+    return sid < MAX_SESSIONS && sessions[sid].state != S_FREE
+           ? sessions[sid].cap_source : 0;
+}
 int sched_kill(uint32_t sid) {
     if (!sched_alive(sid)) {
         audit("KILL", "nosession", "registry");
@@ -479,4 +487,25 @@ extern "C" void sched_ap_boot(struct ap_boot_info *info) {
     console_puts(d);
     console_puts(" booted\n");
     sched_run_ap();
+}
+
+/* ---- Phase 19: knob store (registry ops 11/12) ---- */
+static uint64_t g_knobs[KNOB_COUNT];
+
+int sched_knob_set(uint8_t idx, uint64_t val) {
+    if (idx >= KNOB_COUNT)
+        return -1;
+    g_knobs[idx] = val;
+    return 0;
+}
+
+uint64_t sched_knob_get(uint8_t idx) {
+    return idx < KNOB_COUNT ? g_knobs[idx] : 0;
+}
+
+/* init-time knob defaults */
+void sched_knobs_init(void) {
+    g_knobs[KNOB_QUANTUM_US] = 5000;
+    g_knobs[KNOB_LOG_LEVEL]  = 1;
+    g_knobs[KNOB_AUDIT_MASK] = 255;
 }
