@@ -224,6 +224,11 @@ static void args_sizes(uint32_t *argc, uint32_t *bufsize) {
         *bufsize += (uint32_t)(n + 1);
         (*argc)++;
     }
+    /* F-AUDIT: WASI args_sizes_get reports argc+1 argv slots (the +1 is
+     * the NULL terminator the runtime expects at argv[argc]) and the
+     * size of the argv_buf needed to hold all strings + the final NUL. */
+    *argc = *argc + 1;
+    *bufsize += 1; /* the final empty string's NUL */
 }
 
 m3ApiRawFunction(wasi_args_sizes_get) {

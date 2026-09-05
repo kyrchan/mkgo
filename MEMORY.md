@@ -904,3 +904,33 @@ preserved in agent transcript; statuses below.
   Two concurrent routed fd ops corrupted each other. **Fixed**:
   moved into `sched_wasi_state` (per-session).
 - **MINOR #8-12** documented in audit report; not blocking.
+
+## F-AUDIT2 — second pass 2026-09-06
+Subagent second sweep on areas the first pass only lightly covered.
+Findings + fixes this commit:
+
+- **MAJOR (new)** `core/wasi_glue.cc:213,248-269` — `args_sizes_get`
+  + `args_get` omitted the WASI-mandated NULL-terminator slot.
+  Runtime reads `argv[argc]` for the NULL pointer; we only wrote
+  `argc` entries and never set `argv[argc] = 0`. Also `bufsize`
+  was one byte short of what `args_get` actually writes. **Fixed**:
+  `args_sizes` now adds +1 to argc and +1 to bufsize; `args_get`
+  loop iterates the extra slot and writes the empty NULL string.
+  Affected: every Go/wasm program that does `os.Args[N]`-style
+  iteration (which is the common Go pattern).
+- **MINOR (new)** `core/input.cc:48-53` — `input_poll` cast
+  `console_rx_byte()` directly to `uint8_t`, silently inserting
+  a phantom `0xFF` whenever the driver returned ready=1 with
+  byte=-1. **Fixed**: break out of the loop on -1.
+- **MINOR (new)** `core/vfio.cc:180-194` — `iommu_map_pages`
+  rounded `start` DOWN (`phys & ~0xFFF`), over-granting one page
+  BELOW the requested region. Real impact is bookkeeping-only
+  today; would be a real DMA over-grant against a real IOMMU.
+  **Fixed**: round start UP; reject size=0.
+- **MINOR (new)** `core/vfio.cc:381-402` — `vfio_map_bar` leaked
+  the IOMMU grant + window offset when `bar_maps[]` was full.
+  **Fixed**: roll back both on the failure path.
+- **MINOR (new)** `core/engine.cc:76-97` — `engine_init` returned
+  1 on parse/load failure without freeing the partially-allocated
+  `m3_Environment`/`m3_Runtime`/`m3_Module`. **Fixed**: call
+  `engine_shutdown` on every early-return failure path.

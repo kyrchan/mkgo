@@ -180,9 +180,15 @@ static iommu_domain *domain_of(uint32_t sid) {
 static int iommu_map_pages(uint32_t sid, uint64_t phys, uint32_t size) {
     iommu_domain *d = domain_of(sid);
     if (!d) return -1;
-    // Coalesce into page records (4K granularity)
-    uint64_t start = phys & ~0xFFFULL;
+    /* F-AUDIT-10: round start UP and end UP so we never grant a page
+     * the caller did not ask for. Previously `start = phys & ~0xFFF`
+     * rounded DOWN, over-granting one page below phys on unaligned
+     * input (tracking-only today; would be a real DMA over-grant
+     * against a real IOMMU). */
+    if (size == 0) return 0;
+    uint64_t start = (phys + 0xFFF) & ~0xFFFULL;
     uint64_t end = (phys + size + 0xFFF) & ~0xFFFULL;
+    if (start >= end) return 0;
     for (uint64_t p = start; p < end; p += 0x1000) {
         if (d->num_pages >= MAX_IOMMU_PAGES) {
             console_puts("[vfio] iommu: domain full\n");
@@ -205,6 +211,24 @@ static void iommu_unmap_all(uint32_t sid) {
     if (sid >= MAX_SESSIONS) return;
     domains[sid].used = false;
     domains[sid].num_pages = 0;
+}
+
+// Revoke a specific physical range from a session's IOMMU domain.
+static void iommu_unmap_range(uint32_t sid, uint64_t phys, uint32_t size) {
+    if (sid >= MAX_SESSIONS || !domains[sid].used) return;
+    iommu_domain *d = &domains[sid];
+    uint64_t start = phys & ~0xFFFULL;
+    uint64_t end = (phys + size + 0xFFF) & ~0xFFFULL;
+    // Compact: keep pages that fall outside [start, end).
+    int j = 0;
+    for (int i = 0; i < d->num_pages; i++) {
+        if (d->pages[i].phys >= start && d->pages[i].phys < end)
+            continue; // revoke this page
+        if (j != i)
+            d->pages[j] = d->pages[i];
+        j++;
+    }
+    d->num_pages = j;
 }
 
 // Check if a session is allowed to DMA to a physical address.
@@ -254,8 +278,9 @@ static int program_msix(uint32_t bus, uint32_t dev, uint32_t fn, uint32_t vector
         uint8_t cap_id = hdr & 0xFF;
         uint8_t next = (hdr >> 8) & 0xFF;
         if (cap_id == 0x11) { // MSI-X
-            // MSI-X Message Control at ptr+2
-            int32_t msg_ctrl = pci_read32(bus, dev, fn, ptr + 2);
+            /* Message Control is 16-bit at ptr+2; read DWORD at ptr
+             * (DWORD-aligned) and extract lower half. */
+            int32_t msg_ctrl = pci_read32(bus, dev, fn, ptr);
             if (msg_ctrl == -1) return -1;
             // Table offset/BIR at ptr+4
             int32_t table_off = pci_read32(bus, dev, fn, ptr + 4);
@@ -273,22 +298,18 @@ static int program_msix(uint32_t bus, uint32_t dev, uint32_t fn, uint32_t vector
                 return -1;
             uint64_t table_phys = bar0_phys + table_offset;
             // Write MSI-X table entry (4 DWORDs = 16 bytes for first entry)
-            // addr_lo = 0xFEE00000 | (dest_id << 12) | 0x4000 (dest mode physical)
-            // For QEMU, APIC address is 0xFEE00000
             uint32_t addr_lo = 0xFEE00000u;
             uint32_t addr_hi = 0;
-            // data = vector (delivery mode fixed)
             uint32_t data = vector;
-            // Write via direct MMIO (identity mapped)
             volatile uint32_t *table = (volatile uint32_t *)(uintptr_t)table_phys;
             table[0] = addr_lo;
             table[1] = addr_hi;
             table[2] = data;
             table[3] = 0; // unmask
-            // Enable MSI-X (bit 15 of message control)
+            // Enable MSI-X: read-modify-write DWORD at ptr, set bit 15 of lower half
             uint32_t ctrl = (uint32_t)msg_ctrl;
             ctrl |= (1u << 15);
-            pci_write32(bus, dev, fn, ptr + 2, ctrl);
+            pci_write32(bus, dev, fn, ptr, ctrl);
             console_puts("[vfio] msi-x programmed vector=");
             console_hex64(vector);
             console_puts("\n");
@@ -298,10 +319,6 @@ static int program_msix(uint32_t bus, uint32_t dev, uint32_t fn, uint32_t vector
     }
     return -1; // no MSI-X capability
 }
-
-// Forward declaration: checks that a PCI BDF is assigned to the calling session.
-// Closes the assignment gap: CAP_PCI alone is not enough to touch a device.
-static bool vfio_bdf_assigned_to(uint32_t sid, uint32_t bus, uint32_t dev, uint32_t fn);
 
 // --- BAR mapping ---
 
@@ -388,12 +405,25 @@ int64_t vfio_map_bar(uint32_t sid, uint32_t bus, uint32_t dev, uint32_t fn, uint
         if (is_fb) fb_has_display = true;
         return (int64_t)win;
     }
+    /* F-AUDIT-9: all bar_maps slots used. Roll back the IOMMU grant
+     * and the window allocation that succeeded above so we don't leak
+     * domain entries or permanently consume window offsets. */
+    iommu_unmap_range(sid, phys, (uint32_t)size);
+    next_win_off = saved_win_off;
+    console_puts("[vfio] map_bar: bar_maps full, rolled back\n");
     return -1;
 }
 
 int vfio_unmap_bar(uint32_t sid, uint32_t bus, uint32_t dev, uint32_t fn, uint32_t bar) {
     if (!has_cap(sid, SCHED_CAP_PCI)) return -1;
+    if (!vfio_bdf_assigned_to(sid, bus, dev, fn)) {
+        console_puts("[vfio] unmap_bar: BDF not assigned to sid=");
+        console_hex64(sid);
+        console_puts("\n");
+        return -1;
+    }
     for (auto &m : bar_maps) if (m.used && m.sid==sid && m.bus==bus && m.dev==dev && m.fn==fn && m.bar==bar) {
+        iommu_unmap_range(sid, m.phys, (uint32_t)m.size);
         m.used = false;
         return 0;
     }
@@ -653,7 +683,7 @@ int vfio_enumerate(struct vfio_pci_info *out, int max) {
 // Check that a PCI BDF is assigned to the calling session (or caller is admin).
 // This closes the assignment gap: CAP_PCI alone is not enough to touch a device;
 // the device must be explicitly assigned to the caller's session.
-static bool vfio_bdf_assigned_to(uint32_t sid, uint32_t bus, uint32_t dev, uint32_t fn) {
+bool vfio_bdf_assigned_to(uint32_t sid, uint32_t bus, uint32_t dev, uint32_t fn) {
     // Admin (init) can always access any device
     if (has_cap(sid, SCHED_CAP_DEVMAN)) return true;
     // Virtual framebuffer: kernel-internal, no assignment needed

@@ -52,6 +52,10 @@ static int check_abiver(const uint8_t *b, uint64_t len) {
 
 int engine_init(struct engine *e, const uint8_t *blob, uint64_t len) {
     e->env = e->rt = e->mod = 0;
+    if (!blob || len < 8) {
+        console_puts("[engine] null/short blob\n");
+        return 1;
+    }
     int av = check_abiver(blob, len);
     if (av != 2) {
         console_puts("[engine] refusing module: abi_ver ");
@@ -73,12 +77,15 @@ int engine_init(struct engine *e, const uint8_t *blob, uint64_t len) {
         console_puts("[engine] parse: ");
         console_puts(r);
         console_puts("\n");
+        engine_shutdown(e); /* F-AUDIT-8: free env/rt on parse failure */
         return 1;
     }
 
     IM3Runtime rt = m3_NewRuntime(env, STACK_SLOTS * sizeof(uint64_t), 0);
-    if (!rt)
+    if (!rt) {
+        engine_shutdown(e);
         return -1;
+    }
     e->rt = rt;
     console_puts("[eng] runtime ok\n");
 
@@ -89,7 +96,7 @@ int engine_init(struct engine *e, const uint8_t *blob, uint64_t len) {
         console_puts("[engine] load: ");
         console_puts(r);
         console_puts("\n");
-        e->mod = 0; /* runtime owns/failed; do not double-free */
+        engine_shutdown(e); /* F-AUDIT-8: free env/rt/mod on load failure */
         return 1;
     }
     /* Eagerly compile the module's exports up-front so the first guest
@@ -102,6 +109,7 @@ int engine_init(struct engine *e, const uint8_t *blob, uint64_t len) {
         console_puts("[engine] compile: ");
         console_puts(r);
         console_puts("\n");
+        engine_shutdown(e);
         return 1;
     }
     console_puts("[eng] compiled\n");
@@ -110,6 +118,7 @@ int engine_init(struct engine *e, const uint8_t *blob, uint64_t len) {
         console_puts("[engine] link: ");
         console_puts(r);
         console_puts("\n");
+        engine_shutdown(e);
         return 1;
     }
     return 0;

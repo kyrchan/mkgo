@@ -47,8 +47,11 @@ static void push_byte(uint8_t b) {
 
 void input_poll(void) {
     for (int n = 0; n < 64 && console_rx_ready(); n++) {
-        uint8_t b = (uint8_t)console_rx_byte();
-        push_byte(b);
+        int b = console_rx_byte();
+        if (b < 0)
+            break; /* driver signalled ready but no byte; do not
+                    * insert a phantom 0xFF. */
+        push_byte((uint8_t)b);
     }
 }
 
