@@ -80,6 +80,13 @@ int input_focus_set(uint32_t caller_sid, int handle) {
     int owner = ports_owner_of_handle(caller_sid, handle);
     if (owner <= 0)
         return -1;
+    /* F-AUDIT-6: FOCUS-capable session must redirect focus to its OWN
+     * port (or one of its own handles). Otherwise any FOCUS session
+     * can steal input by handing focus to a colluding peer. */
+    if ((uint32_t)owner != caller_sid) {
+        klog("[input] set: owner != caller (focus-steal blocked)");
+        return -1;
+    }
     focus_sid = owner;
     char buf[64];
     snprintf(buf, sizeof(buf), "[input] focus -> '%s'", sched_name_of((uint32_t)owner));

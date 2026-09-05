@@ -865,3 +865,42 @@ Services:
   (dual-app, admin gate caps). Both services gracefully handle missing PCI
   devices (TCG without `-device e1000`/`ahci`).
 - KVM matrix pending (KVM host unavailable; TCG verified).
+
+## F-AUDIT — kernel bug hunt 2026-09-05
+12 real bugs found (1 BLOCKER, 6 MAJOR, 5 MINOR). Full subagent report
+preserved in agent transcript; statuses below.
+
+### Fixed
+- **BLOCKER** `core/fsroute.cc:116` — pending slot leaked on timeout.
+  After 8 timeouts every kernel-routed preview1 op (path_open/fd_read/
+  fd_write/fd_close/mkdir) failed with ENOSYS until reboot. Fix: scan
+  tab and clear `used/done` on the caller's seq in the timeout path
+  before returning -1. Test g1 green.
+
+### Open — next session picks up in this order
+- **MAJOR #5** `services/graphics/main.go:202-203` — 3 MiB
+  `make([]byte, ...)` + `copy` to BAR window without size check; the
+  bus 0:0:0 fallback path can map a real BAR < 3 MiB. Fix: add
+  `kern_pci_bar_size(bdf, bar)` import + cap. **Partial**: warning
+  comment added; full kernel import deferred (ABI change).
+- **MAJOR #6** `core/input.cc:75-87` — focus steal: any FOCUS-capable
+  session can redirect focus to ANY port owner. **Fixed**: require
+  `owner == caller_sid`.
+- **MAJOR #7** `core/wasi_glue.cc:482-578` — `wasi_path_open` /
+  `wasi_path_create_directory` lack `REQUIRE_CAP`. **Rejected** as
+  proposed: gating on `CAP_FSADM` would block user apps from
+  reading their own files. Real fix is in fs.wasm (SVC lane F26
+  already flagged). Defense in depth should be `CAP_FSADM` for
+  CREATE/MKDIR only — log a TODO.
+- **MAJOR #4** `core/sched.cc:465-491` — `sched_run_ap` never calls
+  reap, so AP zombies leak 1 MiB stack + wasm3 runtime forever.
+  Fix: mirror `sched_reap_zombies` per-CPU. **Deferred**: AP
+  bring-up not yet active on BSP-only tests.
+- **MAJOR #3** `core/sched.cc:356` — `sched_kill` checks `cur` (BSP
+  global) instead of per-CPU `st->cur`. AP sessions get wrong cap
+  audit. **Fixed**: `sched_kill(sid, from_sid)` threads caller sid.
+- **MAJOR #2** `core/wasi_glue.cc:391,425-439` — `fsreq[16384]` and
+  `fsresp[8192]` were file-scope statics; `fs_roundtrip` yields.
+  Two concurrent routed fd ops corrupted each other. **Fixed**:
+  moved into `sched_wasi_state` (per-session).
+- **MINOR #8-12** documented in audit report; not blocking.

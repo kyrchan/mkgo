@@ -91,7 +91,7 @@ static void kernsvc_nack(uint16_t op, uint16_t seq) {
     put16(nb + 2, seq);
     put32(nb + 4, 0); /* kernel uid */
     put32(nb + 24, 0xFFFFFFFFu);
-    ports_kernel_enqueue(g_from_sid, g_reply_h, nb, sizeof(nb));
+    kernsvc_reply(nb, sizeof(nb));
 }
 
 // kernsvc_audit: emit an audit record to the log ring (console_puts
@@ -162,9 +162,9 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
         switch (op) {
         case 1: { /* LIST -> body {u32 n; rec[25]} at 24, rec ext: +u8 cap_src */
             rn = kbegin(1);
-            char names[12][16];
-            uint32_t recs[12 * 3];
-            uint32_t n = sched_list(recs, names, 12);
+            char names[MAX_SESSIONS][16];
+            uint32_t recs[MAX_SESSIONS * 3];
+            uint32_t n = sched_list(recs, names, MAX_SESSIONS);
             put32(rbuf + rn, n);
             rn += 4;
             for (uint32_t i = 0; i < n; i++) {
@@ -187,12 +187,12 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
             uint64_t mask = sid != 0xFFFFFFFFu ? sched_capmask_of(sid) : 0;
             rn = kbegin(2);
             uint32_t n = 0;
-            for (uint64_t b = 0; b < 10; b++)
+            for (uint64_t b = 0; b < 13; b++)
                 if (mask & (1ULL << b))
                     n++;
             put32(rbuf + rn, n);
             rn += 4;
-            for (uint64_t b = 0; b < 10 && sid != 0xFFFFFFFFu; b++) {
+            for (uint64_t b = 0; b < 13 && sid != 0xFFFFFFFFu; b++) {
                 if (mask & (1ULL << b)) {
                     put32(rbuf + rn, (uint32_t)b);
                     put32(rbuf + rn + 4, (uint32_t)(1ULL << b));
@@ -204,9 +204,10 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
             return;
         }
         case 3: { /* KILL {u32 sid} */
+            if (plen < 4) { knack(); return; }
             uint32_t sid = payload[0] | (payload[1] << 8) | (payload[2] << 16) |
                            ((uint32_t)payload[3] << 24);
-            int rc = sched_kill(sid); /* checks CAP_KILL itself */
+            int rc = sched_kill(sid, from_sid); /* per-caller cap check */
             rn = kbegin(3);
             put32(rbuf + rn, (uint32_t)rc);
             kernsvc_reply(rbuf, rn + 4);
@@ -217,6 +218,7 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
                      resolved from the preloaded /boot/modules table */
             if (!(sched_capmask_of(from_sid) & SCHED_CAP_SPAWN))
                 break;
+            if (plen < 84) { knack(); return; }
             uint64_t caller = sched_capmask_of(from_sid);
             uint64_t want = payload[80] | (payload[81] << 8) |
                             (payload[82] << 16) | ((uint32_t)payload[83] << 24);
@@ -236,10 +238,17 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
              * Layout: [16..79] path, [80..83] capmask, [86..87] argc,
              * [88..] argv strings (NUL-separated).
              * Must copy into persistent memory: the payload buffer is
-             * freed after this handler returns (F42). */
+             * freed after this handler returns (F42).
+             * NOTE: argv_store is allocated from the bump allocator (mm_alloc)
+             * which has no free. This is intentional: argv is <0.02% of the
+             * per-session cost (stack is 1 MB). Lifetime = session lifetime. */
             const char *argv[8] = {0};
             int argc = 0;
-            int argv_total = 0;
+            /* Single pass: compute modname length + total argv bytes. */
+            int modname_len = 0;
+            for (; modname[modname_len] && modname_len < 15; modname_len++)
+                ;
+            int argv_bytes = 0;
             if (plen >= 88) {
                 uint16_t na = get16(payload + 86);
                 const char *ap = (const char *)payload + 88;
@@ -248,24 +257,27 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
                     int sl = 0;
                     while (ap + sl < end && ap[sl] != 0)
                         sl++;
-                    argv_total += sl + 1;
+                    argv_bytes += sl + 1;
                     ap += sl + 1;
                     argc++;
                 }
             }
-            char *argv_store = (char *)mm_alloc(argv_total + 16, 1);
+            /* Buffer: modname + NUL + argv strings. +1 for modname NUL. */
+            int buf_sz = modname_len + 1 + argv_bytes;
+            char *argv_store = (char *)mm_alloc(buf_sz, 1);
             if (!argv_store) {
                 knack();
                 return;
             }
             /* argv[0] = program name (modname) */
             int k = 0;
-            for (; modname[k] && k < 15; k++)
+            for (; k < modname_len; k++)
                 argv_store[k] = modname[k];
             argv_store[k] = 0;
             argv[0] = argv_store;
             argc = 1;
-            if (plen >= 88 && argv_store) {
+            /* Copy argv strings with explicit bounds checking. */
+            if (plen >= 88) {
                 uint16_t na = get16(payload + 86);
                 const char *ap = (const char *)payload + 88;
                 const char *end = (const char *)payload + plen;
@@ -273,7 +285,8 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
                     int sl = 0;
                     while (ap + sl < end && ap[sl] != 0)
                         sl++;
-                    if (k + 1 + sl + 1 > (int)argv_total + 16)
+                    /* +1 for NUL; k tracks write offset into argv_store */
+                    if (k + 1 + sl + 1 > buf_sz)
                         break;
                     memcpy(argv_store + k + 1, ap, sl);
                     argv_store[k + 1 + sl] = 0;
@@ -318,6 +331,7 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
                 knack();
                 return;
             }
+            if (plen < 24) { knack(); return; }
             char tname[17];
             int q = 0;
             for (; q < 16 && payload[q]; q++)
@@ -366,6 +380,7 @@ void kernsvc_dispatch(const char *epname, uint32_t from_sid, int reply_h,
                 knack();
                 return;
             }
+            if (plen < 24) { knack(); return; }
             char cfgkey[17];
             int q3 = 0;
             for (; q3 < 16 && payload[q3]; q3++)

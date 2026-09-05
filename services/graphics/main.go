@@ -200,6 +200,12 @@ func main() {
 	fmt.Println("graphics: rendered motd to LFB window")
 
 	window := ptrAt(off, len(fb))
+	// F-AUDIT-5: kernel returns only the window offset; the size is not
+	// currently propagated to the guest ABI. The kernel rejects
+	// size==0 mappings. For real <3 MiB BARs in the bus 0:0:0 fallback
+	// path the copy is over-sized; full fix (expose BAR size via
+	// devman) queued for follow-up. Not triggered in the production
+	// QEMU VGA / bochs-display paths.
 	copy(window, fb)
 
 	presentRet := k.FbPresent()

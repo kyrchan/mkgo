@@ -32,11 +32,21 @@ constexpr int MAX_IMAGES = 8;
 /* per-session WASI state (args, exit, routed-fd table) */
 #define SCHED_MAX_FDS 64
 #define SCHED_FD_EMPTY 0xFFFFFFFFu
+/* F-AUDIT-2: per-session routed-FS buffers; previously file-scope statics
+ * in wasi_glue.cc, which raced across concurrent sessions because
+ * fs_roundtrip yields (fsroute_wait -> sched_yield_current). */
+#define SCHED_FSREQ_MAX 16384
+#define SCHED_FSRESP_MAX 8192
 struct sched_wasi_state {
     const char *argv[16];
     bool exited;
     int exit_code;
-    uint32_t fds[SCHED_MAX_FDS]; /* fd -> fs file handle (SCHED_FD_EMPTY) */};
+    uint32_t fds[SCHED_MAX_FDS]; /* fd -> fs file handle (SCHED_FD_EMPTY) */
+    uint8_t fsreq[SCHED_FSREQ_MAX];
+    uint8_t fsresp[SCHED_FSRESP_MAX];
+    uint16_t fs_seq_ctr;   /* per-session outgoing seq counter */
+    uint16_t fs_rt_seq;    /* per-session roundtrip seq (stored in req[2:3]) */
+};
 
 /* Preloaded boot image (name + wasm blob). */
 struct image {
@@ -49,19 +59,28 @@ struct image {
 /* Session state. The `eng` field holds the wasm3 runtime; the `wctx`
  * field holds the per-session WASI state. */
 struct session {
-    uint32_t sid;
-    uint32_t uid;
-    uint64_t capmask;
-    uint8_t cap_source; /* 0=login-issued, 1=chcaps, 2=init-issued */
-    char name[15]; /* room for NUL */
-    int state;
-    struct engine eng;
-    bool eng_live;
-    int exit_code;
-    uint8_t *stack;
-    uint64_t *sp;
-    sched_wasi_state wctx;
-};
+     uint32_t sid;
+     uint32_t uid;
+     uint64_t capmask;
+     uint8_t cap_source; /* 0=login-issued, 1=chcaps, 2=init-issued */
+     char name[15]; /* room for NUL */
+     int state;
+     struct engine eng;
+     bool eng_live;
+     int exit_code;
+     uint8_t *stack;
+     uint64_t *sp;
+     sched_wasi_state wctx;
+     /* Phase 8 preemption: GPR save area for deferred IRQ return.
+      * When preempt_pending is set for this session, the IRQ stub
+      * saves the interrupted GPRs here instead of on the session
+      * stack. On resume, the GPRs are restored from here and the
+      * session iretqs back to the guest at the interrupted point. */
+     uint64_t gpr_save[16]; /* [0]=rax [1]=rbx [2]=rcx [3]=rdx
+                                    [4]=rsi [5]=rdi [6]=rbp [7]=rsp
+                                    [8..15]=r8..r15 */
+     bool preempt_saved;    /* true if gpr_save holds a valid save */
+ };
 
 /* ---- Phase 8.2: per-CPU scheduler state (planned, not implemented) ----
  *
@@ -129,7 +148,7 @@ uint32_t sched_count(void);
 /* fills up to max records; returns count written */
 uint32_t sched_list(uint32_t *out /* sid,uid,state triples interleaved */,
                     char names[][16], uint32_t max);
-int sched_kill(uint32_t sid);
+int sched_kill(uint32_t sid, uint32_t from_sid);
 /* SPAWN from preloaded image table; returns sid or negative errno-style.
  * argv/argc (may be NULL/0) are passed to the spawned session. */
 int sched_spawn_image(const char *name, uint32_t uid, uint64_t capmask,

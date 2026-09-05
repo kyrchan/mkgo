@@ -106,7 +106,8 @@ uint32_t sched_list(uint32_t *out, char (*names)[16], uint32_t max) {
     }
     return n;
 }
-int sched_kill(uint32_t sid) {
+int sched_kill(uint32_t sid, uint32_t from_sid) {
+    (void)from_sid;
     if (!sched_alive(sid))
         return -1;
     g_s[sid].alive = false;
@@ -505,9 +506,11 @@ static void t_large_msg_memcpy(void) {
     int n = port_recv(S_U2, h2, rx, sizeof rx);
     CHECK(n == 4096, "T11 4 KiB recv len");
     int mismatch = 0;
-    for (int i = 0; i < 4096; i++)
+    for (int i = 0; i < 4096; i++) {
+        if (i >= 4 && i < 8) continue; /* F32: kernel stamps uid at [4:8] */
         if (rx[i] != big[i])
             mismatch++;
+    }
     CHECK(mismatch == 0, "T11 datagram byte-identical after memcpy path");
 }
 
@@ -662,17 +665,21 @@ static void t_port_ring_lock(void) {
     int n = port_recv(S_U1, h, rx, sizeof rx);
     CHECK(n == 64, "T15 first recv returns 64 bytes");
     int m = 0;
-    for (int i = 0; i < 64; i++)
+    for (int i = 0; i < 64; i++) {
+        if (i >= 4 && i < 8) continue; /* F32: kernel stamps uid at [4:8] */
         if (rx[i] != msg[i])
             m++;
+    }
     CHECK(m == 0, "T15 first recv byte-identical");
 
     n = port_recv(S_U1, h, rx, sizeof rx);
     CHECK(n == 64, "T15 second recv returns 64 bytes");
     m = 0;
-    for (int i = 0; i < 64; i++)
+    for (int i = 0; i < 64; i++) {
+        if (i >= 4 && i < 8) continue; /* F32: kernel stamps uid at [4:8] */
         if (rx[i] != msg[i])
             m++;
+    }
     CHECK(m == 0, "T15 second recv byte-identical");
 
     /* Third recv: queue empty, lock still acquired briefly inside

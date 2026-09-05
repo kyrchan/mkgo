@@ -113,6 +113,16 @@ int fsroute_wait_budget(uint16_t seq, uint8_t *resp, uint32_t cap,
         }
         sched_yield_current();
     }
+    /* F-AUDIT-1: reclaim the slot on timeout, otherwise after MAXPENDING
+     * timeouts every fsroute_expect returns -1 and all routed FS ops
+     * fail with ENOSYS until reboot. */
+    for (int i = 0; i < MAXPENDING; i++) {
+        if (tab[i].used && tab[i].seq == seq) {
+            tab[i].used = false;
+            tab[i].done = false;
+            break;
+        }
+    }
     return -1;
 }
 

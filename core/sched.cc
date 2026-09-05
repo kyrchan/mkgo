@@ -17,6 +17,8 @@ enum st { S_FREE = 0, S_RUNNABLE = 1, S_RUNNING = 2, S_ZOMBIE = 3 };
 
 extern "C" {
 bool ports_name_owned_by(uint32_t sid, const char *name);
+void ports_drain_session(uint32_t sid);
+void ports_clear_session_handles(uint32_t sid);
 uint32_t preempt_take_pending(void);
 uint8_t preempt_is_on(void);
 }
@@ -346,16 +348,23 @@ uint8_t sched_cap_source(uint32_t sid) {
     return sid < MAX_SESSIONS && sessions[sid].state != S_FREE
            ? sessions[sid].cap_source : 0;
 }
-int sched_kill(uint32_t sid) {
+int sched_kill(uint32_t sid, uint32_t from_sid) {
     if (!sched_alive(sid)) {
         audit("KILL", "nosession", "registry");
         return -1;
     }
-    if (!(cur && (cur->capmask & SCHED_CAP_KILL))) {
+    /* F-AUDIT-3: check the caller's caps, not the BSP's `cur` pointer.
+     * On SMP `cur` is a per-CPU field and only the BSP's session writes
+     * to the global. Using the per-caller from_sid fixes a real cap
+     * audit gap (AP sessions would otherwise be checked against BSP's
+     * last set session). */
+    if (!(sched_capmask_of(from_sid) & SCHED_CAP_KILL)) {
         audit("KILL", "cap", "registry");
         return -1;
     }
     sessions[sid].state = S_ZOMBIE;
+    ports_drain_session(sid);
+    ports_clear_session_handles(sid);
     vfio_session_cleanup(sid);
     console_puts("[sched] killed sid=");
     console_hex64(sid);
@@ -373,8 +382,9 @@ uint32_t sched_list(uint32_t *out, char names[][16], uint32_t max) {
         out[n * 3 + 0] = sessions[i].sid;
         out[n * 3 + 1] = sessions[i].uid;
         out[n * 3 + 2] = (uint32_t)sessions[i].state;
-        for (int k = 0; k < 16; k++)
+        for (int k = 0; k < 15; k++)
             names[n][k] = sessions[i].name[k];
+        names[n][15] = 0;
         n++;
     }
     return n;
@@ -387,6 +397,28 @@ static bool all_dead(void) {
     return true;
 }
 
+/* Transition S_ZOMBIE → S_FREE, reclaiming the slot for new sessions.
+ * Called from the scheduler loop before the round-robin scan. */
+static void sched_reap_zombies(void) {
+    for (int i = 1; i < MAX_SESSIONS; i++) {
+        if (sessions[i].state != S_ZOMBIE)
+            continue;
+        if (sessions[i].eng_live) {
+            engine_shutdown(&sessions[i].eng);
+            sessions[i].eng_live = false;
+        }
+        if (sessions[i].stack) {
+            rt_free(sessions[i].stack);
+            sessions[i].stack = 0;
+        }
+        sessions[i].state = S_FREE;
+        sessions[i].exit_code = -1;
+        console_puts("[sched] reaped sid=");
+        console_hex64(i);
+        console_puts("\n");
+    }
+}
+
 extern "C" void virtio_net_dbg(void);
 
 void sched_run(void) {
@@ -394,6 +426,7 @@ void sched_run(void) {
     extern void input_poll(void);
     extern void virtio_net_poll(void);
     while (!all_dead()) {
+        sched_reap_zombies();
         input_poll();
         devblk_poll();
         virtio_net_poll();

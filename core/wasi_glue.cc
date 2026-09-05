@@ -21,7 +21,7 @@ static void put16_(uint8_t *p, uint16_t v) {
     p[0] = (uint8_t)v;
     p[1] = (uint8_t)(v >> 8);
 }
-static uint16_t fs_seq_ctr = 200;
+/* F-AUDIT-2: per-session buffers (moved into sched_wasi_state). */
 #include "plat.h"
 #include "rt.h"
 #include "vfio.h"
@@ -216,7 +216,7 @@ static void args_sizes(uint32_t *argc, uint32_t *bufsize) {
     *bufsize = 0;
     if (!w)
         return;
-    while (w->argv[*argc]) {
+    while (*argc < 16 && w->argv[*argc]) {
         const char *s = w->argv[*argc];
         uint64_t n = 0;
         while (s[n])
@@ -279,6 +279,7 @@ m3ApiRawFunction(wasi_environ_get) {
     m3ApiReturnType(int32_t)
     m3ApiGetArgMem(uint32_t *, envp )
     m3ApiGetArgMem(char *, buf )
+    (void)envp; (void)buf;
     m3ApiReturn(WASI_ESUCCESS);
 }
 
@@ -371,11 +372,11 @@ struct rfd {
     uint64_t off;
     char path[RFD_PATH_MAX];
 };
-static rfd fdtab[12][SCHED_MAX_FDS];
+static rfd fdtab[MAX_SESSIONS][SCHED_MAX_FDS];
 
 static rfd *rfd_of(int32_t fd) {
     uint32_t sid = sched_current_sid();
-    if (sid >= 12 || fd < 3 || fd >= SCHED_MAX_FDS)
+    if (sid >= MAX_SESSIONS || fd < 3 || fd >= SCHED_MAX_FDS)
         return 0;
     if (!fdtab[sid][fd].used)
         return 0;
@@ -383,19 +384,19 @@ static rfd *rfd_of(int32_t fd) {
 }
 
 static void rfd_clear(uint32_t sid, int32_t fd) {
-    if (sid < 12 && fd >= 3 && fd < SCHED_MAX_FDS)
+    if (sid < MAX_SESSIONS && fd >= 3 && fd < SCHED_MAX_FDS)
         fdtab[sid][fd] = {};
 }
-
-static uint8_t fsreq[4096];
-static uint8_t fsresp[8192];
 
 /* build framed request: op seq uid pathlen path payload */
 /* frame: {u16 op,u16 seq,u32 uid,char rname[16],u16 path_len,path,payload} */
 static uint32_t mk_req(uint16_t op, const char *path, uint32_t plen,
                        const uint8_t *payload, uint32_t paylen) {
+    sched_wasi_state *w = wctx();
+    if (!w) return 0;
+    uint8_t *fsreq = w->fsreq;
     put16_(fsreq, op);
-    uint16_t sq = ++fs_seq_ctr;
+    uint16_t sq = ++w->fs_seq_ctr;
     fsreq[2] = (uint8_t)sq;
     fsreq[3] = (uint8_t)(sq >> 8);
     uint32_t uid = sched_uid_of(sched_current_sid());
@@ -412,38 +413,53 @@ static uint32_t mk_req(uint16_t op, const char *path, uint32_t plen,
     fsreq[24] = (uint8_t)plen;
     fsreq[25] = (uint8_t)(plen >> 8);
     uint32_t o = 26;
-    for (uint32_t i = 0; i < plen && o < sizeof(fsreq); i++)
+    /* F-AUDIT-11: refuse to silently truncate. If the framed request
+     * would exceed the buffer, return 0 so the caller surfaces a
+     * proper ENOSYS instead of an opaque fs parse error. */
+    if ((uint64_t)plen + (uint64_t)paylen + 26 > sizeof(w->fsreq)) {
+        console_puts("[wasi] mk_req: frame too large\n");
+        return 0;
+    }
+    for (uint32_t i = 0; i < plen; i++)
         fsreq[o++] = (uint8_t)path[i];
-    for (uint32_t i = 0; i < paylen && o < sizeof(fsreq); i++)
+    for (uint32_t i = 0; i < paylen; i++)
         fsreq[o++] = payload[i];
     return o;
 }
 
 extern "C" bool ports_enqueue_by_name(const char *, const void *, uint32_t);
 
-static uint16_t fs_rt_seq = 1000;
-
 static int fs_roundtrip(uint32_t reqlen) {
-    uint16_t sq = ++fs_rt_seq;
+    sched_wasi_state *w = wctx();
+    if (!w) return -1;
+    uint8_t *fsreq = w->fsreq;
+    uint8_t *fsresp = w->fsresp;
+    uint16_t sq = ++w->fs_rt_seq;
     fsreq[2] = (uint8_t)sq;
     fsreq[3] = (uint8_t)(sq >> 8);
-    __builtin_memset(fsresp, 0, sizeof(fsresp)); /* F16: no stale tail */
+    __builtin_memset(fsresp, 0, sizeof(w->fsresp)); /* F16: no stale tail */
     if (fsroute_expect(sq, sched_name_of(sched_current_sid())) != 0) {
         return -1;
     }
     if (!ports_enqueue_by_name("fs", fsreq, reqlen)) {
         return -1;
     }
-    return fsroute_wait(sq, fsresp, sizeof(fsresp));
+    return fsroute_wait(sq, fsresp, sizeof(w->fsresp));
 }
 
 /* canonical reply accessors: status i32 @24, body @28 */
 static int32_t rep_status(void) {
+    sched_wasi_state *w = wctx();
+    if (!w) return -1;
+    uint8_t *fsresp = w->fsresp;
     return (int32_t)((uint32_t)fsresp[24] | (uint32_t)fsresp[25] << 8 |
                      (uint32_t)fsresp[26] << 16 |
                      (uint32_t)fsresp[27] << 24);
 }
-static const uint8_t *rep_body(void) { return fsresp + 28; }
+static const uint8_t *rep_body(void) {
+    sched_wasi_state *w = wctx();
+    return w ? w->fsresp + 28 : nullptr;
+}
 /* fresh body bytes actually received by the last roundtrip */
 static uint32_t rep_body_len(int r) {
     return r > 28 ? (uint32_t)r - 28 : 0;
@@ -544,7 +560,7 @@ m3ApiRawFunction(wasi_path_open) {
 
     rfd *e;
     uint32_t sid = sched_current_sid();
-    if (sid >= 12) {
+    if (sid >= MAX_SESSIONS) {
         sched_wasi_state *wf = sched_wasi_current();
         wf->fds[fd] = SCHED_FD_EMPTY;
         m3ApiReturn(WASI_ENOSYS);
@@ -657,8 +673,10 @@ m3ApiRawFunction(kern_port_create) {
     m3ApiReturnType(int32_t)
     m3ApiGetArgMem(const char *, name)
     m3ApiGetArg(int32_t, name_len)
-    m3ApiReturn(port_create(sched_current_sid(), name,
-                            name_len < 0 ? 0 : (uint32_t)name_len));
+    uint32_t nl = name_len < 0 ? 0 : (uint32_t)name_len;
+    if (nl && !mem_ok(runtime, name, nl))
+        m3ApiTrap(m3Err_trapOutOfBoundsMemoryAccess);
+    m3ApiReturn(port_create(sched_current_sid(), name, nl));
 }
 
 m3ApiRawFunction(kern_port_bind) {
@@ -667,6 +685,8 @@ m3ApiRawFunction(kern_port_bind) {
     m3ApiGetArg(int32_t, name_len)
     uint32_t sid = sched_current_sid();
     uint32_t nl = name_len < 0 ? 0 : (uint32_t)name_len;
+    if (nl && !mem_ok(runtime, name, nl))
+        m3ApiTrap(m3Err_trapOutOfBoundsMemoryAccess);
     if (is_well_known_name(name, nl)) {
         REQUIRE_CAP(sid, SCHED_CAP_PORTBIND, "PORT_BIND");
     }
@@ -678,8 +698,10 @@ m3ApiRawFunction(kern_port_send) {
     m3ApiGetArg(int32_t, h)
     m3ApiGetArgMem(const void *, buf)
     m3ApiGetArg(int32_t, len)
-    m3ApiReturn(port_send(sched_current_sid(), h, buf,
-                          len < 0 ? 0 : (uint32_t)len));
+    uint32_t nlen = len < 0 ? 0 : (uint32_t)len;
+    if (nlen && !mem_ok(runtime, buf, nlen))
+        m3ApiTrap(m3Err_trapOutOfBoundsMemoryAccess);
+    m3ApiReturn(port_send(sched_current_sid(), h, buf, nlen));
 }
 
 m3ApiRawFunction(kern_port_recv) {
@@ -687,8 +709,10 @@ m3ApiRawFunction(kern_port_recv) {
     m3ApiGetArg(int32_t, h)
     m3ApiGetArgMem(void *, buf)
     m3ApiGetArg(int32_t, cap)
-    m3ApiReturn(port_recv(sched_current_sid(), h, buf,
-                          cap < 0 ? 0 : (uint32_t)cap));
+    uint32_t ncap = cap < 0 ? 0 : (uint32_t)cap;
+    if (ncap && !mem_ok(runtime, buf, ncap))
+        m3ApiTrap(m3Err_trapOutOfBoundsMemoryAccess);
+    m3ApiReturn(port_recv(sched_current_sid(), h, buf, ncap));
 }
 
 /* block class imports (ABI v1.1, managed-runtime transport) */
@@ -701,10 +725,12 @@ m3ApiRawFunction(kern_blk_read) {
     m3ApiGetArgMem(void *, buf)
     m3ApiGetArg(int32_t, cnt)
     uint32_t sid = sched_current_sid();
+    uint32_t ncnt = cnt < 0 ? 0 : (uint32_t)cnt;
     REQUIRE_CAP(sid, SCHED_CAP_FSADM, "BLK_RW");
+    if (ncnt && !mem_ok(runtime, buf, (uint64_t)ncnt * 512))
+        m3ApiTrap(m3Err_trapOutOfBoundsMemoryAccess);
     m3ApiReturn(devblk_rw(sid, 0,
-                          (uint64_t)(uint32_t)lba, buf,
-                          cnt < 0 ? 0 : (uint32_t)cnt));
+                          (uint64_t)(uint32_t)lba, buf, ncnt));
 }
 
 m3ApiRawFunction(kern_blk_write) {
@@ -713,25 +739,28 @@ m3ApiRawFunction(kern_blk_write) {
     m3ApiGetArgMem(const void *, buf)
     m3ApiGetArg(int32_t, cnt)
     uint32_t sid = sched_current_sid();
+    uint32_t ncnt = cnt < 0 ? 0 : (uint32_t)cnt;
     REQUIRE_CAP(sid, SCHED_CAP_FSADM, "BLK_RW");
+    if (ncnt && !mem_ok(runtime, buf, (uint64_t)ncnt * 512))
+        m3ApiTrap(m3Err_trapOutOfBoundsMemoryAccess);
     m3ApiReturn(devblk_rw(sid, 1,
-                          (uint64_t)(uint32_t)lba, (void *)buf,
-                          cnt < 0 ? 0 : (uint32_t)cnt));
+                          (uint64_t)(uint32_t)lba, (void *)buf, ncnt));
 }
 
 /* input/focus (abi/ABI.md §4) */
 extern "C" int input_recv(uint32_t sid, void *out, uint32_t cap);
 extern "C" int input_focus_set(uint32_t caller_sid, int handle);
 
-static int irc;
 m3ApiRawFunction(kern_input_recv) {
     m3ApiReturnType(int32_t)
     m3ApiGetArgMem(void *, buf)
     m3ApiGetArg(int32_t, cap)
     uint32_t sid = sched_current_sid();
+    uint32_t ncap = cap < 0 ? 0 : (uint32_t)cap;
     REQUIRE_CAP(sid, SCHED_CAP_FOCUS, "FOCUS_RECV");
-    m3ApiReturn(input_recv(sid, buf,
-                           cap < 0 ? 0 : (uint32_t)cap));
+    if (ncap && !mem_ok(runtime, buf, ncap))
+        m3ApiTrap(m3Err_trapOutOfBoundsMemoryAccess);
+    m3ApiReturn(input_recv(sid, buf, ncap));
 }
 
 m3ApiRawFunction(kern_focus_set) {
@@ -764,6 +793,10 @@ m3ApiRawFunction(kern_pci_read32) {
     m3ApiGetArg(int32_t, off)
     uint32_t sid = sched_current_sid();
     REQUIRE_CAP(sid, SCHED_CAP_PCI, "PCI_READ");
+    if (!vfio_bdf_assigned_to(sid, (uint32_t)bus, (uint32_t)dev, (uint32_t)fn)) {
+        kernsvc_audit(sid, "PCI_READ", "assign", "pci");
+        m3ApiReturn(-1);
+    }
     int32_t v = pci_read32((uint32_t)bus, (uint32_t)dev, (uint32_t)fn, (uint32_t)off);
     m3ApiReturn(v);
 }
@@ -776,6 +809,10 @@ m3ApiRawFunction(kern_pci_write32) {
     m3ApiGetArg(int32_t, val)
     uint32_t sid = sched_current_sid();
     REQUIRE_CAP(sid, SCHED_CAP_PCI, "PCI_WRITE");
+    if (!vfio_bdf_assigned_to(sid, (uint32_t)bus, (uint32_t)dev, (uint32_t)fn)) {
+        kernsvc_audit(sid, "PCI_WRITE", "assign", "pci");
+        m3ApiReturn(-1);
+    }
     int32_t r = pci_write32((uint32_t)bus,(uint32_t)dev,(uint32_t)fn,(uint32_t)off,(uint32_t)val);
     m3ApiReturn(r);
 }
@@ -808,9 +845,11 @@ m3ApiRawFunction(kern_pci_enable_busmaster) {
     m3ApiGetArg(int32_t, fn)
     uint32_t sid = sched_current_sid();
     REQUIRE_CAP(sid, SCHED_CAP_PCI, "PCI_BMASTER");
+    if (!vfio_bdf_assigned_to(sid, (uint32_t)bus, (uint32_t)dev, (uint32_t)fn)) {
+        kernsvc_audit(sid, "PCI_BMASTER", "assign", "pci");
+        m3ApiReturn(-1);
+    }
     int r = pci_enable_busmaster((uint32_t)bus,(uint32_t)dev,(uint32_t)fn);
-    // also allow vfio to track if needed
-    (void)vfio_map_bar; // silence unused
     m3ApiReturn(r);
 }
 m3ApiRawFunction(kern_pci_bind_irq) {
@@ -831,6 +870,10 @@ m3ApiRawFunction(kern_pci_flr) {
     m3ApiGetArg(int32_t, fn)
     uint32_t sid = sched_current_sid();
     REQUIRE_CAP(sid, SCHED_CAP_PCI, "PCI_FLR");
+    if (!vfio_bdf_assigned_to(sid, (uint32_t)bus, (uint32_t)dev, (uint32_t)fn)) {
+        kernsvc_audit(sid, "PCI_FLR", "assign", "pci");
+        m3ApiReturn(-1);
+    }
     int r = pci_flr((uint32_t)bus,(uint32_t)dev,(uint32_t)fn);
     m3ApiReturn(r);
 }
@@ -879,6 +922,10 @@ m3ApiRawFunction(kern_vmware_backdoor) {
     m3ApiGetArgMem(uint32_t *, time_high)
     uint32_t sid = sched_current_sid();
     REQUIRE_CAP(sid, SCHED_CAP_VMWARE, "VMWARE");
+    if (time_low && !mem_ok(runtime, time_low, 4))
+        m3ApiTrap(m3Err_trapOutOfBoundsMemoryAccess);
+    if (time_high && !mem_ok(runtime, time_high, 4))
+        m3ApiTrap(m3Err_trapOutOfBoundsMemoryAccess);
     int r = 0;
     switch (op) {
         case 0: // present
@@ -907,26 +954,26 @@ struct link_entry2 {
     M3RawCall fn_alt;
 };
 static const link_entry2 kernlinks[] = {
-    {"kern_port_create", "i(ii)", kern_port_create, 0},
-    {"kern_port_bind", "i(ii)", kern_port_bind, 0},
-    {"kern_port_send", "i(iii)", kern_port_send, 0},
-    {"kern_port_recv", "i(iii)", kern_port_recv, 0},
-    {"kern_blk_read", "i(iii)", kern_blk_read, 0},
-    {"kern_blk_write", "i(iii)", kern_blk_write, 0},
-    {"kern_input_recv", "i(ii)", kern_input_recv, 0},
-    {"kern_focus_set", "i(i)", kern_focus_set, "v(i)", kern_focus_set_v}, /* lib ships both */
-    {"kern_pci_read32", "i(iiii)", kern_pci_read32, 0},
-    {"kern_pci_write32", "i(iiiii)", kern_pci_write32, 0},
-    {"kern_pci_map_bar", "I(iiii)", kern_pci_map_bar, 0},
-    {"kern_pci_unmap_bar", "i(iiii)", kern_pci_unmap_bar, 0},
-    {"kern_pci_enable_busmaster", "i(iii)", kern_pci_enable_busmaster, 0},
-    {"kern_pci_bind_irq", "i(iiii)", kern_pci_bind_irq, 0},
-    {"kern_pci_flr", "i(iii)", kern_pci_flr, 0},
-    {"kern_fb_set_mode", "i(iii)", kern_fb_set_mode, 0},
-    {"kern_fb_set_cursor", "i(ii)", kern_fb_set_cursor, 0},
-    {"kern_fb_present", "i()", kern_fb_present, 0},
-    {"kern_doorbell_wait", "i(ii)", kern_doorbell_wait, 0},
-    {"kern_vmware_backdoor", "i(iPP)", kern_vmware_backdoor, 0},
+    {"kern_port_create", "i(ii)", kern_port_create, 0, 0},
+    {"kern_port_bind", "i(ii)", kern_port_bind, 0, 0},
+    {"kern_port_send", "i(iii)", kern_port_send, 0, 0},
+    {"kern_port_recv", "i(iii)", kern_port_recv, 0, 0},
+    {"kern_blk_read", "i(iii)", kern_blk_read, 0, 0},
+    {"kern_blk_write", "i(iii)", kern_blk_write, 0, 0},
+    {"kern_input_recv", "i(ii)", kern_input_recv, 0, 0},
+    {"kern_focus_set", "i(i)", kern_focus_set, "v(i)", kern_focus_set_v},
+    {"kern_pci_read32", "i(iiii)", kern_pci_read32, 0, 0},
+    {"kern_pci_write32", "i(iiiii)", kern_pci_write32, 0, 0},
+    {"kern_pci_map_bar", "I(iiii)", kern_pci_map_bar, 0, 0},
+    {"kern_pci_unmap_bar", "i(iiii)", kern_pci_unmap_bar, 0, 0},
+    {"kern_pci_enable_busmaster", "i(iii)", kern_pci_enable_busmaster, 0, 0},
+    {"kern_pci_bind_irq", "i(iiii)", kern_pci_bind_irq, 0, 0},
+    {"kern_pci_flr", "i(iii)", kern_pci_flr, 0, 0},
+    {"kern_fb_set_mode", "i(iii)", kern_fb_set_mode, 0, 0},
+    {"kern_fb_set_cursor", "i(ii)", kern_fb_set_cursor, 0, 0},
+    {"kern_fb_present", "i()", kern_fb_present, 0, 0},
+    {"kern_doorbell_wait", "i(ii)", kern_doorbell_wait, 0, 0},
+    {"kern_vmware_backdoor", "i(iPP)", kern_vmware_backdoor, 0, 0},
 };
 #define NKERN (sizeof(kernlinks) / sizeof(kernlinks[0]))
 
@@ -947,6 +994,7 @@ m3ApiRawFunction(wasi_poll_oneoff) {
     m3ApiGetArg(int32_t, subcount)
     m3ApiGetArgMem(uint32_t *, nevents)
     (void)in;
+    (void)out;
     (void)subcount;
     /* NO yield here: returning immediately lets Go's Sleep become a
      * brief busy-spin that burns THIS session's quantum fairly, keeping
@@ -1037,30 +1085,30 @@ struct link_entry {
  * wrong-type import fails instantiation loudly instead of corrupting the
  * raw-call stack. wasm3 sig format: result chars, then (arg chars). */
 static const struct link_entry stubs[] = {
-    {"fd_prestat_get", "i(ii)", wasi_fd_prestat_get, 0},
-    {"fd_prestat_dir_name", "i(iii)", wasi_fd_prestat_dir_name, 0},
-    {"fd_fdstat_get", "i(ii)", stub_ebadf, 0},
-    {"fd_fdstat_set_flags", "i(ii)", stub_ok, 0},
-    {"fd_close", "i(i)", stub_ok, 0},
-    {"poll_oneoff", "i(iiii)", wasi_poll_oneoff, 0},  /* immediate: 0 events */
+    {"fd_prestat_get", "i(ii)", wasi_fd_prestat_get, 0, 0},
+    {"fd_prestat_dir_name", "i(iii)", wasi_fd_prestat_dir_name, 0, 0},
+    {"fd_fdstat_get", "i(ii)", stub_ebadf, 0, 0},
+    {"fd_fdstat_set_flags", "i(ii)", stub_ok, 0, 0},
+    {"fd_close", "i(i)", stub_ok, 0, 0},
+    {"poll_oneoff", "i(iiii)", wasi_poll_oneoff, 0, 0},
 };
 #define NSTUBS (sizeof(stubs) / sizeof(stubs[0]))
 
 static const struct link_entry profile[] = {
-    {"fd_write", "i(iiii)", wasi_fd_write, 0},
-    {"proc_exit", "v(i)", wasi_proc_exit, 0},
-    {"clock_time_get", "i(iIi)", wasi_clock_time_get, 0},
-    {"random_get", "i(ii)", wasi_random_get, 0},
-    {"args_sizes_get", "i(ii)", wasi_args_sizes_get, 0},
-    {"args_get", "i(ii)", wasi_args_get, 0},
-    {"environ_sizes_get", "i(ii)", wasi_environ_sizes_get, 0},
-    {"environ_get", "i(ii)", wasi_environ_get, 0},
-    {"sched_yield", "i()", wasi_sched_yield, "v()", wasi_sched_yield_v}, /* Go runtime i() vs lib v() */
+    {"fd_write", "i(iiii)", wasi_fd_write, 0, 0},
+    {"proc_exit", "v(i)", wasi_proc_exit, 0, 0},
+    {"clock_time_get", "i(iIi)", wasi_clock_time_get, 0, 0},
+    {"random_get", "i(ii)", wasi_random_get, 0, 0},
+    {"args_sizes_get", "i(ii)", wasi_args_sizes_get, 0, 0},
+    {"args_get", "i(ii)", wasi_args_get, 0, 0},
+    {"environ_sizes_get", "i(ii)", wasi_environ_sizes_get, 0, 0},
+    {"environ_get", "i(ii)", wasi_environ_get, 0, 0},
+    {"sched_yield", "i()", wasi_sched_yield, "v()", wasi_sched_yield_v},
     /* Phase 5 routed path ops (ABI v1.1) */
-    {"path_open", "i(iiiiiIIii)", wasi_path_open, 0},
-    {"fd_read", "i(iiii)", wasi_fd_read, 0},
-    {"path_create_directory", "i(iii)", wasi_path_create_directory, 0},
-    {"fd_close", "i(i)", wasi_fd_close_routed, 0},
+    {"path_open", "i(iiiiiIIii)", wasi_path_open, 0, 0},
+    {"fd_read", "i(iiii)", wasi_fd_read, 0, 0},
+    {"path_create_directory", "i(iii)", wasi_path_create_directory, 0, 0},
+    {"fd_close", "i(i)", wasi_fd_close_routed, 0, 0},
 };
 #define NPROFILE (sizeof(profile) / sizeof(profile[0]))
 
@@ -1079,13 +1127,14 @@ static char type_char(u8 t) {
 
 static const char *sig_of(IM3FuncType ft) {
     char *p = sig_buf;
+    char *end = sig_buf + sizeof(sig_buf) - 2; /* room for ')' + NUL */
     if (GetFuncTypeNumResults(ft))
         *p++ = type_char(GetFuncTypeResultType(ft, 0));
     else
         *p++ = 'v';
     *p++ = '(';
     u16 n = GetFuncTypeNumParams(ft);
-    for (u16 i = 0; i < n; i++)
+    for (u16 i = 0; i < n && p < end; i++)
         *p++ = type_char(GetFuncTypeParamType(ft, i));
     *p++ = ')';
     *p = 0;
@@ -1139,12 +1188,10 @@ const char *wasi_link_module(IM3Module mod) {
              * declared signature when it matches an accepted shape so the
              * raw-call slot layout always agrees with the caller. */
             const char *modsig = sig_of(f->funcType);
-            const char *use;
             M3RawCall ufn = fn;
             if (!strcmp(modsig, ksig))
-                use = ksig;
+                (void)0; /* use canonical fn */
             else if (kalt && !strcmp(modsig, kalt)) {
-                use = modsig;
                 ufn = kernlinks[kei].fn_alt;
                 console_puts("[link] void-shape variant: ");
                 console_puts(kname);
@@ -1235,7 +1282,7 @@ const char *wasi_link_module(IM3Module mod) {
                 console_puts("\n");
                 return "function signature mismatch";
             }
-            M3Result r = CompileRawFunction(mod, f, (const void *)fn, 0);
+            M3Result r = CompileRawFunction(mod, f, (const void *)ufn, 0);
             if (r) {
                 console_puts("[link] ERR wasi:");
                 console_puts(f->import.fieldUtf8);
