@@ -1,0 +1,5 @@
+# /etc/users — name:uid:salted-sha256:capmask
+# salted-hash = salt$hex(sha256(salt + password))
+u1:1001:u1salt$f367376831b428a30d6cff3a0d8faebab6f0a768375166e0463ed31c154df577:0x18
+u2:1002:u2salt$30128984156f26ac142ec21f4b23b9840f9bda3930b8aa5f4768d6f2702197e9:0x18
+admin:0:adminsalt$8896dc08ba1e17556f336edc11a56e9244bba853a4ae9ccbe54c7e51f683ce62:0x1fff
