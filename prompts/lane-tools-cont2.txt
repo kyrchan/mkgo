@@ -1,3 +1,0 @@
-Continue tools development. Implement VDI/VMDK writers and README v2.0.
-Re-poll MAIN for VFIO implementation updates that affect documentation.
-Commit incrementally.

@@ -1,3 +1,0 @@
-Continue QA duty. Re-poll all repos for VFIO implementation changes.
-Review deltas, update FINDINGS.txt, run fuzz targets, verify gates.
-Never emit ALL PHASES COMPLETE (coordinator decides).

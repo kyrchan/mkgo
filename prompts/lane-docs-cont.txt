@@ -1,3 +1,0 @@
-Continue publications duty. Re-poll all repos for VFIO implementation changes.
-Update SDD, IFSPEC, PERF, USERGUIDE, TRACE, TESTPLAN, RELHIST.
-Never emit ALL PHASES COMPLETE (coordinator decides).
