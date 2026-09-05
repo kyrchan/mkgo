@@ -18,6 +18,8 @@ void mm_init(const struct boot_mmap *m);
 uint64_t mm_top(void);
 uint64_t mm_ram_top(void);
 void *mm_alloc(uint64_t n, uint64_t align);
+uint64_t mm_total_bytes(void);
+uint64_t mm_used_bytes(void);
 
 #ifndef HOST_BUILD
 #ifdef __cplusplus

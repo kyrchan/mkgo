@@ -91,6 +91,7 @@ int load_program(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st,
     if (FW3(*(void **)((char *)file + 32), (UINTN)file, (UINTN)&got,
             (UINTN)buf) != EFI_SUCCESS || got != size) {
         console_puts("[loader] short read\n");
+        FW1(st->BootServices->FreePool, (UINTN)buf);
         close_file(file);
         return -1;
     }

@@ -47,5 +47,16 @@ static inline uint64_t rdtsc(void) {
     __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
     return lo | ((uint64_t)hi << 32);
 }
+static inline uint64_t rdmsr(uint32_t msr) {
+    uint32_t lo, hi;
+    __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
+    return lo | ((uint64_t)hi << 32);
+}
+static inline void wrmsr(uint32_t msr, uint64_t val) {
+    uint32_t lo = (uint32_t)val, hi = (uint32_t)(val >> 32);
+    __asm__ volatile("wrmsr" :: "a"(lo), "d"(hi), "c"(msr) : "memory");
+}
+static inline uint64_t rd_gs_base(void) { return rdmsr(0xC0000101); }
+static inline void wr_gs_base(uint64_t v) { wrmsr(0xC0000101, v); }
 
 #endif

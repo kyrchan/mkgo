@@ -77,9 +77,9 @@ void *rt_realloc(void *p, uint64_t n) {
     if (!p)
         return rt_malloc(n);
     hdr *h = (hdr *)p - 1;
-    uint64_t cap = h->size - sizeof(hdr);
-    if (!h->magic)
+    if (h->magic != RT_MAGIC)
         return p; /* foreign/raw block: cannot grow safely, leak-stable */
+    uint64_t cap = h->size - sizeof(hdr);
     if (n <= cap)
         return p; /* fits in existing capacity */
     void *q = rt_malloc(n);
@@ -94,6 +94,8 @@ void *rt_realloc(void *p, uint64_t n) {
 }
 
 void *rt_calloc(uint64_t n, uint64_t sz) {
+    if (n && sz > (~0ULL) / n)
+        return 0;
     uint64_t total = n * sz;
     uint8_t *p = (uint8_t *)rt_malloc(total);
     if (!p)

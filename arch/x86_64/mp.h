@@ -44,6 +44,7 @@ struct ap_boot_info {
     uint64_t ap_stack_bytes; /* stack size in bytes */
     uint64_t ap_pml4;        /* CR3 value (shared identity PML4) */
     uint64_t ap_entry;       /* virtual address of ap_entry (long mode) */
+    volatile int ap_ready;   /* 1 = AP has booted and is running */
 };
 
 /* MADT table (ACPISDT header + entries). Parsed at boot; the parsed
@@ -69,8 +70,9 @@ const struct madt *madt_parse(void);
 int ap_boot(const struct madt *m);
 
 /* Called from mp.S after the AP has entered long mode and set up its
- * own CR3. Sets up per-CPU state and enters the scheduler. */
-void ap_entry(struct ap_boot_info *info);
+ * own CR3. Sets up per-CPU state and enters the scheduler.
+ * Implemented in assembly (mp.S), so extern "C". */
+extern "C" void ap_entry(struct ap_boot_info *info);
 
 /* Local APIC MMIO accessors. The Local APIC is at lapic_addr (MMIO);
  * we map it through the identity map, so a direct physical load works. */

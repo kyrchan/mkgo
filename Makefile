@@ -21,8 +21,8 @@ CXX     := g++
 CXXFLAGS := -std=c++20 -ffreestanding -fno-exceptions -fno-rtti \
             -fno-threadsafe-statics -fno-stack-protector -fno-stack-clash-protection \
             -mno-red-zone -fno-pic -mcmodel=small -Os -g -Wall -Wextra \
-            -Icore -Iarch/x86_64 -Ithird_party/wasm3
-ASFLAGS :=
+            -Icore -Iarch/x86_64 -isystem third_party/wasm3
+ASFLAGS := -fno-pic -mcmodel=small -fno-stack-protector -fno-stack-clash-protection -mno-red-zone
 LDFLAGS := -nostdlib -no-pie -Wl,--build-id=none -Wl,-e,efi_main -T kernel/link.ld
 
 CORE_OBJS := $(BUILD)/core/main.o $(BUILD)/core/kmain.o $(BUILD)/core/lib.o \
@@ -116,7 +116,7 @@ build/test_pp.wasm: build/test_pp.raw
 services/console/console.wasm.raw: $(wildcard services/console/*.go) $(wildcard guests/lib/*.go)
 	cd services/console && GOOS=wasip1 GOARCH=wasm go build -o console.wasm.raw .
 
-services/net/net.wasm.raw: $(wildcard services/net/*.go)
+services/net/net.wasm.raw: $(wildcard services/net/*.go) $(wildcard guests/lib/*.go) services/go.mod
 	cd services/net && GOOS=wasip1 GOARCH=wasm go build -o net.wasm.raw .
 services/net/net.wasm: services/net/net.wasm.raw
 	python3 scripts/add_abiver.py $< $@ 2
@@ -229,6 +229,16 @@ services/e1000/e1000.wasm: services/e1000/e1000.wasm.raw
 services/ahci/ahci.wasm.raw: $(wildcard services/ahci/*.go) $(wildcard guests/lib/*.go)
 	cd services/ahci && GOOS=wasip1 GOARCH=wasm go build -o ahci.wasm.raw .
 services/ahci/ahci.wasm: services/ahci/ahci.wasm.raw
+	python3 scripts/add_abiver.py $< $@ 2
+
+services/display/display.wasm.raw: $(wildcard services/display/*.go) $(wildcard guests/lib/*.go)
+	cd services/display && GOOS=wasip1 GOARCH=wasm go build -o display.wasm.raw .
+services/display/display.wasm: services/display/display.wasm.raw
+	python3 scripts/add_abiver.py $< $@ 2
+
+services/ssh/ssh.wasm.raw: $(wildcard services/ssh/*.go) $(wildcard guests/lib/*.go)
+	cd services/ssh && GOOS=wasip1 GOARCH=wasm go build -o ssh.wasm.raw .
+services/ssh/ssh.wasm: services/ssh/ssh.wasm.raw
 	python3 scripts/add_abiver.py $< $@ 2
 
 
@@ -406,10 +416,26 @@ image: $(BUILD)/disk-p7.img
 run: $(BUILD)/disk-p7.img $(BUILD)/VARS.fd
 	env $(QEMU_ENV) $(QEMU) $(QEMU_BASE) -drive format=raw,file=$(BUILD)/disk-p7.img -serial stdio
 
-# Interactive run with GTK graphics window — shows framebuffer output visually.
-run-gfx: $(BUILD)/disk-p7.img $(BUILD)/VARS.fd
+# Interactive run with GTK graphics window. Uses the p11b image
+# (graphics.wasm as the legacy payload slot with CAP_PCI|CAP_FB
+# granted directly by the kernel), which actually populates the
+# framebuffer. The p7 image used by `make run` is the multi-service
+# interactive session and does not drive the LFB.
+run-gfx: $(BUILD)/disk-p11b.img $(BUILD)/VARS.fd
 	env $(QEMU_ENV) $(QEMU) $(subst -display none,-display gtk,$(QEMU_BASE)) \
+		-drive format=raw,file=$(BUILD)/disk-p11b.img -serial stdio
+
+# SMP run: 4 vCPUs so the AP bring-up path is exercised. Each AP runs
+# its own cooperative-under-interrupt scheduler over its own session
+# pool; no session migrates between cores.
+SMP_NCPU ?= 4
+run-smp: $(BUILD)/disk-p7.img $(BUILD)/VARS.fd
+	env $(QEMU_ENV) $(QEMU) $(QEMU_BASE) -smp $(SMP_NCPU) \
 		-drive format=raw,file=$(BUILD)/disk-p7.img -serial stdio
+
+run-gfx-smp: $(BUILD)/disk-p11b.img $(BUILD)/VARS.fd
+	env $(QEMU_ENV) $(QEMU) $(subst -display none,-display gtk,$(QEMU_BASE)) -smp $(SMP_NCPU) \
+		-drive format=raw,file=$(BUILD)/disk-p11b.img -serial stdio
 
 # quick smoke gate: smallest wasm guest through engine + WASI
 test: test-g1
@@ -501,7 +527,7 @@ test-p11b: $(BUILD)/disk-p11b.img $(BUILD)/VARS.fd
 $(BUILD)/disk-p11-gfx.img: $(BUILD)/BOOTX64.EFI build/graphics.wasm | $(BUILD)
 	$(call MKDISK,$@,build/graphics.wasm)
  
-.PHONY: test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10 test-p11 test-p11b test-p11-gfx test-p12 test-p13 test-all
+.PHONY: test-g1 test-g2 test-g3 test-p4 test-p5a test-p5b test-p7 test-p8a test-p8b test-p9 test-p10 test-p11 test-p11b test-p11-gfx test-p12 test-p13 test-p14 test-all
 
 .PHONY: test-p11-gfx
 test-p11-gfx: $(BUILD)/disk-p11-gfx.img $(BUILD)/VARS.fd
@@ -550,7 +576,7 @@ test-p9: $(BUILD)/disk-p9.img $(BUILD)/VARS.fd
 	    || { echo "TEST FAIL (p9)"; sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' $(BUILD)/serial-p9.log | tail -40; exit 1; }
 
 # Phase 8: cooperative multitasking — both sessions make progress
-$(BUILD)/disk-p8.img: $(BUILD)/BOOTX64.EFI build/test_p8.wasm | $(BUILD) $(IMG)
+$(BUILD)/disk-p8.img: $(BUILD)/BOOTX64.EFI build/test_p8.wasm services/fs/fs.wasm services/console/console.wasm services/login/login.wasm | $(BUILD) $(IMG)
 	$(IMG) $@ 64 \
 	  $(BUILD)/BOOTX64.EFI:/EFI/BOOT/BOOTX64.EFI \
 	  services/fs/fs.wasm:/boot/modules/fs.wasm \

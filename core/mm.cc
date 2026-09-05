@@ -13,6 +13,11 @@ static int usable_type(uint32_t t) {
 
 void mm_init(const struct boot_mmap *m) {
     const uint8_t *d = (const uint8_t *)m->desc;
+    /* UEFI MEMORY_DESCRIPTOR is 32 bytes; smaller dsize means corrupt map. */
+    if (m->dsize < 32) {
+        console_puts("[mm] bad dsize\n");
+        return;
+    }
     for (uint64_t i = 0; i < m->count; i++, d += m->dsize) {
         uint32_t type;
         uint64_t phys, npages;
@@ -21,7 +26,13 @@ void mm_init(const struct boot_mmap *m) {
         __builtin_memcpy(&npages, d + 24, 8);
         if (!usable_type(type))
             continue;
-        uint64_t end = phys + npages * 4096ULL;
+        /* Overflow-safe: if npages is so large that npages*4096 overflows,
+         * clamp to the 4 GiB ceiling (the pool is below 4 GiB anyway). */
+        uint64_t end;
+        if (npages > ((1ULL << 32) / 4096))
+            end = 1ULL << 32;
+        else
+            end = phys + npages * 4096ULL;
         if (end > (1ULL << 32))
             end = 1ULL << 32;
         if (phys >= end)
@@ -46,6 +57,11 @@ void mm_init(const struct boot_mmap *m) {
 }
 
 uint64_t mm_top(void) { return pool_end; }
+
+/* Phase 15 observability (memstat via registry SYSSTAT): bump-allocator
+ * accounting. used = high-water bytes handed out; total = pool span. */
+uint64_t mm_total_bytes(void) { return pool_end > pool_base ? pool_end - pool_base : 0; }
+uint64_t mm_used_bytes(void) { return pool_ptr > pool_base ? pool_ptr - pool_base : 0; }
 
 uint64_t mm_ram_top(void) { return ram_top; }
 

@@ -35,6 +35,9 @@ int vfio_assign_pci(uint32_t target_sid, uint8_t bus, uint8_t dev, uint8_t fn, u
 // IOMMU enforcement: check if session may DMA to a physical range
 bool vfio_iommu_permits(uint32_t sid, uint64_t phys, uint32_t size);
 
+// Check that a PCI BDF is assigned to the calling session (or caller is admin).
+bool vfio_bdf_assigned_to(uint32_t sid, uint32_t bus, uint32_t dev, uint32_t fn);
+
 // Session cleanup: release all VFIO resources owned by a session
 void vfio_session_cleanup(uint32_t sid);
 

@@ -1,5 +1,6 @@
 /* SSE2 shims for the float helpers wasm3's executor calls. */
 #include <stdint.h>
+#include <string.h>
 
 extern "C" {
 
@@ -16,15 +17,21 @@ float sqrtf(float x) {
 }
 
 double fabs(double x) {
-    uint64_t xi = *(uint64_t *)&x;
+    uint64_t xi;
+    memcpy(&xi, &x, 8);
     xi &= 0x7FFFFFFFFFFFFFFFULL;
-    return *(double *)&xi;
+    double r;
+    memcpy(&r, &xi, 8);
+    return r;
 }
 
 float fabsf(float x) {
-    uint32_t xi = *(uint32_t *)&x;
+    uint32_t xi;
+    memcpy(&xi, &x, 4);
     xi &= 0x7FFFFFFF;
-    return *(float *)&xi;
+    float r;
+    memcpy(&r, &xi, 4);
+    return r;
 }
 
 double floor(double x) {
@@ -64,15 +71,23 @@ float truncf(float x) {
 }
 
 double copysign(double x, double y) {
-    uint64_t xi = *(uint64_t *)&x, yi = *(uint64_t *)&y;
+    uint64_t xi, yi;
+    memcpy(&xi, &x, 8);
+    memcpy(&yi, &y, 8);
     xi = (xi & 0x7FFFFFFFFFFFFFFFULL) | (yi & 0x8000000000000000ULL);
-    return *(double *)&xi;
+    double r;
+    memcpy(&r, &xi, 8);
+    return r;
 }
 
 float copysignf(float x, float y) {
-    uint32_t xi = *(uint32_t *)&x, yi = *(uint32_t *)&y;
+    uint32_t xi, yi;
+    memcpy(&xi, &x, 4);
+    memcpy(&yi, &y, 4);
     xi = (xi & 0x7FFFFFFF) | (yi & 0x80000000);
-    return *(float *)&xi;
+    float r;
+    memcpy(&r, &xi, 4);
+    return r;
 }
 
 } /* extern "C" */

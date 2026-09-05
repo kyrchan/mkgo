@@ -110,8 +110,14 @@ int virtio_blk_rw(int write, uint64_t lba, void *buf, uint32_t count) {
         vmod_notify(&dev, 0, g_qoff);
 
         volatile uint16_t *uidx = (volatile uint16_t *)(vring + USED_OFF + 2);
+        uint64_t spin_start = 0;
         while (*uidx == last_used) {
-            /* polled completion (cooperative context) */
+            /* polled completion (cooperative context) with timeout */
+            spin_start++;
+            if (spin_start > 100000000ULL) {
+                console_puts("[virtio-blk] timeout\n");
+                return -1;
+            }
         }
         last_used = *uidx;
         if (status_byte != 0)

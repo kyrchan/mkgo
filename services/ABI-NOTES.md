@@ -125,7 +125,7 @@ until a string-knob need appears (would require an ABI note).
 
 ## 7. hosteng validation status
 
-`/home/cyr/kernel/build/hosteng` did not exist when this lane ran;
+`build/hosteng` did not exist when this lane ran;
 per instructions the engine build was NOT attempted from this worktree.
 All modules were instead validated by exhaustive host tests
 (`kern.Bus` mirrors core/ports.cc semantics decision-for-decision) and

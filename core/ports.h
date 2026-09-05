@@ -23,6 +23,8 @@ int  port_recv(uint32_t sid, int h, void *out, uint32_t cap);        /* >0|0|-1 
 void ports_kernel_enqueue(uint32_t sid, int h, const void *data, uint32_t len);
 bool ports_enqueue_by_name(const char *name, const void *data, uint32_t len);
 int  ports_owner_of_handle(uint32_t sid, int h);
+void ports_drain_session(uint32_t sid);
+void ports_clear_session_handles(uint32_t sid);
 
 #ifdef __cplusplus
 }

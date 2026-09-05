@@ -19,11 +19,7 @@ static bool is_wasm(const uint8_t *p, uint64_t len) {
 const struct boot_info *g_bi_ptr;
 const struct boot_info *boot_info(void) { return g_bi_ptr; }
 
-/* boot module paths (ESP, backslash form) */
-static CHAR16 p_console[] = {'b','o','o','t','\\','m','o','d','u','l','e','s','\\',
-                             'c','o','n','s','o','l','e','.','w','a','s','m',0};
-static CHAR16 p_login[] = {'b','o','o','t','\\','m','o','d','u','l','e','s','\\',
-                           'l','o','g','i','n','.','w','a','s','m',0};
+/* boot module paths (ESP, backslash form) -- now loaded via bi->mod_* */
 
 void kmain(const struct boot_info *bi) {
     console_puts("[kmain] hello from the microkernel\n");

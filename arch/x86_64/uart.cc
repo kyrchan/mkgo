@@ -1,6 +1,7 @@
 #include "io.h"
 #include "plat.h"
 #include "arch_lock.h"
+#include "log.h"
 
 #define COM1 0x3F8
 
@@ -38,6 +39,12 @@ void console_putc(char c) {
      * has IF=0), and the saved flag is restored on exit so we
      * don't keep IRQs off after the call. */
     arch_irq_state_t irq = arch_irq_save();
+    /* v1 syslog (Phase 15): feed the core log ring. Skip '\r' — it is
+     * terminal control (shell redraws, \n translation), not content.
+     * log_push takes only the ticket spinlock, never IRQs, so this is
+     * safe from the isr_dump path (IRQs already off there) and SMP. */
+    if (c != '\r')
+        log_push(&c, 1);
     if (c == '\n') {
         at_line_start = true;
         outb(COM1, '\r');

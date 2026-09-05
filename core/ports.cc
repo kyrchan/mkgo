@@ -64,14 +64,14 @@ struct port {
 
 static port ports[MAX_PORTS];
 /* per-session handle table: -1 empty, else global port index */
-static int8_t htab[12][H_PER_SESS];
+static int8_t htab[MAX_SESSIONS][H_PER_SESS];
 
 void ports_init(void) {
     for (int p = 0; p < MAX_PORTS; p++) {
         ports[p].used = false;
         arch_spinlock_init(&ports[p].lock);
     }
-    for (int s = 0; s < 12; s++)
+    for (int s = 0; s < MAX_SESSIONS; s++)
         for (int h = 0; h < H_PER_SESS; h++)
             htab[s][h] = -1;
 
@@ -95,7 +95,7 @@ void ports_init(void) {
 }
 
 static port *port_of(uint32_t sid, int h) {
-    if (sid >= 12 || h < 0 || h >= H_PER_SESS)
+    if (sid >= MAX_SESSIONS || h < 0 || h >= H_PER_SESS)
         return 0;
     int8_t g = htab[sid][h];
     if (g < 0 || g >= MAX_PORTS || !ports[g].used)
@@ -185,22 +185,26 @@ int port_send(uint32_t sid, int h, const void *data, const uint32_t len) {
     /* F32 / ABI v1.1 §1: "On SEND the kernel OVERWRITES uid with the
      * sending session's registry uid -- clients can never spoof identity."
      * Stamped on every path: kernel-endpoint dispatch, fsroute feed and
-     * queue enqueue alike. Canonical header holds uid at bytes [4:8]. */
-    if (len >= 8 && sid != 0) {
-        uint32_t uid = sched_uid_of(sid);
-        ((uint8_t *)data)[4] = (uint8_t)uid;
-        ((uint8_t *)data)[5] = (uint8_t)(uid >> 8);
-        ((uint8_t *)data)[6] = (uint8_t)(uid >> 16);
-        ((uint8_t *)data)[7] = (uint8_t)(uid >> 24);
-    }
+     * queue enqueue alike. Canonical header holds uid at bytes [4:8].
+     * Copy-on-stamp: we must not mutate the caller's const buffer. */
+    uint8_t stack_copy[MSG_MAX];
+    memcpy(stack_copy, data, len);
     if (p->kernel_endpoint && sid != 0) {
-        kernsvc_dispatch(p->name, sid, h, (const uint8_t *)data, len);
+        /* Stamp UID into the copy before dispatch so kernsvc sees it */
+        if (len >= 8) {
+            uint32_t uid = sched_uid_of(sid);
+            stack_copy[4] = (uint8_t)uid;
+            stack_copy[5] = (uint8_t)(uid >> 8);
+            stack_copy[6] = (uint8_t)(uid >> 16);
+            stack_copy[7] = (uint8_t)(uid >> 24);
+        }
+        kernsvc_dispatch(p->name, sid, h, stack_copy, len);
         return 0;
     }
     /* F28: intercept ONLY the awaited reply (name+seq match); anything
      * else -- console relays, §7 sync replies, unrelated traffic -- keeps
      * flowing to its queue. */
-    if (fsroute_intercept(p->name, (const uint8_t *)data, len))
+    if (fsroute_intercept(p->name, stack_copy, len))
         return 0;
     /* Substrate-hardening (commit E): IRQ-save around the ring enqueue.
      * The IRQ0 stub (92313c5) runs on the guest's stack and iretqs
@@ -232,7 +236,15 @@ int port_send(uint32_t sid, int h, const void *data, const uint32_t len) {
     /* memcpy: ~10x faster than byte loop on 4 KiB datagrams; also
      * emits rep movsb on x86_64 which beats the hand-rolled loop on
      * every microarch we care about. */
-    memcpy(m->data, data, len);
+    memcpy(m->data, stack_copy, len);
+    /* F32: stamp UID into the queued message only, not the caller's buffer */
+    if (len >= 8 && sid != 0) {
+        uint32_t uid = sched_uid_of(sid);
+        m->data[4] = (uint8_t)uid;
+        m->data[5] = (uint8_t)(uid >> 8);
+        m->data[6] = (uint8_t)(uid >> 16);
+        m->data[7] = (uint8_t)(uid >> 24);
+    }
     p->ring[p->qt] = m;
     p->qt = (p->qt + 1) % MAX_Q;
     p->qn++;
@@ -242,7 +254,7 @@ int port_send(uint32_t sid, int h, const void *data, const uint32_t len) {
 }
 
 extern "C" int ports_owner_of_handle(uint32_t sid, int h) {
-    if (sid >= 12 || h < 0 || h >= H_PER_SESS)
+    if (sid >= MAX_SESSIONS || h < 0 || h >= H_PER_SESS)
         return -1;
     int8_t g = htab[sid][h];
     if (g < 0 || g >= MAX_PORTS || !ports[g].used)
@@ -255,7 +267,7 @@ extern "C" bool ports_name_owned_by(uint32_t sid, const char *name) {
      * handles to existing names freely (legal fan-in); only the session
      * that created the port owns the well-known name. Kernel endpoints
      * are creator 0 and owned by no session. */
-    if (sid >= 12 || sid == 0)
+    if (sid >= MAX_SESSIONS || sid == 0)
         return false;
     for (int h = 0; h < H_PER_SESS; h++) {
         int8_t g = htab[sid][h];
@@ -327,6 +339,33 @@ void ports_kernel_enqueue(uint32_t sid, int h, const void *data, uint32_t len) {
     p->qn++;
     arch_spinlock_release(&p->lock);
     arch_irq_restore(irq);
+}
+
+/* drain ring messages owned by a dying session (called from sched_kill) */
+void ports_drain_session(uint32_t sid) {
+    for (int p = 0; p < MAX_PORTS; p++) {
+        if (!ports[p].used) continue;
+        arch_irq_state_t irq = arch_irq_save();
+        arch_spinlock_acquire(&ports[p].lock);
+        for (int i = 0; i < MAX_Q; i++) {
+            msg *m = ports[p].ring[i];
+            if (m && m->from_sid == sid) {
+                rt_free(m);
+                ports[p].ring[i] = 0;
+                ports[p].qn--;
+            }
+        }
+        arch_spinlock_release(&ports[p].lock);
+        arch_irq_restore(irq);
+    }
+}
+
+/* Invalidate every handle belonging to `sid` so a zombie or reused slot
+ * cannot send/recv on stale port references. */
+void ports_clear_session_handles(uint32_t sid) {
+    if (sid >= MAX_SESSIONS) return;
+    for (int h = 0; h < H_PER_SESS; h++)
+        htab[sid][h] = -1;
 }
 
 int port_recv(uint32_t sid, int h, void *out, uint32_t cap) {

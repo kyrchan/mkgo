@@ -17,7 +17,6 @@ extern "C" {
 int vmod_probe(uint16_t want_devid, vmod_dev *out);
 uint64_t vmod_features(vmod_dev *d, uint64_t accept);
 void vmod_status_add(vmod_dev *d, uint8_t bits);
-bool vmod_features_ok(vmod_dev *d);
 void vmod_driver_ok(vmod_dev *d);
 uint16_t vmod_queue_size(vmod_dev *d, uint16_t qidx);
 int vmod_queue_setup(vmod_dev *d, uint16_t qidx, uint16_t size, uint64_t dp,

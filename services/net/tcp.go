@@ -237,9 +237,6 @@ func (c *TCPConn) flushLocked() {
 		payload := c.sndBuf[:n]
 		c.sndBuf = c.sndBuf[n:]
 		c.sendLocked(0, payload)
-		if n == 0 {
-			break
-		}
 	}
 }
 
@@ -351,9 +348,7 @@ func (c *TCPConn) handle(seg *TCPSegment) {
 			c.rcvBuf = append(c.rcvBuf, seg.Payload...)
 			c.rcvNXT += uint32(len(seg.Payload))
 			c.sendLocked(TCPAck, nil)
-			}
-		if len(seg.Payload) > 0 && seg.Seq != c.rcvNXT {
-			}
+		}
 		if seg.Flags&TCPFin != 0 && seg.Seq+uint32(len(seg.Payload)) == c.rcvNXT {
 			c.rcvNXT++
 			c.sendLocked(TCPAck, nil)
@@ -366,9 +361,7 @@ func (c *TCPConn) handle(seg *TCPSegment) {
 			c.rcvBuf = append(c.rcvBuf, seg.Payload...)
 			c.rcvNXT += uint32(len(seg.Payload))
 			c.sendLocked(TCPAck, nil)
-			}
-		if len(seg.Payload) > 0 && seg.Seq != c.rcvNXT {
-			}
+		}
 		if seg.Flags&TCPFin != 0 && seg.Seq+uint32(len(seg.Payload)) == c.rcvNXT {
 			c.rcvNXT++
 			c.sendLocked(TCPAck, nil)

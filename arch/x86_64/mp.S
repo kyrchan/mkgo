@@ -1,26 +1,17 @@
 /* arch/x86_64/mp.S -- AP trampoline.
  *
- * Phase 8.2 (planned). Brings up N AP cores via MADT/MP table + SIPI.
+ * Brings up N AP cores via MADT/MP table + SIPI.
  * Each AP runs its own cooperative-under-interrupt scheduler over its
  * own session pool; no session migrates between cores.
  *
- * Why this does NOT require a true preemptive context switch:
- *   - The wasm3 interpreter is a virtual machine whose internal state
- *     (_sp, _mem, metacode PC) is opaque C locals in m3_exec.c. The
- *     kernel cannot save/resume it mid-op without patching wasm3
- *     (violates the "vendor wasm3, don't clean-room it" principle)
- *     or corrupting its state.
- *   - The Go runtime IS the preemption mechanism: Go 1.14+ yields
- *     cooperatively in wasm at every goroutine switch point, and our
- *     kernel switches sessions at those yield points.
- *   - Multiple cores provide the parallelism, the Go runtime provides
- *     the per-core preemption -- neither requires touching the opaque
- *     interpreter state.
- *
  * SMP-portability contract (rule #2): all cores share the SAME identity
  * PML4 set up by paging_init for CPU0. No per-arch page tables.
+ *
+ * This file now only contains the 64-bit AP entry point (ap_entry).
+ * The real-mode trampoline lives in arch/x86_64/trampoline.S and is
+ * copied to 0x7000 (vector 0x07) by mp.cc.
  */
-.section .text
+.text
 .code64
 
 /* ap_entry -- called by the trampoline after the AP has entered long
@@ -33,6 +24,7 @@
  *   offset 16: uint64_t ap_stack_bytes
  *   offset 24: uint64_t ap_pml4
  *   offset 32: uint64_t ap_entry
+ *   offset 40: volatile int ap_ready
  */
 .globl ap_entry
 ap_entry:

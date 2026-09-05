@@ -119,8 +119,8 @@ extern "C" EFI_STATUS __attribute__((ms_abi)) efi_main(EFI_HANDLE image_handle,
                 g_bi.fb_width = info[1];
                 g_bi.fb_height = info[2];
                 g_bi.fb_bpp = 32;
-                if (gop->Mode->InfoSize >= 28 && info[5] != 0)
-                    g_bi.fb_stride = info[5] * 4; /* PixelsPerScanLine * bytes_per_px */
+                if (gop->Mode->InfoSize >= 32 && info[7] != 0)
+                    g_bi.fb_stride = info[7] * 4; /* PixelsPerScanLine * bytes_per_px */
                 console_puts("[boot] GOP mode ");
                 console_hex64(g_bi.fb_width);
                 console_puts("x");
@@ -147,50 +147,125 @@ extern "C" EFI_STATUS __attribute__((ms_abi)) efi_main(EFI_HANDLE image_handle,
      * ExitBootServices. */
     g_bi.madt_phys = 0;
     {
-        EFI_GUID rsdp_guid = EFI_ACPI_RSDP_GUID;
+        EFI_GUID rsdp_guid = EFI_ACPI_TABLE_GUID;
+        console_puts("[boot] looking for RSDP guid=");
+        console_hex64(rsdp_guid.a);
+        console_puts("-");
+        console_hex64(rsdp_guid.b);
+        console_puts("-");
+        console_hex64(rsdp_guid.c);
+        console_puts("-");
+        console_hex64((uint64_t)rsdp_guid.d[0]);
+        console_hex64((uint64_t)rsdp_guid.d[1]);
+        console_hex64((uint64_t)rsdp_guid.d[2]);
+        console_hex64((uint64_t)rsdp_guid.d[3]);
+        console_hex64((uint64_t)rsdp_guid.d[4]);
+        console_hex64((uint64_t)rsdp_guid.d[5]);
+        console_hex64((uint64_t)rsdp_guid.d[6]);
+        console_hex64((uint64_t)rsdp_guid.d[7]);
+        console_puts("\n");
         EFI_RSDP *rsdp = 0;
         /* The EFI System Table has a ConfigurationTable field. We walk
          * it looking for the RSDP GUID. */
         void *ct = systab->ConfigurationTable;
         if (ct) {
-            for (int i = 0; i < 64; i++) {
+            console_puts("[boot] ConfigurationTable ptr=");
+            console_hex64((uint64_t)(uintptr_t)ct);
+            console_puts(" ntables=");
+            console_hex64(systab->NumberOfTableEntries);
+            console_puts("\n");
+            for (uint32_t i = 0; i < systab->NumberOfTableEntries && i < 64; i++) {
                 EFI_CONFIG_TABLE_ENTRY *e = (EFI_CONFIG_TABLE_ENTRY *)
                     ((uint8_t *)ct + i * sizeof(EFI_CONFIG_TABLE_ENTRY));
+                console_puts("[boot] ct[");
+                console_hex64(i);
+                console_puts("] guid=");
+                console_hex64(e->guid.a);
+                console_puts("-");
+                console_hex64(e->guid.b);
+                console_puts("-");
+                console_hex64(e->guid.c);
+                console_puts("-");
+                console_hex64((uint64_t)e->guid.d[0]);
+                console_hex64((uint64_t)e->guid.d[1]);
+                console_hex64((uint64_t)e->guid.d[2]);
+                console_hex64((uint64_t)e->guid.d[3]);
+                console_hex64((uint64_t)e->guid.d[4]);
+                console_hex64((uint64_t)e->guid.d[5]);
+                console_hex64((uint64_t)e->guid.d[6]);
+                console_hex64((uint64_t)e->guid.d[7]);
+                console_puts("\n");
                 if (e->guid.a == rsdp_guid.a && e->guid.b == rsdp_guid.b &&
                     e->guid.c == rsdp_guid.c &&
                     e->guid.d[0] == rsdp_guid.d[0] &&
-                    e->guid.d[1] == rsdp_guid.d[1]) {
+                    e->guid.d[1] == rsdp_guid.d[1] &&
+                    e->guid.d[2] == rsdp_guid.d[2] &&
+                    e->guid.d[3] == rsdp_guid.d[3] &&
+                    e->guid.d[4] == rsdp_guid.d[4] &&
+                    e->guid.d[5] == rsdp_guid.d[5] &&
+                    e->guid.d[6] == rsdp_guid.d[6] &&
+                    e->guid.d[7] == rsdp_guid.d[7]) {
                     rsdp = (EFI_RSDP *)e->table;
+                    console_puts("[boot] RSDP match at CT[");
+                    console_hex64(i);
+                    console_puts("] table=0x");
+                    console_hex64((uint64_t)(uintptr_t)e->table);
+                    console_puts("\n");
                     break;
                 }
                 /* The last entry has a NULL GUID. */
                 if (e->guid.a == 0 && e->guid.b == 0 && e->guid.c == 0)
                     break;
             }
+        } else {
+            console_puts("[boot] ConfigurationTable is NULL\n");
         }
         if (rsdp && memcmp(rsdp->signature, "RSD PTR ", 8) == 0) {
             /* Walk the RSDT (or XSDT if revision >= 2) looking for the
-             * MADT ("APIC"). The MADT's physical address is what we
-             * pass to the kernel. */
-            uint32_t *rsdt = (uint32_t *)(uintptr_t)rsdp->rsdt;
-            uint64_t *xsdt = (uint64_t *)(uintptr_t)rsdp->xsdt;
-            int n = 0;
-            if (rsdp->revision >= 2 && xsdt) {
-                n = (int)xsdt[1]; /* XSDT: [0]=signature, [1]=length */
-                for (int i = 2; i < 2 + n; i++) {
-                    uint64_t *t = (uint64_t *)(uintptr_t)xsdt[i];
-                    if (t && memcmp(t, "APIC", 4) == 0) {
-                        g_bi.madt_phys = xsdt[i];
-                        break;
+             * MADT ("APIC"). ACPI table header is 36 bytes:
+             * sig(4) + len(4) + rev(1) + cksum(1) + oemid(6) + oemtid(8)
+             * + oemrev(4) + creator(4) + creatorrev(4) = 36.
+             * Entry pointers follow at offset 36. */
+            uint8_t *rsdt_ptr = (uint8_t *)(uintptr_t)rsdp->rsdt;
+            uint8_t *xsdt_ptr = (uint8_t *)(uintptr_t)rsdp->xsdt;
+            if (rsdp->revision >= 2 && xsdt_ptr) {
+                uint32_t xsdt_len = *(uint32_t *)(xsdt_ptr + 4);
+                uint32_t xsdt_n = (xsdt_len - 36) / 8;
+                console_puts("[boot] XSDT len=");
+                console_hex64(xsdt_len);
+                console_puts(" entries=");
+                console_hex64(xsdt_n);
+                console_puts("\n");
+                uint8_t *p = xsdt_ptr + 36;
+                for (uint32_t i = 0; i < xsdt_n; i++) {
+                    uint64_t entry_pa = *(uint64_t *)p;
+                    p += 8;
+                    if (entry_pa) {
+                        uint32_t *t = (uint32_t *)(uintptr_t)entry_pa;
+                        if (t && memcmp(t, "APIC", 4) == 0) {
+                            g_bi.madt_phys = entry_pa;
+                            break;
+                        }
                     }
                 }
-            } else if (rsdt) {
-                n = (int)rsdt[1]; /* RSDT: [0]=signature, [1]=length */
-                for (int i = 2; i < 2 + n; i++) {
-                    uint32_t *t = (uint32_t *)(uintptr_t)rsdt[i];
-                    if (t && memcmp(t, "APIC", 4) == 0) {
-                        g_bi.madt_phys = rsdt[i];
-                        break;
+            } else if (rsdt_ptr) {
+                uint32_t rsdt_len = *(uint32_t *)(rsdt_ptr + 4);
+                uint32_t rsdt_n = (rsdt_len - 36) / 4;
+                console_puts("[boot] RSDT len=");
+                console_hex64(rsdt_len);
+                console_puts(" entries=");
+                console_hex64(rsdt_n);
+                console_puts("\n");
+                uint8_t *p = rsdt_ptr + 36;
+                for (uint32_t i = 0; i < rsdt_n; i++) {
+                    uint32_t entry_pa = *(uint32_t *)p;
+                    p += 4;
+                    if (entry_pa) {
+                        uint32_t *t = (uint32_t *)(uintptr_t)entry_pa;
+                        if (t && memcmp(t, "APIC", 4) == 0) {
+                            g_bi.madt_phys = entry_pa;
+                            break;
+                        }
                     }
                 }
             }

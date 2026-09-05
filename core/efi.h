@@ -98,8 +98,8 @@ typedef struct { uint32_t a; uint16_t b; uint16_t c; uint8_t d[8]; } EFI_GUID;
 
 /* ACPI RSDP (Root System Description Pointer) GUID. Used to locate the
  * ACPI tables so we can find the MADT for AP bring-up. */
-#define EFI_ACPI_RSDP_GUID \
-    ((EFI_GUID){0x8868e871u,0xf431,0xd266,{0x8e,0x87,0x9c,0xa0,0x70,0x6b,0x9b,0x05}})
+#define EFI_ACPI_TABLE_GUID \
+    ((EFI_GUID){0x8868e871u,0xe4f1,0x11d3,{0xbc,0x22,0x00,0x80,0xc7,0x3c,0x88,0x81}})
 
 typedef struct {
     uint32_t MaxMode;
@@ -125,7 +125,7 @@ typedef struct {
     char   oemid[6];
     uint8_t revision;
     uint32_t rsdt;         /* physical address of RSDT (32-bit) */
-    uint32_t xsdt;         /* physical address of XSDT (64-bit) */
+    uint64_t xsdt;         /* physical address of XSDT (64-bit) */
     uint8_t ext_cksum;
     uint8_t reserved[3];
 } EFI_RSDP;

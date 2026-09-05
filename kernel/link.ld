@@ -10,6 +10,7 @@ SECTIONS
 
     .text : {
         *(.text .text.*)
+        *(.trampoline)
         *(.plt .plt.* .iplt)
     }
 
@@ -26,6 +27,9 @@ SECTIONS
         *(.sdata .sdata.*)
         *(.got .got.* .igot.plt)
         *(.hash .gnu.hash)
+    }
+
+    .bss : {
         *(.bss .bss.*)
         *(COMMON)
     }

@@ -20,6 +20,7 @@
 #include <stdint.h>
 #include "io.h"
 #include "cpu.h"
+#include "sched.h"
 
 extern "C" {
 #include "plat.h"
@@ -43,21 +44,36 @@ void pit_reprogram_for_quantum(uint32_t quantum_us);
 
 static volatile uint32_t quantum_ticks = 5;     /* legacy, used by tests */
 static volatile uint8_t preempt_on = 1;          /* Phase 8: default ON */
-static volatile uint32_t preempt_pending_sid = 0; /* 0 = no pending */
+static volatile uint32_t preempt_pending_sid[4] = {0, 0, 0, 0}; /* per-CPU pending sid */
 static volatile uint64_t preemption_count = 0;    /* observability */
 
-/* Forward from sched.cc */
-extern uint32_t sched_current_sid(void);
+/* sched_current_cpu and sched_current_sid are declared in sched.h.
+ * For HOST_BUILD (no scheduler linked), provide a stub that returns
+ * a single-CPU state so the per-CPU array indexing compiles. */
 
 void preempt_mark_pending(uint32_t sid) {
     if (sid == 0) return;
-    preempt_pending_sid = sid;
-    preemption_count++;
+#ifdef HOST_BUILD
+    uint32_t cpu = 0;
+#else
+    struct sched_state *st = sched_current_cpu();
+    uint32_t cpu = st ? st->cpu_id : 0;
+#endif
+    if (cpu >= 4) cpu = 0;
+    preempt_pending_sid[cpu] = sid;
+    preemption_count += 1;
 }
 
 uint32_t preempt_take_pending(void) {
-    uint32_t s = preempt_pending_sid;
-    preempt_pending_sid = 0;
+#ifdef HOST_BUILD
+    uint32_t cpu = 0;
+#else
+    struct sched_state *st = sched_current_cpu();
+    uint32_t cpu = st ? st->cpu_id : 0;
+#endif
+    if (cpu >= 4) cpu = 0;
+    uint32_t s = preempt_pending_sid[cpu];
+    preempt_pending_sid[cpu] = 0;
     return s;
 }
 

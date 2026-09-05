@@ -18,7 +18,6 @@
 #include "plat.h"
 #include "sched.h"
 #include "virtio_modern.h"
-#include "sched.h"
 #include <stdint.h>
 
 #define VN_QNUM 256
@@ -269,8 +268,8 @@ static void vn_tx_kick(const uint8_t *frame, uint32_t len) {
 }
 
 /* reap a completed TX if the device has posted one; returns true when
- * the outstanding frame is done */
-static bool vn_tx_reap(void) {
+ * the outstanding frame is done. Reserved for future non-blocking TX. */
+static bool __attribute__((unused)) vn_tx_reap(void) {
     volatile uint16_t *uidx = (volatile uint16_t *)(tx_vring + VN_USED_OFF + 2);
     if (*uidx == tx_last_used)
         return false;
@@ -325,6 +324,8 @@ void virtio_net_poll(void) {
         uint32_t written = uring[e * 2 + 1];
         rx_last_used++;
 
+        if (desc_id >= VN_RX_BUFS)
+            continue;
         const uint8_t *buf = rx_vring + VN_BUF_OFF + desc_id * VN_BUF_SZ;
         if (written >= VN_HDR_LEN && ws.attached) {
             uint32_t flen = written - VN_HDR_LEN;

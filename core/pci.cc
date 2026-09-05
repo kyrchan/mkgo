@@ -233,15 +233,11 @@ int pci_flr(uint32_t bus, uint32_t dev, uint32_t fn) {
         uint8_t cap_id = hdr & 0xFF;
         uint8_t next = (hdr >> 8) & 0xFF;
         if (cap_id == 0x10) { // PCIe
-            int32_t cap = pci_read32(bus, dev, fn, ptr + 8);
-            if (cap == -1) return -1;
-            // Device Capabilities has FLR bit 28?
-            // FLR is initiated via Device Control bit 15
-            int32_t ctrl = pci_read32(bus, dev, fn, ptr + 8);
-            // Actually Device Control at offset +8, FLR bit 15
-            // Write 1<<15
-            uint32_t v = (uint32_t)ctrl;
-            v |= (1u << 15);
+            int32_t raw = pci_read32(bus, dev, fn, ptr + 8);
+            if (raw == -1) return -1;
+            // Device Control at +8 bits[15:0], FLR is bit 15
+            // Device Status at +8 bits[31:16] (reading acks them)
+            uint32_t v = (uint32_t)raw | (1u << 15);
             pci_write32(bus, dev, fn, ptr + 8, v);
             // Poll for completion? Assume ok
             return 0;
@@ -297,10 +293,11 @@ int pci_enumerate(struct pci_dev *out, int max, int *count) {
 
 int pci_msix_find(uint32_t bus, uint32_t dev, uint32_t fn, struct pci_msix *out) {
     if (!out) return -1;
-    // Capabilities pointer at 0x34 (bit 0-7), but only if status reg bit 4 set
-    int32_t status = pci_read32(bus, dev, fn, 0x06);
-    if (status == -1) return -1;
-    if (!((status >> 16) & 0x10)) return -1; // no capabilities
+    /* Status register at 0x06, but pci_read32 requires DWORD-aligned offset.
+     * Read 0x04 (Command|Status) and extract Status from upper half. */
+    int32_t cmd_status = pci_read32(bus, dev, fn, 0x04);
+    if (cmd_status == -1) return -1;
+    if (!((cmd_status >> 16) & 0x10)) return -1; // no capabilities
     int32_t cap_ptr = pci_read32(bus, dev, fn, 0x34);
     if (cap_ptr == -1) return -1;
     uint8_t ptr = cap_ptr & 0xFF;
@@ -315,7 +312,9 @@ int pci_msix_find(uint32_t bus, uint32_t dev, uint32_t fn, struct pci_msix *out)
             out->cap_off = ptr;
             out->bir = tbl & 0x7;
             out->table_off = (tbl & ~0x7u) >> 3;
-            int32_t ctrl = pci_read32(bus, dev, fn, ptr + 2);
+            /* Message Control is at ptr+2 (16-bit). Read DWORD at ptr,
+             * extract lower 16 bits for the full Control register. */
+            int32_t ctrl = pci_read32(bus, dev, fn, ptr);
             if (ctrl == -1) return -1;
             out->num_vecs = (uint16_t)((ctrl & 0x7FF) + 1);
             out->table_phys = 0;
