@@ -245,4 +245,4 @@ All modules carry an `abi_ver` custom section (byte `0x02` for v2).
 
 ## License
 
-MIT (see third_party/wasm3/LICENSE for wasm3).
+EPL-1.0 (see third_party/wasm3/LICENSE for wasm3).
