@@ -104,6 +104,8 @@ func attachWindows() (*WindowRing, *WindowRing, error) {
 	if len(offs) < 2 {
 		return nil, nil, errors.New("net: expected RX+TX windows from devman")
 	}
+	// Store devman-reported offsets for dualFeed to use.
+	setDevmanOffsets(offs)
 	rx, err := NewWindowRing(ptrAt(offs[0], RingSize))
 	if err != nil {
 		return nil, nil, err
@@ -119,10 +121,40 @@ func attachWindows() (*WindowRing, *WindowRing, error) {
 // pinned instantiation, services/ABI-NOTES.md §10). Slices must be
 // RE-DERIVED on every access: wasm3 can relocate linear memory when the
 // Go heap grows, which would silently strand cached pointers.
+// These are the fallback constants used when devman is unavailable
+// (e.g. host tests); production boot always uses devman-reported offsets.
 const (
 	rxWinBase = 0x4000000              // 64 MiB
 	txWinBase = rxWinBase + RingSize
 )
+
+// devmanOffsets stores the RX/TX window offsets reported by devman
+// at boot. If devman enumeration succeeded, these override the
+// hardcoded constants in dualFeed.
+var devmanOffsets [2]uint64
+var devmanOffsetsValid bool
+
+func setDevmanOffsets(offs []uint64) {
+	if len(offs) >= 2 {
+		devmanOffsets[0] = offs[0]
+		devmanOffsets[1] = offs[1]
+		devmanOffsetsValid = true
+	}
+}
+
+func rxBase() uint64 {
+	if devmanOffsetsValid {
+		return devmanOffsets[0]
+	}
+	return rxWinBase
+}
+
+func txBase() uint64 {
+	if devmanOffsetsValid {
+		return devmanOffsets[1]
+	}
+	return txWinBase
+}
 
 func main() {
 	os.Stdout.WriteString("[net] up\n")
@@ -137,10 +169,12 @@ func main() {
 }
 
 // dualFeed splits the §6 pair into one PacketFeed for the stack.
+// Uses devman-reported offsets when available, falling back to
+// the hardcoded constants (host tests / no-devman path).
 type dualFeed struct{}
 
 func (d dualFeed) Recv() ([]byte, bool) {
-	r, err := NewWindowRing(ptrAt(rxWinBase, RingSize))
+	r, err := NewWindowRing(ptrAt(rxBase(), RingSize))
 	if err != nil {
 		return nil, false
 	}
@@ -148,7 +182,7 @@ func (d dualFeed) Recv() ([]byte, bool) {
 }
 
 func (d dualFeed) Send(f []byte) bool {
-	t, err := NewWindowRing(ptrAt(txWinBase, RingSize))
+	t, err := NewWindowRing(ptrAt(txBase(), RingSize))
 	if err != nil {
 		return false
 	}

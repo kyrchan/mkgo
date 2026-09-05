@@ -108,10 +108,6 @@ func testUDP(nc *lib.NetClient) {
 		}
 		buf := make([]byte, len(payload)+64)
 		n, rerr := nc.Recv(sock, buf)
-		if rerr != nil || n > 0 {
-			os.Stdout.WriteString("[p9] dbg recv n=" + itoa(n) +
-				" err=" + eStr(rerr) + "\n")
-		}
 		if rerr == nil && n == len(payload) &&
 			string(buf[:n]) == string(payload) {
 			os.Stdout.WriteString("[p9] udp ok\n")

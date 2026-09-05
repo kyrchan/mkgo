@@ -92,44 +92,43 @@ static uint64_t bar_base(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t bar) {
 
 int vmod_probe(uint16_t want_devid, vmod_dev *out) {
     for (uint8_t d = 0; d < 32; d++) {
-        if (pci_read16(0, d, 0, 0x00) == 0xFFFF)
-            continue;
-        uint16_t vendor = pci_read16(0, d, 0, 0x00);
-        uint16_t devid = pci_read16(0, d, 0, 0x02);
-        if (vendor != PCI_VENDOR_VIRTIO)
-            continue;
-        /* modern-only devices use 0x1040+type; transitional keep their
-         * legacy ids but still expose modern caps when disable-modern=n */
-        console_puts("[vmod] cand vid=");
-        console_hex64(vendor);
-        console_puts(" did=");
-        console_hex64(devid);
-        console_puts(" caps@");
-        console_hex64(pci_read16(0, d, 0, 0x34) & 0xFF);
-        console_puts("\n");
-        // QEMU transitional: legacy IDs 0x1000(net)/0x1001(blk) with modern caps.
-        // QEMU pure-modern: 0x1041(net)/0x1042(blk). Map via virtio type so
-        // legacy and modern probes interoperate on either transport.
-        int want_type = -1, dev_type = -1;
-        if (want_devid >= 0x1000 && want_devid < 0x1040)
-            want_type = (int)want_devid - 0x0FFF; // 0x1000->1, 0x1001->2
-        else if (want_devid >= PCI_DEVID_MODERN_BASE &&
-                 want_devid < PCI_DEVID_MODERN_BASE + 0x40)
-            want_type = (int)want_devid - (int)PCI_DEVID_MODERN_BASE;
-        // alias: callers that probe 0x1040 mean net (type 1) for pure-modern
-        if (want_devid == 0x1040)
-            want_type = 1;
-        if (devid >= 0x1000 && devid < 0x1040)
-            dev_type = (int)devid - 0x0FFF;
-        else if (devid >= PCI_DEVID_MODERN_BASE &&
-                 devid < PCI_DEVID_MODERN_BASE + 0x40)
-            dev_type = (int)devid - (int)PCI_DEVID_MODERN_BASE;
-        bool id_ok = (devid == want_devid) ||
-                     (want_type != -1 && dev_type != -1 && want_type == dev_type);
-        if (!id_ok)
-            continue;
+         if (pci_read16(0, d, 0, 0x00) == 0xFFFF)
+             continue;
+         uint16_t vendor = pci_read16(0, d, 0, 0x00);
+         uint16_t devid = pci_read16(0, d, 0, 0x02);
+         if (vendor != PCI_VENDOR_VIRTIO)
+             continue;
+         /* modern-only devices use 0x1040+type; transitional keep their
+          * legacy ids but still expose modern caps when disable-modern=n */
+         // QEMU transitional: legacy IDs 0x1000(net)/0x1001(blk) with modern caps.
+         // QEMU pure-modern: 0x1041(net)/0x1042(blk). Map via virtio type so
+         // legacy and modern probes interoperate on either transport.
+         int want_type = -1, dev_type = -1;
+         if (want_devid >= 0x1000 && want_devid < 0x1040)
+             want_type = (int)want_devid - 0x0FFF; // 0x1000->1, 0x1001->2
+         else if (want_devid >= PCI_DEVID_MODERN_BASE &&
+                  want_devid < PCI_DEVID_MODERN_BASE + 0x40)
+             want_type = (int)want_devid - (int)PCI_DEVID_MODERN_BASE;
+         // alias: callers that probe 0x1040 mean net (type 1) for pure-modern
+         if (want_devid == 0x1040)
+             want_type = 1;
+         if (devid >= 0x1000 && devid < 0x1040)
+             dev_type = (int)devid - 0x0FFF;
+         else if (devid >= PCI_DEVID_MODERN_BASE &&
+                  devid < PCI_DEVID_MODERN_BASE + 0x40)
+             dev_type = (int)devid - (int)PCI_DEVID_MODERN_BASE;
+         bool id_ok = (devid == want_devid) ||
+                      (want_type != -1 && dev_type != -1 && want_type == dev_type);
+         if (!id_ok)
+             continue;
+         /* success — log the matched candidate */
+         console_puts("[vmod] matched vid=");
+         console_hex64(vendor);
+         console_puts(" did=");
+         console_hex64(devid);
+console_puts("\n");
 
-        /* walk capability list */
+         /* walk capability list */
         uint8_t cap_ptr = (uint8_t)(pci_read16(0, d, 0, 0x34) & 0xFF);
         bool have_common = false, have_notify = false, have_isr = false,
              have_dev = false;
@@ -180,8 +179,17 @@ int vmod_probe(uint16_t want_devid, vmod_dev *out) {
 
         /* reset + ack */
         out->common[0x14] = 0; /* device_status @0x14 = 0 (reset) */
-        while (out->common[0x14])
-            ;
+        int rst = 0;
+        for (int i = 0; i < 1000000; i++) {
+            __asm__ volatile("" ::: "memory"); /* compiler barrier */
+            volatile uint8_t v = out->common[0x14];
+            rst = v;
+            if (rst) break;
+        }
+        if (rst) {
+            console_puts("[vmod] reset timeout\n");
+            return -1;
+        }
         out->common[0x14] = S_ACK | S_DRIVER;
         return 0;
     }

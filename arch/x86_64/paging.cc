@@ -30,11 +30,11 @@ uint64_t paging_pml4_pa(void) { return (uint64_t)(uintptr_t)g_pml4; }
 void paging_identity_init(void) {
     /* Identity-map RAM (<4 GiB, 2 MiB pages) plus a SPARSE high window
      * (1 GiB pages) covering the q35 64-bit PCI MMIO BAR area (virtio
-     * modern regs live at e.g. 0xC_0000_0000 = 768 GiB). High mappings
-     * cost one PDPT entry per GiB -- no PD allocation needed up there.
-     * VRING-BLOCKER note: an earlier fix used a dense 2MiB map and both
-     * miscomputed the required range (hex/decimal slip: 0xC000000000 is
-     * 768 GiB) and overflowed the private table arena. */
+     * modern regs live at e.g. 0xC_0000_0000 = 48 GiB). High mappings
+     * cost one PDPT entry per GiB -- no PD allocation up there.
+     * F81: MMIO ranges are mapped uncacheable (PCD=1) to prevent
+     * CPU cache reordering of device-register accesses on bare metal.
+     * RAM below 4 GiB stays cacheable (0x83 = P|RW|PS=0|A). */
     uint64_t top = 1ULL << 42; /* 4 TiB */
     uint64_t *pml4 = mk_table();
     g_pml4 = pml4;
@@ -51,10 +51,10 @@ void paging_identity_init(void) {
                 uint64_t *pd = mk_table();
                 pdpt[gi] = ((uint64_t)(uintptr_t)pd) | 3;
                 for (int i = 0; i < 512; i++)
-                    pd[i] = addr + (uint64_t)i * (1 << 21) | 0x83;
+                    pd[i] = (addr + (uint64_t)i * (1 << 21)) | 0x83;
             } else {
-                /* high window: 1 GiB leaf pages (MMIO BARs) */
-                pdpt[gi] = addr | 0x87; /* P|RW|US=0|PS(1G)|A */
+                /* high window: 1 GiB leaf pages (MMIO BARs), uncacheable */
+                pdpt[gi] = addr | 0x8F; /* P|RW|US=0|PS(1G)|A|PCD */
             }
         }
     }
