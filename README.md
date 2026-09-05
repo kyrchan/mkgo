@@ -149,7 +149,7 @@ func main() {
 }
 ```
 
-Once the VFIO foundation lands (Phase 11), new PCIe devices need **zero
+Once the VFIO foundation lands, new PCIe devices need **zero
 kernel code** — just a Go driver in `services/` and an init.conf entry
 granting `CAP_PCI`.
 
