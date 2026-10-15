@@ -1,0 +1,411 @@
+#include "ports.h"
+#include "lib.h"
+#include "sched.h"
+#include "plat.h"
+#include "rt.h"
+#include "fsroute.h"
+#include "arch_lock.h"
+#include "perf.h"
+
+static constexpr int MAX_PORTS = 24;
+static constexpr int MAX_Q = 32;
+static constexpr int MSG_MAX = 4096;
+static constexpr int H_PER_SESS = 16;
+
+// Well-known names that require CAP_PORTBIND to bind to.
+// Kernel endpoints + names reserved for core services. Adding a name
+// here is an intentional ABI change (documented in abi/ABI.md §7.1).
+// Driver sessions are spawned by init with CAP_PORTBIND in their capmask.
+static const char *kWellKnownNames[] = {
+    "registry", "devman", "power",
+    "console", "login", "fs",
+    "net", "init", "shell",
+};
+static const int kWellKnownNamesLen =
+    sizeof(kWellKnownNames) / sizeof(kWellKnownNames[0]);
+
+bool is_well_known_name(const char *name, uint32_t name_len) {
+    for (int i = 0; i < kWellKnownNamesLen; i++) {
+        const char *w = kWellKnownNames[i];
+        int j = 0;
+        for (; j < (int)name_len && w[j]; j++)
+            if (name[j] != w[j]) break;
+        if (j == (int)name_len && w[j] == 0) return true;
+    }
+    return false;
+}
+
+struct msg {
+    uint32_t from_sid;
+    uint16_t len;
+    uint8_t data[MSG_MAX];
+};
+
+struct port {
+    bool used;
+    bool kernel_endpoint;
+    uint32_t creator;
+    char name[16];
+    uint32_t qn, qh, qt; /* count, head, tail over ring */
+    msg *ring[MAX_Q];
+    /* SMP-portability lock (commit F). On a single CPU, arch_irq_save
+     * alone makes the ring safe (no other CPU can enqueue while we're
+     * in the critical section). When AP cores are brought up, two
+     * cores can enqueue to the same port simultaneously, and
+     * arch_irq_save only protects against IRQs on the LOCAL CPU.
+     * This spinlock protects against the remote core.
+     *
+     * Ordering convention: arch_irq_save FIRST, then arch_spinlock_acquire.
+     * This is the only safe order: if we acquire the lock first and
+     * then an IRQ fires on the same CPU, the IRQ would try to take
+     * the same lock and deadlock. Taking irq_save first means the
+     * IRQ can't fire while we hold the lock. */
+    arch_spinlock_t lock;
+};
+
+static port ports[MAX_PORTS];
+/* per-session handle table: -1 empty, else global port index */
+static int8_t htab[MAX_SESSIONS][H_PER_SESS];
+
+void ports_init(void) {
+    for (int p = 0; p < MAX_PORTS; p++) {
+        ports[p].used = false;
+        arch_spinlock_init(&ports[p].lock);
+    }
+    for (int s = 0; s < MAX_SESSIONS; s++)
+        for (int h = 0; h < H_PER_SESS; h++)
+            htab[s][h] = -1;
+
+    /* kernel-owned §7 endpoints (owner sid 0) */
+    const char *knames[] = {"registry", "devman", "power"};
+    for (int k = 0; k < 3; k++) {
+        for (int p = 0; p < MAX_PORTS; p++) {
+            if (ports[p].used)
+                continue;
+            int j = 0;
+            for (; knames[k][j]; j++)
+                ports[p].name[j] = knames[k][j];
+            ports[p].name[j] = 0;
+            ports[p].used = true;
+            ports[p].kernel_endpoint = true;
+            ports[p].creator = 0;
+            ports[p].qn = ports[p].qh = ports[p].qt = 0;
+            break;
+        }
+    }
+}
+
+static port *port_of(uint32_t sid, int h) {
+    if (sid >= MAX_SESSIONS || h < 0 || h >= H_PER_SESS)
+        return 0;
+    int8_t g = htab[sid][h];
+    if (g < 0 || g >= MAX_PORTS || !ports[g].used)
+        return 0;
+    return &ports[g];
+}
+
+static bool name_eq(const char *a, uint32_t alen, const char *b) {
+    uint32_t i = 0;
+    for (; i < alen && b[i]; i++)
+        if (a[i] != b[i])
+            return false;
+    return i == alen && b[i] == 0;
+}
+
+int port_create(uint32_t sid, const char *name, uint32_t name_len) {
+    if (!name_len || name_len > 15 || sid == 0 || !sched_alive(sid))
+        return -1;
+    for (int p = 0; p < MAX_PORTS; p++)
+        if (ports[p].used && name_eq(name, name_len, ports[p].name))
+            return -1; /* one owner per name */
+    for (int p = 0; p < MAX_PORTS; p++) {
+        if (ports[p].used)
+            continue;
+        for (uint32_t i = 0; i < name_len; i++)
+            ports[p].name[i] = name[i];
+        ports[p].name[name_len] = 0;
+        ports[p].used = true;
+        ports[p].kernel_endpoint = false;
+        ports[p].creator = sid;
+        ports[p].qn = ports[p].qh = ports[p].qt = 0;
+        for (int h = 0; h < H_PER_SESS; h++) {
+            if (htab[sid][h] < 0) {
+                htab[sid][h] = (int8_t)p;
+                return h;
+            }
+        }
+        ports[p].used = false;
+        return -1;
+    }
+    return -1;
+}
+
+int port_bind(uint32_t sid, const char *name, uint32_t name_len) {
+    if (sid == 0 || !sched_alive(sid)) {
+        console_puts("[bind] dead caller\n");
+        return -1;
+    }
+    bool any = false;
+    for (int p = 0; p < MAX_PORTS; p++)
+        if (ports[p].used && name_eq(name, name_len, ports[p].name))
+            any = true;
+    if (!any) {
+        static int once;
+        if (!once++) {
+            console_puts("[bind] no such port: ");
+            for (uint32_t i = 0; i < name_len && i < 15; i++)
+                console_putc(name[i]);
+            console_puts("\n");
+        }
+    }
+    for (int p = 0; p < MAX_PORTS; p++) {
+        if (ports[p].used && name_eq(name, name_len, ports[p].name)) {
+            for (int h = 0; h < H_PER_SESS; h++) {
+                if (htab[sid][h] < 0) {
+                    htab[sid][h] = (int8_t)p;
+                    return h;
+                }
+            }
+            console_puts("[bind] table full sid=");
+            console_hex64(sid);
+            console_puts("\n");
+            return -1;
+        }
+    }
+    return -1;
+}
+
+/* ---- §7 kernel endpoint dispatch ---- */
+extern void kernsvc_dispatch(const char *epname, uint32_t from_sid,
+                             int reply_h, const uint8_t *data, uint32_t len);
+
+int port_send(uint32_t sid, int h, const void *data, const uint32_t len) {
+    port *p = port_of(sid, h);
+    if (!p || !data || len == 0 || len > MSG_MAX)
+        return -1;
+    /* F32 / ABI v1.1 §1: "On SEND the kernel OVERWRITES uid with the
+     * sending session's registry uid -- clients can never spoof identity."
+     * Stamped on every path: kernel-endpoint dispatch, fsroute feed and
+     * queue enqueue alike. Canonical header holds uid at bytes [4:8].
+     * Copy-on-stamp: we must not mutate the caller's const buffer. */
+    uint8_t stack_copy[MSG_MAX];
+    memcpy(stack_copy, data, len);
+    if (p->kernel_endpoint && sid != 0) {
+        /* Stamp UID into the copy before dispatch so kernsvc sees it */
+        if (len >= 8) {
+            uint32_t uid = sched_uid_of(sid);
+            stack_copy[4] = (uint8_t)uid;
+            stack_copy[5] = (uint8_t)(uid >> 8);
+            stack_copy[6] = (uint8_t)(uid >> 16);
+            stack_copy[7] = (uint8_t)(uid >> 24);
+        }
+        kernsvc_dispatch(p->name, sid, h, stack_copy, len);
+        perf_inc(PERF_IPC_SEND, 1);
+        perf_inc(PERF_IPC_BYTES, len);
+        return 0;
+    }
+    /* F28: intercept ONLY the awaited reply (name+seq match); anything
+     * else -- console relays, §7 sync replies, unrelated traffic -- keeps
+     * flowing to its queue. */
+    if (fsroute_intercept(p->name, stack_copy, len)) {
+        perf_inc(PERF_IPC_SEND, 1);
+        perf_inc(PERF_IPC_BYTES, len);
+        return 0;
+    }
+    /* Substrate-hardening (commit E): IRQ-save around the ring enqueue.
+     * The IRQ0 stub (92313c5) runs on the guest's stack and iretqs
+     * back, so it does NOT call into ports today. But the discipline
+     * must be in place for any future IRQ-context enqueue (e.g. an
+     * MSI-X handler that posts a port message directly). The ring
+     * read-then-write on qn/qh/qt is not atomic on its own; under
+     * preemption the IRQ could observe torn state.
+     *
+     * SMP-portability (commit F): arch_spinlock_acquire protects
+     * against a remote core doing the same enqueue. Order is
+     * irq_save FIRST, then spinlock_acquire -- see the struct doc
+     * in arch_lock.h for why that order is the only safe one. */
+    arch_irq_state_t irq = arch_irq_save();
+    arch_spinlock_acquire(&p->lock);
+    if (p->qn >= MAX_Q) {
+        arch_spinlock_release(&p->lock);
+        arch_irq_restore(irq);
+        return -2; /* would-block */
+    }
+    msg *m = (msg *)rt_malloc(sizeof(msg));
+    if (!m) {
+        arch_spinlock_release(&p->lock);
+        arch_irq_restore(irq);
+        return -1;
+    }
+    m->from_sid = sid;
+    m->len = (uint16_t)len;
+    /* memcpy: ~10x faster than byte loop on 4 KiB datagrams; also
+     * emits rep movsb on x86_64 which beats the hand-rolled loop on
+     * every microarch we care about. */
+    memcpy(m->data, stack_copy, len);
+    /* F32: stamp UID into the queued message only, not the caller's buffer */
+    if (len >= 8 && sid != 0) {
+        uint32_t uid = sched_uid_of(sid);
+        m->data[4] = (uint8_t)uid;
+        m->data[5] = (uint8_t)(uid >> 8);
+        m->data[6] = (uint8_t)(uid >> 16);
+        m->data[7] = (uint8_t)(uid >> 24);
+    }
+    p->ring[p->qt] = m;
+    p->qt = (p->qt + 1) % MAX_Q;
+    p->qn++;
+    arch_spinlock_release(&p->lock);
+    arch_irq_restore(irq);
+    perf_inc(PERF_IPC_SEND, 1);
+    perf_inc(PERF_IPC_BYTES, len);
+    return 0;
+}
+
+extern "C" int ports_owner_of_handle(uint32_t sid, int h) {
+    if (sid >= MAX_SESSIONS || h < 0 || h >= H_PER_SESS)
+        return -1;
+    int8_t g = htab[sid][h];
+    if (g < 0 || g >= MAX_PORTS || !ports[g].used)
+        return -1;
+    return (int)ports[g].creator; /* session that CREATED the port */
+}
+
+extern "C" bool ports_name_owned_by(uint32_t sid, const char *name) {
+    /* F13: ownership means CREATOR, not binder. port_bind hands out
+     * handles to existing names freely (legal fan-in); only the session
+     * that created the port owns the well-known name. Kernel endpoints
+     * are creator 0 and owned by no session. */
+    if (sid >= MAX_SESSIONS || sid == 0)
+        return false;
+    for (int h = 0; h < H_PER_SESS; h++) {
+        int8_t g = htab[sid][h];
+        if (g >= 0 && g < MAX_PORTS && ports[g].used &&
+            ports[g].creator == sid && !strcmp(ports[g].name, name))
+            return true;
+    }
+    return false;
+}
+
+extern "C" bool ports_enqueue_by_name(const char *name, const void *data,
+                                      uint32_t len) {
+    /* F28: same conditional interception as port_send -- a pending routed
+     * call must not swallow unrelated kernel-side traffic. */
+    if (fsroute_intercept(name, (const uint8_t *)data, len))
+        return true;
+    for (int p = 0; p < MAX_PORTS; p++) {
+        if (ports[p].used && !strcmp(ports[p].name, name)) {
+            arch_irq_state_t irq = arch_irq_save();
+            arch_spinlock_acquire(&ports[p].lock);
+            if (ports[p].qn >= MAX_Q) {
+                arch_spinlock_release(&ports[p].lock);
+                arch_irq_restore(irq);
+                return false;
+            }
+            msg *m = (msg *)rt_malloc(sizeof(msg));
+            if (!m) {
+                arch_spinlock_release(&ports[p].lock);
+                arch_irq_restore(irq);
+                return false;
+            }
+            m->from_sid = 0;
+            m->len = (uint16_t)(len > MSG_MAX ? MSG_MAX : len);
+            memcpy(m->data, data, m->len);
+            ports[p].ring[ports[p].qt] = m;
+            ports[p].qt = (ports[p].qt + 1) % MAX_Q;
+            ports[p].qn++;
+            arch_spinlock_release(&ports[p].lock);
+            arch_irq_restore(irq);
+            perf_inc(PERF_IPC_SEND, 1);
+            perf_inc(PERF_IPC_BYTES, m->len);
+            return true;
+        }
+    }
+    return false;
+}
+
+/* kernel-side direct enqueue (replies): bypasses endpoint dispatch */
+void ports_kernel_enqueue(uint32_t sid, int h, const void *data, uint32_t len) {
+    port *p = port_of(sid, h);
+    if (!p || !data || len == 0 || len > MSG_MAX)
+        return;
+    arch_irq_state_t irq = arch_irq_save();
+    arch_spinlock_acquire(&p->lock);
+    if (p->qn >= MAX_Q) {
+        arch_spinlock_release(&p->lock);
+        arch_irq_restore(irq);
+        return; /* drop */
+    }
+    msg *m = (msg *)rt_malloc(sizeof(msg));
+    if (!m) {
+        arch_spinlock_release(&p->lock);
+        arch_irq_restore(irq);
+        return;
+    }
+    m->from_sid = sid;
+    m->len = (uint16_t)len;
+    memcpy(m->data, data, len);
+    p->ring[p->qt] = m;
+    p->qt = (p->qt + 1) % MAX_Q;
+    p->qn++;
+    arch_spinlock_release(&p->lock);
+    arch_irq_restore(irq);
+    perf_inc(PERF_IPC_SEND, 1);
+    perf_inc(PERF_IPC_BYTES, len);
+}
+
+/* drain ring messages owned by a dying session (called from sched_kill) */
+void ports_drain_session(uint32_t sid) {
+    for (int p = 0; p < MAX_PORTS; p++) {
+        if (!ports[p].used) continue;
+        arch_irq_state_t irq = arch_irq_save();
+        arch_spinlock_acquire(&ports[p].lock);
+        for (int i = 0; i < MAX_Q; i++) {
+            msg *m = ports[p].ring[i];
+            if (m && m->from_sid == sid) {
+                rt_free(m);
+                ports[p].ring[i] = 0;
+                ports[p].qn--;
+            }
+        }
+        arch_spinlock_release(&ports[p].lock);
+        arch_irq_restore(irq);
+    }
+}
+
+/* Invalidate every handle belonging to `sid` so a zombie or reused slot
+ * cannot send/recv on stale port references. */
+void ports_clear_session_handles(uint32_t sid) {
+    if (sid >= MAX_SESSIONS) return;
+    for (int h = 0; h < H_PER_SESS; h++)
+        htab[sid][h] = -1;
+}
+
+int port_recv(uint32_t sid, int h, void *out, uint32_t cap) {
+    port *p = port_of(sid, h);
+    if (!p || !out)
+        return -1;
+    if (p->qn == 0)
+        return 0;
+    /* IRQ-save around the dequeue critical section. The producer
+     * (port_send / ports_enqueue_by_name / ports_kernel_enqueue) also
+     * holds irq-save; the symmetry is what makes the ring safe. */
+    arch_irq_state_t irq = arch_irq_save();
+    arch_spinlock_acquire(&p->lock);
+    msg *m = p->ring[p->qh];
+    if (!m || p->qn == 0) {
+        arch_spinlock_release(&p->lock);
+        arch_irq_restore(irq);
+        return 0;
+    }
+    p->ring[p->qh] = 0; /* clear before free: drain must not re-free */
+    p->qn--;
+    p->qh = (p->qh + 1) % MAX_Q;
+    uint32_t n = m->len <= cap ? m->len : cap;
+    memcpy(out, m->data, n);
+    rt_free(m);
+    arch_spinlock_release(&p->lock);
+    arch_irq_restore(irq);
+    if (n > 0)
+        perf_inc(PERF_IPC_RECV, 1);
+    return (int)n;
+}

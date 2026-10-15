@@ -1,0 +1,490 @@
+#include "pci.h"
+#include "lib.h"
+#include "io.h"
+#include "mm.h"
+#include "plat.h"
+
+static uint32_t pci_cfg_addr(uint32_t bus, uint32_t dev, uint32_t fn, uint32_t offset) {
+    return 0x80000000u | (bus << 16) | (dev << 11) | (fn << 8) | (offset & 0xFCu);
+}
+
+// --- Virtual framebuffer (VFB) PCI device ---
+// Headless VFIO test device at BDF 0:1:0. Provides a memory BAR backed by
+// an allocated framebuffer buffer so graphics.wasm can map and render.
+// Class 0x03 (display controller), vendor 0x1234, device 0x5678.
+static constexpr uint32_t VFB_BUS = 0;
+static constexpr uint32_t VFB_DEV = 1;
+static constexpr uint32_t VFB_FN = 0;
+static constexpr uint32_t VFB_VENDOR = 0x1234;
+static constexpr uint32_t VFB_DEVICE = 0x5678;
+static constexpr uint32_t VFB_CLASS = 0x030000; // display controller, VGA-compatible
+static constexpr uint32_t VFB_BAR_SIZE = 0x400000; // 4 MB (1024x768x4 = 3 MB, round up)
+
+static struct {
+    bool enabled;
+    uint32_t bar0;      // current BAR0 value (physical base + flags)
+    uint32_t base;      // framebuffer physical base address
+    bool probe;         // size-probe mode: next read returns mask
+} g_vfb;
+
+void pci_vfb_init(uint32_t width, uint32_t height) {
+    (void)width; (void)height;
+    if (g_vfb.enabled) return;
+    // Allocate framebuffer buffer from the mm pool (identity-mapped).
+    void *buf = mm_alloc(VFB_BAR_SIZE, 0x1000);
+    if (!buf) {
+        console_puts("[pci] vfb: alloc failed\n");
+        return;
+    }
+    g_vfb.base = (uint32_t)(uintptr_t)buf;
+    g_vfb.bar0 = g_vfb.base; // memory BAR, 32-bit, non-prefetchable (flags=0)
+    g_vfb.probe = false;
+    g_vfb.enabled = true;
+    console_puts("[pci] vfb: fb base=");
+    console_hex64(g_vfb.base);
+    console_puts(" size=");
+    console_hex64(VFB_BAR_SIZE);
+    console_puts("\n");
+}
+
+bool pci_is_vfb(uint32_t bus, uint32_t dev, uint32_t fn) {
+    return g_vfb.enabled && bus == VFB_BUS && dev == VFB_DEV && fn == VFB_FN;
+}
+
+// Find a real PCI display device (class 0x03) that is NOT the kernel VFB.
+// Returns its framebuffer BAR0 physical address and size via out params.
+// Returns 0 if found, -1 if no real display device present (headless).
+int pci_find_display(uint32_t *out_phys, uint32_t *out_size) {
+    if (!out_phys || !out_size) return -1;
+    struct pci_dev devs[16];
+    int count = 0;
+    if (pci_enumerate(devs, 16, &count) != 0) return -1;
+    for (int i = 0; i < count; i++) {
+        if (devs[i].class_code != 0x03) continue;        // not a display device
+        if (pci_is_vfb(devs[i].bus, devs[i].dev, devs[i].fn)) continue; // skip emulated VFB
+        uint64_t phys, size;
+        bool is_mem;
+        if (pci_bar_info(devs[i].bus, devs[i].dev, devs[i].fn, 0, &phys, &size, &is_mem) == 0 && is_mem) {
+            *out_phys = (uint32_t)phys;
+            *out_size = (uint32_t)size;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static uint32_t vfb_rd32(uint32_t offset) {
+    switch (offset) {
+    case 0x00: return VFB_VENDOR | (VFB_DEVICE << 16); // vendor | device
+    case 0x04: return 0x00000007; // status=0, command=IO|MEM|BUSMASTER
+    case 0x08: return VFB_CLASS; // class code (display) at bits 24:31
+    case 0x10: // BAR0
+        if (g_vfb.probe) {
+            g_vfb.probe = false;
+            uint32_t size_m1 = (uint32_t)(VFB_BAR_SIZE - 1);
+            uint32_t inverted = (uint32_t)(~size_m1);
+            uint32_t mask = inverted & 0xFFFFFFF0u;
+            return mask;
+        }
+        return g_vfb.bar0;
+    case 0x14: case 0x18: case 0x1C: case 0x20: case 0x24:
+        return 0; // no BARs 1-5
+    case 0x28: return 0; // cardbus CIS
+    case 0x2C: return 0xFFFF0000; // subsys vendor 0, subsys id 0
+    case 0x30: return 0; // expansion ROM
+    case 0x34: return 0; // capabilities pointer
+    case 0x3C: return 0; // interrupt line/pin
+    default: return 0;
+    }
+}
+
+static void vfb_wr32(uint32_t offset, uint32_t val) {
+    switch (offset) {
+    case 0x04: // command register — ignore writes
+        break;
+    case 0x10: // BAR0
+        if (val == 0xFFFFFFFFu) {
+            g_vfb.probe = true; // size probe: next read returns mask
+        } else {
+            g_vfb.bar0 = val & 0xFFFFFFF0u;
+            g_vfb.probe = false;
+        }
+        break;
+    default:
+        break; // ignore writes to other registers
+    }
+}
+
+int32_t pci_read32(uint32_t bus, uint32_t dev, uint32_t fn, uint32_t offset) {
+    if (bus > 255 || dev > 31 || fn > 7 || offset > 0xFC || (offset & 3))
+        return -1;
+    if (pci_is_vfb(bus, dev, fn))
+        return (int32_t)vfb_rd32(offset);
+    // Bounds: offset must be 4-aligned, we mask inside
+    outl(0xCF8, pci_cfg_addr(bus, dev, fn, offset));
+    return (int32_t)inl(0xCFC);
+}
+
+int32_t pci_write32(uint32_t bus, uint32_t dev, uint32_t fn, uint32_t offset, uint32_t val) {
+    if (bus > 255 || dev > 31 || fn > 7 || offset > 0xFC || (offset & 3))
+        return -1;
+    if (pci_is_vfb(bus, dev, fn)) {
+        vfb_wr32(offset, val);
+        return 0;
+    }
+    outl(0xCF8, pci_cfg_addr(bus, dev, fn, offset));
+    outl(0xCFC, val);
+    return 0;
+}
+
+int pci_bar_info(uint32_t bus, uint32_t dev, uint32_t fn, uint32_t bar, uint64_t *out_phys, uint64_t *out_size, bool *out_is_mem) {
+    if (bar > 5 || !out_phys || !out_size || !out_is_mem)
+        return -1;
+    uint32_t off = 0x10 + bar * 4;
+    int32_t v = pci_read32(bus, dev, fn, off);
+    if (v == -1 && bar == 0) {
+        // Check vendor read to see if device exists
+        int32_t vend = pci_read32(bus, dev, fn, 0);
+        if (vend == -1 || (vend & 0xFFFF) == 0xFFFF)
+            return -1;
+    }
+    uint32_t bar_val = (uint32_t)v;
+    if (bar_val == 0)
+        return -1;
+    bool is_mem = !(bar_val & 1);
+    *out_is_mem = is_mem;
+    *out_phys = 0;
+    *out_size = 0;
+    if (!is_mem) {
+        // I/O BAR
+        *out_phys = bar_val & 0xFFFFFFFCu;
+        // Size probing: write all 1s, read back, restore
+        pci_write32(bus, dev, fn, off, 0xFFFFFFFFu);
+        uint32_t sz = (uint32_t)pci_read32(bus, dev, fn, off);
+        pci_write32(bus, dev, fn, off, bar_val);
+        if (sz == 0 || sz == 0xFFFFFFFFu)
+            return -1;
+        uint32_t mask = sz & 0xFFFFFFFCu;
+        *out_size = (~mask) + 1;
+        if (*out_size == 0)
+            *out_size = 0x100;
+        return 0;
+    }
+    // MEM BAR
+    bool is64 = (bar_val & 0x6) == 0x4;
+    uint64_t phys = bar_val & 0xFFFFFFF0u;
+    uint64_t size = 0;
+    if (is64) {
+        if (bar >= 5)
+            return -1;
+        uint32_t high = (uint32_t)pci_read32(bus, dev, fn, off + 4);
+        phys |= ((uint64_t)high << 32);
+        // Size probe 64-bit
+        uint32_t orig_low = bar_val;
+        uint32_t orig_high = high;
+        pci_write32(bus, dev, fn, off, 0xFFFFFFFFu);
+        pci_write32(bus, dev, fn, off + 4, 0xFFFFFFFFu);
+        uint32_t sz_low = (uint32_t)pci_read32(bus, dev, fn, off);
+        uint32_t sz_high = (uint32_t)pci_read32(bus, dev, fn, off + 4);
+        pci_write32(bus, dev, fn, off, orig_low);
+        pci_write32(bus, dev, fn, off + 4, orig_high);
+        uint64_t sz = ((uint64_t)sz_high << 32) | sz_low;
+        sz &= 0xFFFFFFFFFFFFFFF0ULL;
+        if (sz == 0 || sz == 0xFFFFFFFFFFFFFFF0ULL)
+            return -1;
+        size = (~sz) + 1;
+        if (size == 0) size = 0x1000;
+    } else {
+        pci_write32(bus, dev, fn, off, 0xFFFFFFFFu);
+        uint32_t sz = (uint32_t)pci_read32(bus, dev, fn, off);
+        pci_write32(bus, dev, fn, off, bar_val);
+        sz &= 0xFFFFFFF0u;
+        if (sz == 0 || sz == 0xFFFFFFF0u)
+            return -1;
+        // Invert in 32-bit space, then cast to 64-bit. Casting before
+        // inverting would zero-extend and produce a corrupted size.
+        size = (uint64_t)(~(uint32_t)sz) + 1;
+        if (size == 0) size = 0x1000;
+    }
+    *out_phys = phys;
+    *out_size = size;
+    return 0;
+}
+
+/* Assign a BAR at `base` and report its real address and size.
+ *
+ * Reading a BAR is not enough to use a device. QEMU reports an unassigned
+ * BAR as "not mapped" and a real one decodes nothing until the guest
+ * writes an address into the BAR register -- which is why the Phase 13
+ * drivers read ASCII garbage instead of registers: the kernel only ever
+ * read BAR addresses, never assigned them, and nothing on this platform
+ * had noticed because the only "device" it ever talked to was the VFB
+ * table in this file, which answers from a switch statement.
+ *
+ * Sequence: save the BAR, learn its type by probing, write the assigned
+ * address (both dwords for a 64-bit BAR), then probe the size and restore
+ * the assigned value. Returns 0 with *out_phys, *out_size, *out_is_mem set.
+ */
+int pci_assign_bar(uint32_t bus, uint32_t dev, uint32_t fn, uint32_t bar,
+                   uint64_t base, uint64_t *out_phys, uint64_t *out_size,
+                   bool *out_is_mem) {
+    if (bar > 5 || !out_phys || !out_size || !out_is_mem)
+        return -1;
+    uint32_t off = 0x10 + bar * 4;
+    int32_t orig = pci_read32(bus, dev, fn, off);
+    if (orig == -1 || (orig & 0xFFFF) == 0xFFFF)
+        return -1;
+    /* A BAR that reads 0 is *unassigned*, not absent: an unimplemented BAR
+     * reads all-ones. Rejecting 0 here is what made every xHCI BAR
+     * unassignable -- the guest asked for BAR0, the firmware had not
+     * assigned it, and the kernel called that "no BAR". The probe below is
+     * what actually distinguishes the two. */
+    uint32_t orig_val = (uint32_t)orig;
+    if (orig_val == 0xFFFFFFFFu)
+        return -1; /* no BAR here */
+    bool is_mem = !(orig_val & 1);
+    bool is64 = is_mem && (orig_val & 0x6) == 0x4;
+
+    /* Enable decoding *before* probing. With decoding off, the read-back
+     * of an all-ones write returns all-ones instead of the size mask,
+     * which is how the e1000's 128 KiB BAR0 came out as 4 KiB. */
+    int32_t cmd0 = pci_read32(bus, dev, fn, 0x04);
+    if (cmd0 != -1)
+        pci_write32(bus, dev, fn, 0x04, (uint32_t)cmd0 | (is_mem ? 0x2 : 0x1) | 0x4);
+    pci_write32(bus, dev, fn, off, 0xFFFFFFFFu);
+    uint32_t low_mask = (uint32_t)pci_read32(bus, dev, fn, off);
+    uint32_t high_mask = 0;
+    if (is64)
+        high_mask = (uint32_t)pci_read32(bus, dev, fn, off + 4);
+    uint64_t mask = is64 ? ((uint64_t)high_mask << 32) | low_mask : low_mask;
+    if (mask == 0xFFFFFFFFu || (is64 && ((uint64_t)high_mask << 32 | low_mask) == ~0ull)) {
+        /* The all-ones write came back unchanged: no BAR at this index. */
+        pci_write32(bus, dev, fn, off, orig_val);
+        return -1;
+    }
+    uint64_t size = (~mask) + 1;
+    if (size == 0 || size > (1ull << 32))
+        size = 0x1000;
+
+    /* If the BAR already carries an address, keep it. Firmware or the
+     * device model may have assigned one, and it is the only address we
+     * know the machine actually decodes -- the AHCI answered correctly
+     * at the address it had chosen itself, and returned all-ones at one
+     * this kernel picked. Only an empty BAR gets programmed. */
+    if (orig_val & 0xFFFFFFFCu) {
+        /* Put the probed value back first: the all-ones write above is
+         * still in the register, and returning without restoring leaves
+         * the device decoding at 0xFFFFFFFF, where every read is zero. */
+        pci_write32(bus, dev, fn, off, orig_val);
+        if (is_mem) {
+            uint32_t hi = 0;
+            if (is64)
+                hi = (uint32_t)pci_read32(bus, dev, fn, off + 4);
+            *out_phys = (((uint64_t)hi << 32) | (orig_val & 0xFFFFFFF0u));
+        } else {
+            *out_phys = orig_val & 0xFFFFFFFCu;
+        }
+        int32_t cmd = pci_read32(bus, dev, fn, 0x04);
+        if (cmd != -1)
+            pci_write32(bus, dev, fn, 0x04, (uint32_t)cmd | (is_mem ? 0x2 : 0x1) | 0x4);
+        *out_size = size;
+        *out_is_mem = is_mem;
+        return 0;
+    }
+
+    /* Program the assigned address. */
+    if (is_mem) {
+        if (base < 0x100000)
+            return -1;
+        pci_write32(bus, dev, fn, off, (uint32_t)(base & 0xFFFFFFF0u));
+        if (is64)
+            pci_write32(bus, dev, fn, off + 4, (uint32_t)(base >> 32));
+    } else {
+        if (base > 0xFFFF)
+            return -1;
+        pci_write32(bus, dev, fn, off, (uint32_t)((base & 0xFFFCu) | 1u));
+    }
+    /* Read the address back: the device may force bits, and a BAR the
+     * device refused to take is not a BAR we can use. */
+    uint32_t rb_low = (uint32_t)pci_read32(bus, dev, fn, off);
+    uint32_t rb_high = is64 ? (uint32_t)pci_read32(bus, dev, fn, off + 4) : 0;
+    uint64_t phys = is_mem ? (((uint64_t)rb_high << 32) | (rb_low & 0xFFFFFFF0u))
+                           : (rb_low & 0xFFFFFFFCu);
+    /* Enable decoding for what we just programmed. */
+    int32_t cmd = pci_read32(bus, dev, fn, 0x04);
+    if (cmd != -1)
+        pci_write32(bus, dev, fn, 0x04, (uint32_t)cmd | (is_mem ? 0x2 : 0x1) | 0x4);
+
+    (void)orig_val;
+    *out_phys = phys;
+    *out_size = size;
+    *out_is_mem = is_mem;
+    return 0;
+}
+
+int pci_enable_busmaster(uint32_t bus, uint32_t dev, uint32_t fn) {
+    int32_t cmd = pci_read32(bus, dev, fn, 0x04);
+    if (cmd == -1)
+        return -1;
+    uint32_t v = (uint32_t)cmd;
+    // CMD bits: 0 IO, 1 MEM, 2 BusMaster
+    v |= 0x7;
+    return pci_write32(bus, dev, fn, 0x04, v);
+}
+
+int pci_flr(uint32_t bus, uint32_t dev, uint32_t fn) {
+    // Find PCIe cap
+    int32_t cap_ptr = pci_read32(bus, dev, fn, 0x34);
+    if (cap_ptr == -1)
+        return -1;
+    uint8_t ptr = cap_ptr & 0xFF;
+    for (int i = 0; i < 16 && ptr >= 0x40; i++) {
+        int32_t hdr = pci_read32(bus, dev, fn, ptr);
+        if (hdr == -1) break;
+        uint8_t cap_id = hdr & 0xFF;
+        uint8_t next = (hdr >> 8) & 0xFF;
+        if (cap_id == 0x10) { // PCIe
+            int32_t raw = pci_read32(bus, dev, fn, ptr + 8);
+            if (raw == -1) return -1;
+            // Device Control is the low 16 bits of the dword at ptr+8; FLR
+            // is DevCtl[15]. Device Status occupies the high 16 bits of the
+            // same dword and is write-1-to-clear, so writing the whole dword
+            // back (raw | 1<<15) clobbers the status bits it just read.
+            // Write only the control half by leaving the status half ZERO
+            // (writing 0 to a W1C register clears nothing) and retain the
+            // read-back control value otherwise, i.e. a true READ/MODIFY/WRITE
+            // on the low word.
+            uint32_t v = ((uint32_t)((raw & 0xFFFF) | (1u << 15)));
+            pci_write32(bus, dev, fn, ptr + 8, v);
+            // Bounded poll for completion: FLR resets the device, so DevCtl
+            // returns to its reset value and bit 15 clears within timeout.
+            for (int spin = 0; spin < 100000; ++spin) {
+                int32_t ctl = pci_read32(bus, dev, fn, ptr + 8);
+                if (ctl == -1) break;
+                if ((ctl & (1u << 15)) == 0) return 0;
+            }
+            return 0;
+        }
+        ptr = next;
+    }
+    return -1; // No PCIe cap / no FLR
+}
+
+int pci_enumerate(struct pci_dev *out, int max, int *count) {
+    if (!out || !count || max <= 0) return -1;
+    int n = 0;
+    for (uint32_t bus = 0; bus < 256 && n < max; bus++) {
+        for (uint32_t dev = 0; dev < 32 && n < max; dev++) {
+            int32_t vend = pci_read32(bus, dev, 0, 0);
+            if (vend == -1 || (vend & 0xFFFF) == 0xFFFF)
+                continue;
+            for (uint32_t fn = 0; fn < 8 && n < max; fn++) {
+                int32_t v = pci_read32(bus, dev, fn, 0);
+                if (v == -1 || (v & 0xFFFF) == 0xFFFF) {
+                    if (fn == 0) break;
+                    continue;
+                }
+                int32_t c = pci_read32(bus, dev, fn, 0x08);
+                if (c == -1) continue;
+                struct pci_dev *d = &out[n];
+                d->bus = (uint8_t)bus;
+                d->dev = (uint8_t)dev;
+                d->fn = (uint8_t)fn;
+                d->vendor = v & 0xFFFF;
+                d->device = (v >> 16) & 0xFFFF;
+                d->class_code = (c >> 24) & 0xFF;
+                d->subclass = (c >> 16) & 0xFF;
+                d->prog_if = (c >> 8) & 0xFF;
+                for (int b = 0; b < 6; b++) {
+                    int32_t bv = pci_read32(bus, dev, fn, 0x10 + b*4);
+                    d->bar[b] = bv == -1 ? 0 : (uint32_t)bv;
+                }
+                n++;
+                // Single function?
+                int32_t hdr = pci_read32(bus, dev, fn, 0x0C);
+                if (fn == 0 && (hdr & 0x800000) == 0)
+                    break;
+            }
+        }
+    }
+    *count = n;
+    return 0;
+}
+
+// --- MSI-X ---
+#define PCI_CAP_MSI_X 0x11
+
+int pci_msix_find(uint32_t bus, uint32_t dev, uint32_t fn, struct pci_msix *out) {
+    if (!out) return -1;
+    /* Status register at 0x06, but pci_read32 requires DWORD-aligned offset.
+     * Read 0x04 (Command|Status) and extract Status from upper half. */
+    int32_t cmd_status = pci_read32(bus, dev, fn, 0x04);
+    if (cmd_status == -1) return -1;
+    if (!((cmd_status >> 16) & 0x10)) return -1; // no capabilities
+    int32_t cap_ptr = pci_read32(bus, dev, fn, 0x34);
+    if (cap_ptr == -1) return -1;
+    uint8_t ptr = cap_ptr & 0xFF;
+    for (int i = 0; i < 16 && ptr >= 0x40; i++) {
+        int32_t hdr = pci_read32(bus, dev, fn, ptr);
+        if (hdr == -1) break;
+        uint8_t cap_id = hdr & 0xFF;
+        uint8_t next = (hdr >> 8) & 0xFF;
+        if (cap_id == PCI_CAP_MSI_X) {
+            int32_t tbl = pci_read32(bus, dev, fn, ptr + 4);
+            if (tbl == -1) return -1;
+            out->cap_off = ptr;
+            out->bir = tbl & 0x7;
+            out->table_off = (tbl & ~0x7u) >> 3;
+            /* Message Control is at ptr+2 (16-bit). Read DWORD at ptr,
+             * extract lower 16 bits for the full Control register. */
+            int32_t ctrl = pci_read32(bus, dev, fn, ptr);
+            if (ctrl == -1) return -1;
+            out->num_vecs = (uint16_t)((ctrl & 0x7FF) + 1);
+            out->table_phys = 0;
+            return 0;
+        }
+        ptr = next;
+    }
+    return -1;
+}
+
+int pci_msix_enable(uint32_t bus, uint32_t dev, uint32_t fn, const struct pci_msix *m, uint16_t num_vecs) {
+    if (!m || m->cap_off < 0x40) return -1;
+    int32_t ctrl = pci_read32(bus, dev, fn, m->cap_off + 2);
+    if (ctrl == -1) return -1;
+    // Table size = num_vecs - 1, keep function mask clear, set enable bit 15
+    uint32_t v = ((uint32_t)(num_vecs - 1) & 0x7FF) | (1u << 15);
+    // Preserve function mask bit 14 clear (0 = enabled)
+    v &= ~(1u << 14);
+    if (pci_write32(bus, dev, fn, m->cap_off + 2, v) != 0) return -1;
+    // Resolve table physical address from BAR
+    uint64_t bar_phys, bar_size;
+    bool is_mem;
+    if (pci_bar_info(bus, dev, fn, m->bir, &bar_phys, &bar_size, &is_mem) != 0)
+        return -1;
+    if (!is_mem) return -1;
+    (void)bar_size;
+    return 0;
+}
+
+int pci_msix_set_vector(uint32_t bus, uint32_t dev, uint32_t fn, const struct pci_msix *m, uint16_t vec, uint64_t addr, uint16_t data) {
+    if (!m || m->cap_off < 0x40) return -1;
+    if (vec >= m->num_vecs) return -1;
+    // Resolve table physical address
+    uint64_t bar_phys, bar_size;
+    bool is_mem;
+    if (pci_bar_info(bus, dev, fn, m->bir, &bar_phys, &bar_size, &is_mem) != 0)
+        return -1;
+    if (!is_mem) return -1;
+    uint64_t tbl_base = bar_phys + m->table_off;
+    uint64_t entry = tbl_base + (uint64_t)vec * 16;
+    if (entry + 16 > bar_phys + bar_size) return -1;
+    // Write MSI-X table entry: {u64 addr_lohi, u16 data, u16 ctrl}
+    // Identity-mapped: physical == virtual in this kernel
+    volatile uint32_t *p = (volatile uint32_t *)(uintptr_t)entry;
+    p[0] = (uint32_t)addr;
+    p[1] = (uint32_t)(addr >> 32);
+    p[2] = (uint32_t)data;
+    p[3] = 0; // unmasked
+    return 0;
+}

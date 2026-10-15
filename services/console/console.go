@@ -1,0 +1,151 @@
+// console.wasm — the well-known "console" server (abi/ABI.md §1/§2).
+//
+// Core logic (this file) is plain Go: it runs on the host against
+// kern.Bus under `go test` and unmodified as wasm via main.go. The
+// service owns-or-binds "console", relays every datagram to its output
+// (fd 1 → kernel console window → serial), one line per datagram.
+//
+// Logging convention (AGENTS.md): services send "[tag] message"
+// datagrams; console passes tagged lines through untouched and prefixes
+// "[console] " only when a line arrives without a tag.
+package main
+
+import (
+	"bytes"
+	"io"
+
+	"kernel.lane/guests/lib"
+)
+
+// Options tunes Run (zero value is production behavior).
+type Options struct {
+	// Name defaults to kern.NameConsole.
+	Name string
+	// Stop closes to end the relay loop (tests); nil runs forever.
+	Stop <-chan struct{}
+	// Mirror receives every rendered line a second time — the
+	// "display" face (services/display terminal on the §9.FB window).
+	// May be nil. Writes never block the relay path on error.
+	Mirror io.Writer
+}
+
+const defaultTag = "[console] "
+
+// Serve owns-or-binds name and relays datagrams to out until Stop.
+// It never returns an error for transient conditions: bind races are
+// retried, would-block sends cannot happen (output is not a port).
+func Serve(k kern.Kernel, out io.Writer, opts Options) {
+	name := opts.Name
+	if name == "" {
+		name = kern.NameConsole
+	}
+	h := k.PortCreate(name)
+	for h == kern.InvalidHandle {
+		h = k.PortBind(name) // fan-in alias after respawn/preemption
+		if h != kern.InvalidHandle {
+			break
+		}
+		if stopped(opts.Stop) {
+			return
+		}
+		k.Yield()
+	}
+
+	buf := make([]byte, kern.MaxMsg)
+	line := make([]byte, 0, kern.MaxMsg+len(defaultTag))
+	/* When a non-echo datagram arrives while the line is mid-redraw
+	 * (no trailing \n on the previous echo), prepend \r\n so the
+	 * message starts on its own line rather than clobbering the
+	 * shell prompt.  After the tagged message, re-emit the cached
+	 * prompt so the cursor is never left without a "> " leader. */
+	prevEcho := false
+	var lastEcho []byte
+	for {
+		n := k.PortRecv(h, buf)
+		if n > 0 {
+			isEcho := n > 0 && buf[0] == '\r'
+			if isEcho {
+				lastEcho = append(lastEcho[:0], buf[:int(n)]...)
+			}
+			if !isEcho && prevEcho {
+				out.Write([]byte("\r\n"))
+				if opts.Mirror != nil {
+					opts.Mirror.Write([]byte("\r\n"))
+				}
+			}
+			rendered := render(line[:0], buf[:int(n)])
+			out.Write(rendered)
+			if opts.Mirror != nil {
+				opts.Mirror.Write(rendered)
+			}
+			if !isEcho && prevEcho && len(lastEcho) > 0 {
+				/* Re-emit the last echo redraw (prompt) after the
+				 * tagged message so the shell prompt is visible.
+				 * The re-emitted prompt is itself a non-terminated
+				 * echo redraw, so subsequent tagged messages will
+				 * also be preceded by a line break + redraw. */
+				pmpt := render(make([]byte, 0, len(lastEcho)+2), lastEcho)
+				out.Write(pmpt)
+				if opts.Mirror != nil {
+					opts.Mirror.Write(pmpt)
+				}
+				prevEcho = !bytes.HasSuffix(pmpt, []byte("\n"))
+			} else {
+				prevEcho = isEcho && !bytes.HasSuffix(rendered, []byte("\n"))
+			}
+		}
+		if opts.Stop != nil && stopped(opts.Stop) {
+			return
+		}
+		if n == 0 {
+			k.Yield() // §1: recv never blocks; poll with sched_yield
+		}
+	}
+}
+
+// render appends one normalized line (datagram + "\n") onto dst.
+//
+// Echo/redraw protocol: a message whose first byte is '\r' is a shell
+// input-redraw.  It carries "\r> <buffer>" — the leading '\r' resets the
+// serial cursor to column 0 so the next redraw overwrites the previous
+// line in place.  We emit the '\r' and the payload *without* the
+// [console] tag and *without* a trailing '\n', so successive redraws
+// stay on the same terminal line until a tagged datagram arrives (which
+// naturally advances).
+func render(dst, msg []byte) []byte {
+	if len(msg) > 0 && msg[0] == '\r' {
+		content := bytes.TrimRight(msg[1:], "\r")
+		hasNL := len(content) > 0 && content[len(content)-1] == '\n'
+		if hasNL {
+			content = content[:len(content)-1]
+		}
+		dst = append(dst, '\r')
+		dst = append(dst, content...)
+		if hasNL {
+			dst = append(dst, '\n')
+		}
+		return dst
+	}
+
+	m := bytes.TrimRight(msg, "\r\n")
+	if len(m) == 0 {
+		return dst // kernel rejects empty sends; be safe anyway
+	}
+	if m[0] != '[' {
+		dst = append(dst, defaultTag...)
+	}
+	dst = append(dst, m...)
+	return append(dst, '\n')
+}
+
+func stopped(ch <-chan struct{}) bool {
+	if ch == nil {
+		return false
+	}
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}

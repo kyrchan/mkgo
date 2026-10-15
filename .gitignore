@@ -1,0 +1,39 @@
+# Build outputs. `tools/img/img` is the Makefile's IMG target and
+# compile_commands.json is gen_compdb.sh's local artifact.
+build/
+tools/img/img
+compile_commands.json
+
+# Wasm build intermediates and stamps. `*.wasm.raw` appears twice in older
+# trees; it needs to match only once.
+*.wasm.raw
+*.wasm.debug
+shell.wasm.raw
+*.tmp
+.kilo.pid
+.runner.pid
+
+# Fleet kill switches. These are local runtime state, not project truth:
+# .overnight-stop here makes scripts/fleet.sh idle and scripts/cron-guard.sh
+# exit immediately, so no WSL boot hook can bring the agent fleet up. The
+# per-lane copies live in each lane worktree and are ignored by the same name.
+.overnight-stop
+.overnight-complete
+.overnight.log
+
+# Committed check binaries go stale relative to source (08:09 vs 10:20
+# source updates produced wrong findings). verify/run-checks uses `go run`
+# which always compiles fresh -- the pre-built binaries are only a hazard.
+verify/gochecks/check-makefile-intact
+verify/gochecks/check-image-config
+verify/gochecks/check-gate-manifest
+verify/gochecks/check-cmd-coverage
+verify/gochecks/flake-runner
+verify/gochecks/gen-phase-claims
+verify/gochecks/check-shell-go-divergence
+scripts/__pycache__/
+
+.kilo/plans/*.md
+opencode.json.bak.tokenra
+opencode.json.bak
+__pycache__
